@@ -1,0 +1,6 @@
+.graph/embeddings.json
+.graph/usage.log
+__pycache__/
+.obsidian/workspace*.json
+.obsidian/graph.json
+.obsidian/cache
