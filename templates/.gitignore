@@ -4,3 +4,6 @@ __pycache__/
 .obsidian/workspace*.json
 .obsidian/graph.json
 .obsidian/cache
+.graph/projects.json
+.graph/feedback/
+.graph/machine.json

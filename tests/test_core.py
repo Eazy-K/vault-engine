@@ -6,6 +6,7 @@ defaults folder or any user's notes. Run with:
 """
 from __future__ import annotations
 
+import os
 import importlib.util
 import json
 import shutil
@@ -16,6 +17,11 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+
+# Never let a test reach the real user's data repo through the environment
+# (a missing patch then fails loudly instead of writing into it).
+for _var in ("VAULT_DATA", "VAULT_HOME"):
+    os.environ.pop(_var, None)
 from unittest import mock
 
 GRAPH_PATH = Path(__file__).resolve().parent.parent / "tools" / "graph.py"
