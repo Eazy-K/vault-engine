@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -202,7 +203,8 @@ class TestSetupEnvNonWindows(unittest.TestCase):
             onboarding.cmd_setup(self._args(yes=True))
         rc = self.home / ".bashrc"
         self.assertTrue(rc.exists())
-        self.assertIn(f"export VAULT_DATA='{self.data}'", rc.read_text(encoding="utf-8"))
+        # shlex only quotes when needed: Windows temp paths get quotes, /tmp/... doesn't.
+        self.assertIn(f"export VAULT_DATA={shlex.quote(str(self.data))}", rc.read_text(encoding="utf-8"))
         self.assertIn("written:", buf.getvalue())
 
     def test_no_tty_no_yes_only_prints(self):
