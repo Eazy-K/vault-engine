@@ -364,8 +364,12 @@ class TestInitGuard(SchemaTestCase):
             onboarding.cmd_init(self._args(target, feedback="reports", feedback_mode="auto",
                                            project_root=["/new/root"]))
         data = json.loads((target / "vault.config.json").read_text(encoding="utf-8"))
-        self.assertEqual(data["project_roots"], ["/new/root"])
+        # --project-root is per computer: it goes to machine.json, and the
+        # shared config's own project_roots is left untouched.
+        self.assertEqual(data["project_roots"], ["/old/root"])
         self.assertEqual(data["feedback"], {"level": "reports", "mode": "auto"})
+        machine = json.loads((target / ".graph" / "machine.json").read_text(encoding="utf-8"))
+        self.assertEqual(machine["project_roots"], ["/new/root"])
 
 
 # --- reading commands stay ungated ---------------------------------------------

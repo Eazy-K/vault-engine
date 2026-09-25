@@ -133,8 +133,9 @@ def _fill_engine_repo(path: Path) -> None:
 
 
 def _load_existing_config(path: Path) -> dict:
-    """The current vault.config.json, or {} if missing/unreadable -- never
-    raises, so init can always fall back to writing a fresh one."""
+    """The JSON object at `path`, or {} if missing/unreadable -- never raises,
+    so init can always fall back to writing a fresh one. Works for both
+    vault.config.json and machine.json (same small-JSON-object shape)."""
     if not path.exists():
         return {}
     try:
@@ -142,6 +143,57 @@ def _load_existing_config(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _write_machine_json(target: Path, updates: dict) -> Path:
+    """Merge `updates` into <target>/.graph/machine.json: gitignored and
+    per-computer, unlike vault.config.json which every computer shares."""
+    path = target / ".graph" / "machine.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _load_existing_config(path)
+    data.update(updates)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                     encoding="utf-8", newline="\n")
+    return path
+
+
+def _has_commits(repo: Path) -> bool:
+    out = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, encoding="utf-8")
+    return out.returncode == 0
+
+
+def _has_git_identity(repo: Path) -> bool:
+    """True if `git commit` would resolve an author here (local, global or
+    system config all count -- only `git config <key>` without --local sees
+    all of them)."""
+    for key in ("user.email", "user.name"):
+        out = subprocess.run(["git", "config", key], cwd=repo,
+                              capture_output=True, text=True, encoding="utf-8")
+        if out.returncode != 0 or not out.stdout.strip():
+            return False
+    return True
+
+
+def _initial_commit(target: Path) -> None:
+    """Commit everything for a brand-new vault, if git has an identity to
+    commit with. core.hooksPath (set just before this runs) points at the
+    engine's guard hook, which the commit goes through like any other."""
+    if not _has_git_identity(target):
+        print("  git: no user.name/user.email configured; set them in this data repo "
+              "and commit yourself, e.g.:")
+        print(f'    git -C "{target}" add -A')
+        print(f'    git -C "{target}" commit -m "chore: initialize vault"')
+        return
+    subprocess.run(["git", "add", "-A"], cwd=target, check=True, capture_output=True)
+    commit = subprocess.run(["git", "commit", "-m", "chore: initialize vault"], cwd=target,
+                             capture_output=True, text=True, encoding="utf-8")
+    if commit.returncode == 0:
+        print("  git: initial commit created (chore: initialize vault)")
+    else:
+        print("  git: initial commit failed:")
+        print(f"    {commit.stderr.strip()}")
+        print("  hint: fix the issue above, then `git add -A && git commit` yourself")
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -163,9 +215,17 @@ def cmd_init(args: argparse.Namespace) -> None:
     for rel in skipped:
         print(f"  skipped (already exists): {rel}")
 
-    if not _is_git_repo(target):
+    repo_existed = _is_git_repo(target)
+    if not repo_existed:
         subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
-        print("  git repo initialised")
+        # CI only runs on main; `git init` alone may default to master depending
+        # on the local git/global config, so pin it explicitly. Works on every
+        # git version, unlike `git init -b main` (added in 2.28).
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=target,
+                        check=True, capture_output=True)
+        print("  git repo initialised (branch: main)")
+    # Never touch a repo that already had commits before this run.
+    had_commits = _has_commits(target) if repo_existed else False
     hooks_path = (g.ENGINE / "tools" / "hooks").as_posix()
     subprocess.run(["git", "config", "core.hooksPath", hooks_path], cwd=target,
                     check=True, capture_output=True)
@@ -174,22 +234,27 @@ def cmd_init(args: argparse.Namespace) -> None:
     interactive = _is_interactive(args)
     existing_feedback = existing.get("feedback") if isinstance(existing.get("feedback"), dict) else {}
 
-    # An explicit flag always wins; otherwise an already-configured vault keeps
-    # what it has, and only a brand-new value is asked for or defaulted.
-    # An existing config is shared by every computer using this vault: without
-    # a flag, init never adds this computer's paths to it (each computer then
-    # falls back to its own engine's parent folder).
-    project_roots = args.project_root
-    if not project_roots:
-        if existing:
-            project_roots = existing.get("project_roots")
-        else:
-            default = str(g.ENGINE.parent)
-            if interactive:
-                raw = _ask("Project root folder (comma-separated for multiple paths)", default)
-                project_roots = [p.strip() for p in raw.split(",") if p.strip()]
-            else:
-                project_roots = [default]
+    # project_roots is per-computer, never written into the shared vault.config.json
+    # (every computer using this vault reads that file). An explicit flag, or an
+    # interactive answer that differs from the default, is saved to this computer's
+    # machine.json instead. No flag / no explicit answer -> nothing is written, and
+    # graph.project_roots() falls back to the engine's own parent folder (or, for an
+    # already-configured vault, to whatever vault.config.json still has, kept only
+    # for backward compatibility).
+    machine_roots = None
+    if args.project_root:
+        machine_roots = args.project_root
+    elif not existing:
+        default = str(g.ENGINE.parent)
+        if interactive:
+            raw = _ask("Project root folder (comma-separated for multiple paths)", default)
+            answered = [p.strip() for p in raw.split(",") if p.strip()]
+            if answered and answered != [default]:
+                machine_roots = answered
+    if machine_roots:
+        machine_path = _write_machine_json(target, {"project_roots": machine_roots})
+        print(f"  wrote: {machine_path.relative_to(target).as_posix()} "
+              "(project roots are per computer, not shared via git)")
 
     feedback_level = args.feedback
     if not feedback_level:
@@ -215,9 +280,9 @@ def cmd_init(args: argparse.Namespace) -> None:
     if feedback_mode not in FEEDBACK_MODES:
         sys.exit(f"invalid feedback mode: {feedback_mode}")
 
+    # config = dict(existing) carries forward any project_roots an older engine
+    # version wrote there; init itself never adds or overwrites that key.
     config = dict(existing)
-    if project_roots:
-        config["project_roots"] = project_roots
     config["feedback"] = {"level": feedback_level, "mode": feedback_mode}
     if "schema" not in config:
         schema = sys.modules.get("schema")
@@ -226,6 +291,9 @@ def cmd_init(args: argparse.Namespace) -> None:
     config_file.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
                             encoding="utf-8", newline="\n")
     print(f"  wrote: {config_file.relative_to(target).as_posix()}")
+
+    if not had_commits:
+        _initial_commit(target)
 
     print("\nNext steps:")
     print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")

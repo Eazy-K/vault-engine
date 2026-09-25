@@ -606,14 +606,26 @@ def is_done_task(note: Note) -> bool:
 # --- project detection --------------------------------------------------------
 
 def project_roots(paths: Paths) -> list[Path]:
-    """Folders whose immediate subfolders are projects. vault.config.json in the
-    data folder can list them explicitly; otherwise the engine's own parent
-    folder is assumed (the common "sibling projects" layout)."""
+    """Folders whose immediate subfolders are projects. Precedence: the
+    per-computer override in <data>/.graph/machine.json (each computer using a
+    shared vault has its own paths), then vault.config.json in the data folder
+    (kept for backward compatibility -- older vaults set it there), then the
+    engine's own parent folder (the common "sibling projects" layout)."""
+    machine_file = paths.data / ".graph" / "machine.json"
+    roots = None
     try:
-        raw = json.loads(paths.config_file.read_text(encoding="utf-8"))
-        roots = raw.get("project_roots")
+        raw = json.loads(machine_file.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            roots = raw.get("project_roots")
     except (OSError, ValueError):
         roots = None
+    if not roots:
+        try:
+            raw = json.loads(paths.config_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                roots = raw.get("project_roots")
+        except (OSError, ValueError):
+            roots = None
     if roots:
         return [Path(r).expanduser().resolve() for r in roots]
     return [paths.engine.resolve().parent]

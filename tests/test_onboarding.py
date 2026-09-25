@@ -45,11 +45,36 @@ def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
                            text=True, encoding="utf-8")
 
 
+def _isolated_git_env(tmp: Path, name: str | None, email: str | None) -> dict:
+    """Env so any `git config`/`git commit` in a test reads/writes neither the
+    real user's global nor system git config: GIT_CONFIG_GLOBAL points at a
+    private fixture file and GIT_CONFIG_NOSYSTEM=1 skips /etc/gitconfig (or its
+    Windows equivalent). name/email None means that fixture has no identity."""
+    global_config = tmp / "isolated-gitconfig"
+    lines = ["[commit]", "\tgpgsign = false"]
+    if name is not None:
+        lines += ["[user]", f"\tname = {name}", f"\temail = {email}"]
+    global_config.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return {"GIT_CONFIG_GLOBAL": str(global_config), "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 class TestInit(unittest.TestCase):
     def setUp(self):
         # Resolved so short (8.3) Windows path forms never mismatch a later .resolve().
         self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # Every test in this class now runs `git init`/`git commit` for real (the
+        # initial-commit feature); isolate that from the real user's identity so
+        # results are deterministic regardless of the host's global git config.
+        self._env_patch = mock.patch.dict(os.environ, self._no_identity_env(), clear=False)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+
+    def _no_identity_env(self) -> dict:
+        return _isolated_git_env(self.tmp, name=None, email=None)
+
+    def _identity_env(self, name: str = "Test Runner", email: str = "tester@example.com") -> dict:
+        return _isolated_git_env(self.tmp, name=name, email=email)
 
     def _args(self, target: Path, **kw):
         base = dict(dir=str(target), feedback=None, feedback_mode=None,
@@ -66,7 +91,8 @@ class TestInit(unittest.TestCase):
         self.assertTrue((target / "profile" / "language.md").exists())
 
         config = json.loads((target / "vault.config.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["project_roots"], [str(graph.ENGINE.parent)])
+        # A fresh init never writes this computer's paths into the shared config.
+        self.assertNotIn("project_roots", config)
         self.assertEqual(config["feedback"], {"level": "off", "mode": "ask"})
 
         hooks_path = git(["config", "core.hooksPath"], target).stdout.strip()
@@ -128,6 +154,99 @@ class TestInit(unittest.TestCase):
             onboarding.cmd_init(self._args(target))
             onboarding.cmd_init(self._args(target))  # must not fail on an existing repo
         self.assertTrue((target / ".git").is_dir())
+
+    def test_project_root_flag_goes_to_machine_json_not_config(self):
+        target = self.tmp / "example-data-proot"
+        root = self.tmp / "custom-root"
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target, project_root=[str(root)]))
+        config = json.loads((target / "vault.config.json").read_text(encoding="utf-8"))
+        self.assertNotIn("project_roots", config)
+        machine = json.loads((target / ".graph" / "machine.json").read_text(encoding="utf-8"))
+        self.assertEqual(machine["project_roots"], [str(root)])
+
+    def test_interactive_answer_same_as_default_writes_nothing(self):
+        target = self.tmp / "example-data-proot-default"
+        default = str(graph.ENGINE.parent)
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch("builtins.input", return_value=""), \
+             redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target, yes=False))
+        config = json.loads((target / "vault.config.json").read_text(encoding="utf-8"))
+        self.assertNotIn("project_roots", config)
+        self.assertFalse((target / ".graph" / "machine.json").exists())
+
+    def test_project_roots_precedence_machine_over_config_over_engine_parent(self):
+        import discovery
+
+        target = self.tmp / "example-data-precedence"
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        paths = graph.Paths(graph.ENGINE, target)
+
+        # Nothing set anywhere: falls back to the engine's own parent folder.
+        self.assertEqual(graph.project_roots(paths), [graph.ENGINE.resolve().parent])
+
+        # vault.config.json set (backward compatibility): used when there is no
+        # per-computer override.
+        config_root = self.tmp / "config-root"
+        config_root.mkdir()
+        (target / "vault.config.json").write_text(
+            json.dumps({"project_roots": [str(config_root)]}), encoding="utf-8", newline="\n")
+        self.assertEqual(graph.project_roots(paths), [config_root.resolve()])
+
+        # machine.json wins over vault.config.json.
+        machine_root = self.tmp / "machine-root"
+        (machine_root / "some-project").mkdir(parents=True)
+        (machine_root / "some-project" / ".git").mkdir()
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target, project_root=[str(machine_root)]))
+        self.assertEqual(graph.project_roots(paths), [machine_root.resolve()])
+
+        # discovery.py must see the same precedence (it goes through g.project_roots).
+        found = {p["name"] for p in discovery.discover(paths)}
+        self.assertIn("some-project", found)
+
+    def test_initial_commit_made_with_identity(self):
+        target = self.tmp / "example-data-commit"
+        with mock.patch.dict(os.environ, self._identity_env(), clear=False), \
+             redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+
+        log = git(["log", "--format=%s"], target).stdout.strip().splitlines()
+        self.assertEqual(log, ["chore: initialize vault"])
+
+        branch = git(["rev-parse", "--abbrev-ref", "HEAD"], target).stdout.strip()
+        self.assertEqual(branch, "main")
+
+        status = git(["status", "--porcelain"], target).stdout.strip()
+        self.assertEqual(status, "")
+
+    def test_no_identity_means_no_commit_and_hint_printed(self):
+        target = self.tmp / "example-data-no-identity"
+        # setUp's default env already has no identity anywhere.
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_init(self._args(target))
+
+        self.assertNotEqual(git(["rev-parse", "--verify", "-q", "HEAD"], target).returncode, 0)
+        out = buf.getvalue()
+        self.assertIn("user.name", out)
+        self.assertIn("user.email", out)
+        self.assertIn("commit", out)
+
+    def test_rerun_on_repo_with_commits_makes_no_new_commit(self):
+        target = self.tmp / "example-data-rerun-commit"
+        with mock.patch.dict(os.environ, self._identity_env(), clear=False):
+            with redirect_stdout(StringIO()):
+                onboarding.cmd_init(self._args(target))
+            first_log = git(["log", "--format=%H"], target).stdout.strip().splitlines()
+            self.assertEqual(len(first_log), 1)
+
+            with redirect_stdout(StringIO()) as buf:
+                onboarding.cmd_init(self._args(target))  # rerun: repo already has commits
+            second_log = git(["log", "--format=%H"], target).stdout.strip().splitlines()
+        self.assertEqual(second_log, first_log)  # no new commit
+        self.assertNotIn("initial commit created", buf.getvalue())
 
 
 class TestSetup(unittest.TestCase):
