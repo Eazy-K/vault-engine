@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -109,6 +110,7 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
+EXTENSIONS = ("onboarding", "discovery", "feedback")  # optional modules in tools/
 
 
 def machine_name() -> str:
@@ -1085,8 +1087,24 @@ def main() -> None:
     p.add_argument("--staged", action="store_true", help="scan the staged diff and staged paths")
     p.add_argument("--message-file", help="scan a commit message file")
 
+    # Feature modules next to this file add their own subcommands via register(sub)
+    # and set_defaults(func=...). Aliasing keeps `import graph` in them from loading
+    # a second copy of this module when it runs as a script.
+    sys.modules.setdefault("graph", sys.modules[__name__])
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    for name in EXTENSIONS:
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name != name:
+                raise
+            continue
+        module.register(sub)
+
     args = parser.parse_args()
-    if args.command in ("query", "context"):
+    if getattr(args, "func", None):
+        args.func(args)
+    elif args.command in ("query", "context"):
         cmd_query(args, content=args.command == "context")
     else:
         {"reinforce": cmd_reinforce, "decay": cmd_decay, "show": cmd_show,
