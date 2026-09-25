@@ -1,0 +1,42 @@
+name: vault guard
+description: >
+  Run the vault engine's personal-data guard (data repos) or leakcheck (the engine
+  repo) on the checked-out repo, including the commit messages of the pushed range.
+inputs:
+  command:
+    description: "guard for data repos, leakcheck for the engine repo"
+    default: guard
+  lint:
+    description: "also lint the notes of the checked-out repo (data repos)"
+    default: "true"
+  base:
+    description: "commit before the pushed range; empty or unknown checks the last commit only"
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Scan files and commit messages
+      shell: bash
+      env:
+        ENGINE: ${{ github.action_path }}
+        CMD: ${{ inputs.command }}
+        BASE: ${{ inputs.base }}
+      run: |
+        python "$ENGINE/tools/graph.py" "$CMD"
+        # A new branch or a force push has no usable "before" commit.
+        if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+          git log --format=%B "$BASE..HEAD" > "$RUNNER_TEMP/messages.txt"
+        else
+          git log --format=%B -1 > "$RUNNER_TEMP/messages.txt"
+        fi
+        python "$ENGINE/tools/graph.py" "$CMD" --message-file "$RUNNER_TEMP/messages.txt"
+    - name: Lint notes
+      if: inputs.lint == 'true'
+      shell: bash
+      env:
+        ENGINE: ${{ github.action_path }}
+        VAULT_DATA: ${{ github.workspace }}
+      run: python "$ENGINE/tools/graph.py" lint

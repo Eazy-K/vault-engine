@@ -99,8 +99,35 @@ def _copy_templates(target: Path) -> tuple[list[str], list[str]]:
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
+        if ENGINE_REPO_PLACEHOLDER in _read_text(dest):
+            _fill_engine_repo(dest)
         copied.append(str(rel))
     return copied, skipped
+
+
+ENGINE_REPO_PLACEHOLDER = "{{ENGINE_REPO}}"
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return ""
+
+
+def _fill_engine_repo(path: Path) -> None:
+    """Templates (the CI workflow) name the engine repo; it is derived from this
+    engine's own remote so every user's data repo points at their engine."""
+    try:
+        import feedback  # same tools/ folder; owns the remote parsing
+        repo = feedback._derive_repo()
+    except Exception:
+        repo = None
+    if repo:
+        text = _read_text(path).replace(ENGINE_REPO_PLACEHOLDER, repo)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    else:
+        print(f"  note: set the engine repo (owner/name) in {path.name}: no GitHub remote found")
 
 
 def cmd_init(args: argparse.Namespace) -> None:

@@ -1,0 +1,20 @@
+# Guard (personal data / secrets), commit messages and note lint on every push and
+# PR, so commits made from the cloud or a phone are checked too. The engine is a
+# private action: in the engine repo, Settings > Actions > Access must allow
+# repositories of the same owner.
+name: vault guard
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: {{ENGINE_REPO}}@main
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
