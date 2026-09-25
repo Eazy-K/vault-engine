@@ -131,14 +131,13 @@ def discover(paths: g.Paths) -> list[dict]:
             if not entry.is_dir() or not _is_git_repo(entry):
                 continue
             resolved = entry.resolve()
-            if resolved in skip:
+            if resolved in skip and not g.has_project_notes(paths, entry.name):
                 continue
             if _excluded(entry.name, exclude_patterns):
                 continue
             if (entry / ".vaultignore").exists():
                 continue
-            notes_root = paths.data / "projects" / entry.name
-            has_notes = notes_root.is_dir() and any(notes_root.rglob("*.md"))
+            has_notes = g.has_project_notes(paths, entry.name)
             results.append({
                 "name": entry.name,
                 "path": str(resolved),
