@@ -913,8 +913,9 @@ def cmd_query(args, content: bool) -> None:
             origin = "core" if r["core"] else (f"via {r['via']}" if r["via"] else "seed")
             print(f"{r['activation']:.3f}  {r['id']}  ({origin})")
         return
-    # Core notes and the project's status/overview always go in; the rest follow in
-    # activation order and stop at the first note that does not fit, so a less
+    # Core notes and the project's status/overview always go in and do not count
+    # against the budget, so all of it is left for task-relevant notes. Those follow
+    # in activation order and stop at the first note that does not fit, so a less
     # relevant small note never displaces a more relevant large one. If not even
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
@@ -928,13 +929,14 @@ def cmd_query(args, content: bool) -> None:
         header = f"<!-- note: {note.id} | activation: {r['activation']:.3f} | {origin} -->\n"
         body = note.body.rstrip()
         required = r["core"] or (r["via"] is None and is_project_entry(note.id))
-        if not required and used + len(header) + len(body) > budget:
-            room = budget - used - len(header)
-            if loaded or room < 200:
-                omitted.append(note.id)
-                continue
-            body = body[:room].rsplit("\n", 1)[0] + "\n<!-- truncated -->"
-        used += len(header) + len(body)
+        if not required:
+            if used + len(header) + len(body) > budget:
+                room = budget - used - len(header)
+                if used or room < 200:
+                    omitted.append(note.id)
+                    continue
+                body = body[:room].rsplit("\n", 1)[0] + "\n<!-- truncated -->"
+            used += len(header) + len(body)
         if not r["core"]:
             loaded.append(note.id)
         print(header + body + "\n")
