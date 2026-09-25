@@ -348,6 +348,31 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
     return True
 
 
+# --- update command: CI pin ---------------------------------------------------
+
+_CI_PIN_RE = re.compile(r"(uses:\s*[\w.\-]+/vault-engine)@([^\s]+)")
+
+
+def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
+    """Move the data repo's CI pin (`uses: <owner>/vault-engine@<ref>` in
+    <data>/.github/workflows/vault.yml) to the newly installed engine ref, so the
+    guard workflow always matches the engine version in use. No-op if the
+    workflow file is missing or doesn't have that line. Returns True if the file
+    was changed (the caller in the data repo must commit and push it)."""
+    path = data / ".github" / "workflows" / "vault.yml"
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    m = _CI_PIN_RE.search(text)
+    if not m or m.group(2) == new_ref:
+        return False
+    new_text = text[:m.start(2)] + new_ref + text[m.end(2):]
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+    print(f"updated CI pin in {path}: @{m.group(2)} -> @{new_ref} "
+          "(commit and push this change in the data repo)")
+    return True
+
+
 # --- update command: AGENTS.md ------------------------------------------------
 
 def _agents_diff(engine: Path, data: Path) -> str | None:
@@ -487,6 +512,7 @@ def cmd_update(args) -> None:
     if checkout.returncode != 0:
         sys.exit(f"update: git checkout failed:\n{checkout.stderr.strip()}")
     print(f"checked out {target}")
+    _rewrite_ci_pin(paths.data, target)
 
     ok = _run_post_checkout(engine, paths.data, target, is_upgrade, ref)
     _handle_agents_md(engine, paths.data, args, ref, target)

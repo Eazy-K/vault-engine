@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -101,13 +102,17 @@ def _copy_templates(target: Path) -> tuple[list[str], list[str]]:
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
-        if ENGINE_REPO_PLACEHOLDER in _read_text(dest):
+        text = _read_text(dest)
+        if ENGINE_REPO_PLACEHOLDER in text:
             _fill_engine_repo(dest)
+        if ENGINE_REF_PLACEHOLDER in _read_text(dest):
+            _fill_engine_ref(dest)
         copied.append(str(rel))
     return copied, skipped
 
 
 ENGINE_REPO_PLACEHOLDER = "{{ENGINE_REPO}}"
+ENGINE_REF_PLACEHOLDER = "{{ENGINE_REF}}"
 
 
 def _read_text(path: Path) -> str:
@@ -132,9 +137,36 @@ def _fill_engine_repo(path: Path) -> None:
         print(f"  note: set the engine repo (owner/name) in {path.name}: no GitHub remote found")
 
 
+def _engine_ref() -> str:
+    """Ref to pin the data repo's CI workflow to: the installed engine's release
+    tag when this checkout is on the stable channel, else `main` (dev/unknown
+    channel, or update.py unavailable). Guarded import so onboarding.py never
+    hard-depends on update.py."""
+    update = sys.modules.get("update")
+    if update is None:
+        try:
+            import update as update_mod
+        except Exception:
+            return "main"
+        update = update_mod
+    try:
+        status, ref = update.channel(g.ENGINE)
+    except Exception:
+        return "main"
+    return ref if status == "stable" and ref else "main"
+
+
+def _fill_engine_ref(path: Path) -> None:
+    """Templates (the CI workflow) pin the engine action to a ref; fill it with
+    the installed engine's release tag (or `main` off the stable channel)."""
+    text = _read_text(path).replace(ENGINE_REF_PLACEHOLDER, _engine_ref())
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def _load_existing_config(path: Path) -> dict:
-    """The current vault.config.json, or {} if missing/unreadable -- never
-    raises, so init can always fall back to writing a fresh one."""
+    """The JSON object at `path`, or {} if missing/unreadable -- never raises,
+    so init can always fall back to writing a fresh one. Works for both
+    vault.config.json and machine.json (same small-JSON-object shape)."""
     if not path.exists():
         return {}
     try:
@@ -142,6 +174,57 @@ def _load_existing_config(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _write_machine_json(target: Path, updates: dict) -> Path:
+    """Merge `updates` into <target>/.graph/machine.json: gitignored and
+    per-computer, unlike vault.config.json which every computer shares."""
+    path = target / ".graph" / "machine.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _load_existing_config(path)
+    data.update(updates)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                     encoding="utf-8", newline="\n")
+    return path
+
+
+def _has_commits(repo: Path) -> bool:
+    out = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=repo,
+                          capture_output=True, text=True, encoding="utf-8")
+    return out.returncode == 0
+
+
+def _has_git_identity(repo: Path) -> bool:
+    """True if `git commit` would resolve an author here (local, global or
+    system config all count -- only `git config <key>` without --local sees
+    all of them)."""
+    for key in ("user.email", "user.name"):
+        out = subprocess.run(["git", "config", key], cwd=repo,
+                              capture_output=True, text=True, encoding="utf-8")
+        if out.returncode != 0 or not out.stdout.strip():
+            return False
+    return True
+
+
+def _initial_commit(target: Path) -> None:
+    """Commit everything for a brand-new vault, if git has an identity to
+    commit with. core.hooksPath (set just before this runs) points at the
+    engine's guard hook, which the commit goes through like any other."""
+    if not _has_git_identity(target):
+        print("  git: no user.name/user.email configured; set them in this data repo "
+              "and commit yourself, e.g.:")
+        print(f'    git -C "{target}" add -A')
+        print(f'    git -C "{target}" commit -m "chore: initialize vault"')
+        return
+    subprocess.run(["git", "add", "-A"], cwd=target, check=True, capture_output=True)
+    commit = subprocess.run(["git", "commit", "-m", "chore: initialize vault"], cwd=target,
+                             capture_output=True, text=True, encoding="utf-8")
+    if commit.returncode == 0:
+        print("  git: initial commit created (chore: initialize vault)")
+    else:
+        print("  git: initial commit failed:")
+        print(f"    {commit.stderr.strip()}")
+        print("  hint: fix the issue above, then `git add -A && git commit` yourself")
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -163,9 +246,17 @@ def cmd_init(args: argparse.Namespace) -> None:
     for rel in skipped:
         print(f"  skipped (already exists): {rel}")
 
-    if not _is_git_repo(target):
+    repo_existed = _is_git_repo(target)
+    if not repo_existed:
         subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
-        print("  git repo initialised")
+        # CI only runs on main; `git init` alone may default to master depending
+        # on the local git/global config, so pin it explicitly. Works on every
+        # git version, unlike `git init -b main` (added in 2.28).
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=target,
+                        check=True, capture_output=True)
+        print("  git repo initialised (branch: main)")
+    # Never touch a repo that already had commits before this run.
+    had_commits = _has_commits(target) if repo_existed else False
     hooks_path = (g.ENGINE / "tools" / "hooks").as_posix()
     subprocess.run(["git", "config", "core.hooksPath", hooks_path], cwd=target,
                     check=True, capture_output=True)
@@ -174,22 +265,27 @@ def cmd_init(args: argparse.Namespace) -> None:
     interactive = _is_interactive(args)
     existing_feedback = existing.get("feedback") if isinstance(existing.get("feedback"), dict) else {}
 
-    # An explicit flag always wins; otherwise an already-configured vault keeps
-    # what it has, and only a brand-new value is asked for or defaulted.
-    # An existing config is shared by every computer using this vault: without
-    # a flag, init never adds this computer's paths to it (each computer then
-    # falls back to its own engine's parent folder).
-    project_roots = args.project_root
-    if not project_roots:
-        if existing:
-            project_roots = existing.get("project_roots")
-        else:
-            default = str(g.ENGINE.parent)
-            if interactive:
-                raw = _ask("Project root folder (comma-separated for multiple paths)", default)
-                project_roots = [p.strip() for p in raw.split(",") if p.strip()]
-            else:
-                project_roots = [default]
+    # project_roots is per-computer, never written into the shared vault.config.json
+    # (every computer using this vault reads that file). An explicit flag, or an
+    # interactive answer that differs from the default, is saved to this computer's
+    # machine.json instead. No flag / no explicit answer -> nothing is written, and
+    # graph.project_roots() falls back to the engine's own parent folder (or, for an
+    # already-configured vault, to whatever vault.config.json still has, kept only
+    # for backward compatibility).
+    machine_roots = None
+    if args.project_root:
+        machine_roots = args.project_root
+    elif not existing:
+        default = str(g.ENGINE.parent)
+        if interactive:
+            raw = _ask("Project root folder (comma-separated for multiple paths)", default)
+            answered = [p.strip() for p in raw.split(",") if p.strip()]
+            if answered and answered != [default]:
+                machine_roots = answered
+    if machine_roots:
+        machine_path = _write_machine_json(target, {"project_roots": machine_roots})
+        print(f"  wrote: {machine_path.relative_to(target).as_posix()} "
+              "(project roots are per computer, not shared via git)")
 
     feedback_level = args.feedback
     if not feedback_level:
@@ -215,9 +311,9 @@ def cmd_init(args: argparse.Namespace) -> None:
     if feedback_mode not in FEEDBACK_MODES:
         sys.exit(f"invalid feedback mode: {feedback_mode}")
 
+    # config = dict(existing) carries forward any project_roots an older engine
+    # version wrote there; init itself never adds or overwrites that key.
     config = dict(existing)
-    if project_roots:
-        config["project_roots"] = project_roots
     config["feedback"] = {"level": feedback_level, "mode": feedback_mode}
     if "schema" not in config:
         schema = sys.modules.get("schema")
@@ -226,6 +322,9 @@ def cmd_init(args: argparse.Namespace) -> None:
     config_file.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
                             encoding="utf-8", newline="\n")
     print(f"  wrote: {config_file.relative_to(target).as_posix()}")
+
+    if not had_commits:
+        _initial_commit(target)
 
     print("\nNext steps:")
     print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
@@ -267,7 +366,90 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _setup_env(data: Path, interactive: bool) -> None:
+# Marks the block this tool owns inside a shell rc file, so a rerun replaces
+# it in place instead of appending duplicates.
+RC_BLOCK_START = "# >>> vault-engine >>>"
+RC_BLOCK_END = "# <<< vault-engine <<<"
+
+
+def _shell_name() -> str:
+    """Basename of the user's login shell, e.g. 'zsh', 'bash', 'fish'."""
+    return Path(os.environ.get("SHELL", "")).name
+
+
+def _rc_file_for_shell(shell: str, platform: str, home: Path) -> Path:
+    """Pure so it's unit-testable without touching the real home or $SHELL."""
+    if shell == "zsh":
+        return home / ".zshrc"
+    if shell == "bash":
+        return home / (".bash_profile" if platform == "darwin" else ".bashrc")
+    if shell == "fish":
+        return home / ".config" / "fish" / "config.fish"
+    return home / ".profile"  # unknown/plain sh: the most portable fallback
+
+
+def _fish_quote(value: str) -> str:
+    # fish single quotes only recognise \\ and \' as escapes; shlex.quote's
+    # POSIX-style '\'' trick isn't valid fish syntax.
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _render_rc_block(pairs: list[tuple[str, str]], shell: str) -> str:
+    """The delimited block written into the rc file, newline-terminated."""
+    lines = [RC_BLOCK_START]
+    for name, value in pairs:
+        if shell == "fish":
+            lines.append(f"set -gx {name} {_fish_quote(value)}")
+        else:
+            lines.append(f"export {name}={shlex.quote(value)}")
+    lines.append(RC_BLOCK_END)
+    return "\n".join(lines) + "\n"
+
+
+def _upsert_block(text: str, block: str) -> str:
+    """Replace an existing vault-engine block in `text`, or append `block` if
+    there isn't one. Pure text-in, text-out so it's easy to unit test."""
+    start = text.find(RC_BLOCK_START)
+    if start != -1:
+        end = text.find(RC_BLOCK_END, start)
+        if end != -1:
+            end += len(RC_BLOCK_END)
+            if text[end:end + 1] == "\n":
+                end += 1
+            return text[:start] + block + text[end:]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text:
+        text += "\n"
+    return text + block
+
+
+def _rc_block_present(path: Path, name: str) -> bool:
+    """True if `path` has a vault-engine block that mentions `name` (used by
+    doctor to tell 'set in the rc file but not in this process' from unset)."""
+    if not path.exists():
+        return False
+    text = _read_text(path)
+    start = text.find(RC_BLOCK_START)
+    if start == -1:
+        return False
+    end = text.find(RC_BLOCK_END, start)
+    return end != -1 and name in text[start:end]
+
+
+def _write_rc_block(path: Path, pairs: list[tuple[str, str]], shell: str) -> bool:
+    """Write/replace the vault-engine block in `path`. Returns True if the
+    file's content changed (False when a rerun found nothing to update)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    new_text = _upsert_block(text, _render_rc_block(pairs, shell))
+    if new_text == text:
+        return False
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+    return True
+
+
+def _setup_env(data: Path, interactive: bool, assume_yes: bool = False) -> None:
     pairs = [("VAULT_ENGINE", str(g.ENGINE)), ("VAULT_DATA", str(data))]
     pending = [(n, v) for n, v in pairs if not (os.environ.get(n) and _same_path(os.environ[n], v))]
     for name, value in pairs:
@@ -289,9 +471,24 @@ def _setup_env(data: Path, interactive: bool) -> None:
             for name, value in pending:
                 print(f"  export {name}={value}")
     else:
-        print("  Add the following lines to your shell rc file:")
-        for name, value in pending:
-            print(f"    export {name}={value}")
+        rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
+        is_tty = sys.stdin.isatty()
+        if is_tty and not assume_yes:
+            do_it = _ask_yn(f"Write these to {rc_path}?", True)
+        else:
+            do_it = assume_yes or is_tty
+        if do_it:
+            changed = _write_rc_block(rc_path, pairs, _shell_name())
+            if changed:
+                print(f"  written: {rc_path}")
+                print("  Restart open terminals and agents (Claude Code, Codex): "
+                      "they only see the new values after a restart.")
+            else:
+                print(f"  ok: {rc_path} already set")
+        else:
+            print("  Add the following lines to your shell rc file:")
+            for name, value in pending:
+                print(f"    export {name}={value}")
 
 
 def _setup_agents() -> None:
@@ -361,7 +558,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     if not args.no_env:
         print("Environment variables:")
-        _setup_env(data, interactive)
+        _setup_env(data, interactive, args.yes)
     if not args.no_agents:
         print("Claude Code subagents:")
         _setup_agents()
@@ -449,8 +646,12 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("INFO", "ollama CLI not found (keyword-only search unless Ollama runs elsewhere)")
 
     raw_engine = os.environ.get("VAULT_ENGINE")
+    rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
     if not raw_engine and _user_env_var("VAULT_ENGINE"):
         check("WARN", "VAULT_ENGINE is set for the user but not in this process: "
+                      "restart the terminal and the agent")
+    elif not raw_engine and not _is_windows() and _rc_block_present(rc_path, "VAULT_ENGINE"):
+        check("WARN", f"VAULT_ENGINE is set in {rc_path} but not in this process: "
                       "restart the terminal and the agent")
     elif not raw_engine:
         check("WARN", "VAULT_ENGINE not set")
