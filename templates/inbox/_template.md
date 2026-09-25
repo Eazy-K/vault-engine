@@ -1,27 +1,27 @@
 ---
 type: task
-project: <proje>
+project: <project>
 status: open
 created: YYYY-MM-DD
-keywords: [anahtar, kelimeler]
+keywords: [keywords]
 links:
-  - "[[<proje>-overview]]"
+  - "[[<project>-overview]]"
 ---
 
-# NNNN — Görev başlığı
+# NNNN — Task title
 
-## Hedef
-Ne yapılacak ve neden?
+## Goal
+What needs to be done, and why?
 
-## Kapsam
-- Dahil:
-- Hariç:
+## Scope
+- In:
+- Out:
 
-## Kabul kriterleri
+## Acceptance criteria
 - [ ]
 
-## Kısıtlar
-Dokunulmayacak yerler, uyulacak standartlar, son tarih.
+## Constraints
+Areas not to touch, standards to follow, deadline.
 
 ## Log
-<!-- Görevi yapan ajan doldurur: YYYY-MM-DD, yapılanlar, PR linki, test sonucu, sorunlar. -->
+<!-- Filled in by the agent doing the task: YYYY-MM-DD, what was done, PR link, test result, issues. -->

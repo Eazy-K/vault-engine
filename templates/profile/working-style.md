@@ -5,8 +5,8 @@ links: []
 weights: {}
 ---
 
-# Çalışma Tarzı
+# Working Style
 
-Buraya çalışma tercihlerini yaz: nasıl özet istersin, ne kadar ayrıntı, hangi konularda onay beklenir.
-Örnek maddeler: iletişim tonu, karar alırken sorulması gereken sorular, tercih edilen araçlar.
-Kısa ve kendi içinde anlaşılır maddeler halinde yaz.
+Write your work preferences here: how you want summaries, how much detail, which topics need approval first.
+Example items: communication tone, questions to ask before making a decision, preferred tools.
+Write short, self-contained items.
