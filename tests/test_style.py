@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -43,6 +44,18 @@ class TestVersion(unittest.TestCase):
         changelog = (TOOLS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
         top = re.search(r"^## \[([^\]]+)\]", changelog, re.M).group(1)
         self.assertEqual(top, version)
+
+    def test_tag_at_head_matches_version(self):
+        # On a stable install HEAD is a release tag; it must match --version.
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match", "HEAD"],
+            cwd=TOOLS.parent, capture_output=True, text=True)
+        if result.returncode != 0:
+            self.skipTest("HEAD is not exactly at a tag (or git is unavailable)")
+        tag = result.stdout.strip()
+        source = (TOOLS / "graph.py").read_text(encoding="utf-8")
+        version = re.search(r'^__version__ = "([^"]+)"', source, re.M).group(1)
+        self.assertEqual(tag, "v" + version)
 
 
 if __name__ == "__main__":

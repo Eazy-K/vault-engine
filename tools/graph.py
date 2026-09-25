@@ -114,7 +114,7 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move")  # optional modules in tools/
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update")  # optional modules in tools/
 
 
 def machine_name() -> str:
@@ -373,6 +373,7 @@ class Graph:
         self.learned[key] = self.learned.get(key, 0.0) + delta
 
     def save_learned(self) -> None:
+        _require_writable(self.paths)
         learned_dir = self.paths.learned_dir
         learned_dir.mkdir(parents=True, exist_ok=True)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(self.own_learned.items())}
@@ -384,6 +385,15 @@ class Graph:
 
 def _clamp(w: float) -> float:
     return max(0.0, min(1.0, w))
+
+
+def _require_writable(paths: "Paths") -> None:
+    """Guard shared by every command that writes shared data into the vault.
+    A no-op when tools/schema.py is not loaded, so graph.py keeps working
+    without it (see EXTENSIONS)."""
+    schema = sys.modules.get("schema")
+    if schema is not None:
+        schema.require_writable(paths)
 
 
 # --- retrieval ---------------------------------------------------------------
@@ -946,6 +956,11 @@ def cmd_query(args, content: bool) -> None:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
                           "notes": loaded, "omitted": omitted})
+        update = sys.modules.get("update")
+        if update is not None:
+            hint = update.context_hint(paths)
+            if hint:
+                print(hint)
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
         print(f"<!-- when done: python \"{Path(__file__).resolve()}\" reinforce --task {task} "
               f"<notes you actually used, or none> -->")
@@ -980,9 +995,13 @@ def cmd_reinforce(args) -> None:
     feedback = sys.modules.get("feedback")
     if feedback is not None:
         feedback.maybe_auto_send(paths)
+    update = sys.modules.get("update")
+    if update is not None:
+        update.maybe_check(paths)
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
         return
+    _require_writable(paths)  # before printing changes that would not be saved
     for a, b in combinations(ids, 2):
         before = graph.weight(a, b)
         graph.add_learned(pair(a, b), args.rate * (1.0 - before))
@@ -1018,6 +1037,7 @@ def cmd_stats(_args) -> None:
 def cmd_decay(args) -> None:
     # Each machine decays only its own file, so decay never causes merge conflicts.
     graph = Graph()
+    _require_writable(graph.paths)
     kept = {}
     for key, delta in graph.own_learned.items():
         delta *= 1.0 - args.rate

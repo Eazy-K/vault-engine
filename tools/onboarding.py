@@ -132,10 +132,29 @@ def _fill_engine_repo(path: Path) -> None:
         print(f"  note: set the engine repo (owner/name) in {path.name}: no GitHub remote found")
 
 
+def _load_existing_config(path: Path) -> dict:
+    """The current vault.config.json, or {} if missing/unreadable -- never
+    raises, so init can always fall back to writing a fresh one."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     target = Path(args.dir).expanduser().resolve()
     if target == g.ENGINE.resolve() or g.ENGINE.resolve() in target.parents:
         sys.exit(f"refusing to create a data repo inside the engine ({g.ENGINE})")
+
+    config_path = target / "vault.config.json"
+    existing = _load_existing_config(config_path)
+    if existing:
+        # Only a vault that already has a config can conflict with a newer
+        # engine's layout; a brand-new one has nothing to protect yet.
+        g._require_writable(g.Paths(g.ENGINE, target))
 
     target.mkdir(parents=True, exist_ok=True)
     copied, skipped = _copy_templates(target)
@@ -153,19 +172,30 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"  core.hooksPath = {hooks_path}")
 
     interactive = _is_interactive(args)
+    existing_feedback = existing.get("feedback") if isinstance(existing.get("feedback"), dict) else {}
 
+    # An explicit flag always wins; otherwise an already-configured vault keeps
+    # what it has, and only a brand-new value is asked for or defaulted.
+    # An existing config is shared by every computer using this vault: without
+    # a flag, init never adds this computer's paths to it (each computer then
+    # falls back to its own engine's parent folder).
     project_roots = args.project_root
     if not project_roots:
-        default = str(g.ENGINE.parent)
-        if interactive:
-            raw = _ask("Project root folder (comma-separated for multiple paths)", default)
-            project_roots = [p.strip() for p in raw.split(",") if p.strip()]
+        if existing:
+            project_roots = existing.get("project_roots")
         else:
-            project_roots = [default]
+            default = str(g.ENGINE.parent)
+            if interactive:
+                raw = _ask("Project root folder (comma-separated for multiple paths)", default)
+                project_roots = [p.strip() for p in raw.split(",") if p.strip()]
+            else:
+                project_roots = [default]
 
     feedback_level = args.feedback
     if not feedback_level:
-        if interactive:
+        if "level" in existing_feedback:
+            feedback_level = existing_feedback["level"]
+        elif interactive:
             for line in FEEDBACK_EXPLAIN.values():
                 print(f"  {line}")
             feedback_level = _ask("Feedback level (off/metrics/reports)", "off")
@@ -176,17 +206,22 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     feedback_mode = args.feedback_mode
     if not feedback_mode:
-        if interactive:
+        if "mode" in existing_feedback:
+            feedback_mode = existing_feedback["mode"]
+        elif interactive:
             feedback_mode = _ask("Feedback mode (auto/ask)", "ask")
         else:
             feedback_mode = "ask"
     if feedback_mode not in FEEDBACK_MODES:
         sys.exit(f"invalid feedback mode: {feedback_mode}")
 
-    config = {
-        "project_roots": project_roots,
-        "feedback": {"level": feedback_level, "mode": feedback_mode},
-    }
+    config = dict(existing)
+    if project_roots:
+        config["project_roots"] = project_roots
+    config["feedback"] = {"level": feedback_level, "mode": feedback_mode}
+    if "schema" not in config:
+        schema = sys.modules.get("schema")
+        config["schema"] = schema.SCHEMA_VERSION if schema is not None else 1
     config_file = target / "vault.config.json"
     config_file.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
                             encoding="utf-8", newline="\n")
@@ -369,6 +404,36 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         checks.append((status, msg))
 
     check("OK", f"vault-engine {g.__version__}")
+
+    update = sys.modules.get("update")
+    if update is not None:
+        status, ref = update.channel(g.ENGINE)
+        if status == "stable":
+            check("OK", f"channel: stable ({ref})")
+        elif status == "dev":
+            check("INFO", f"channel: dev ({ref}): update with git pull, then migrate")
+        else:
+            check("INFO", "channel: unknown (not a git checkout)")
+        if status == "stable":
+            try:
+                update_data = g.resolve_data_dir()
+            except SystemExit:
+                update_data = None
+            settings = (update.load_settings(g.Paths(g.ENGINE, update_data))
+                       if update_data is not None else dict(update.DEFAULT_SETTINGS))
+            if settings.get("check", True):
+                latest = update.record_check(g.ENGINE)
+                if latest is None:
+                    check("INFO", "could not check for updates")
+                else:
+                    current_v = update.parse_version(g.__version__)
+                    latest_v = update.parse_version(latest)
+                    if latest_v and current_v and latest_v > current_v:
+                        check("WARN", f"vault-engine {'.'.join(str(n) for n in latest_v)} "
+                                      f"available (current {g.__version__}): run update")
+                    else:
+                        check("OK", "up to date")
+
     if sys.version_info >= (3, 10):
         check("OK", f"Python {sys.version.split()[0]}")
     else:
@@ -468,6 +533,18 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
     if data is not None:
         ok, summary = _lint_summary(data)
         check("OK" if ok else "FAIL", f"note lint: {summary}")
+
+    schema = sys.modules.get("schema")
+    if data is not None and schema is not None:
+        data_schema = schema.read_schema(g.Paths(g.ENGINE, data))
+        if data_schema == schema.SCHEMA_VERSION:
+            check("OK", f"vault schema {data_schema}")
+        elif data_schema > schema.SCHEMA_VERSION:
+            check("FAIL", f"vault schema {data_schema} is newer than this engine "
+                          f"({schema.SCHEMA_VERSION}): run update on this computer")
+        else:
+            check("WARN", f"vault schema {data_schema} is older than this engine "
+                          f"({schema.SCHEMA_VERSION}): run migrate")
 
     for status, msg in checks:
         print(f"{status:<4} {msg}")
@@ -682,6 +759,7 @@ def cmd_onboard(args: argparse.Namespace) -> None:
         return
 
     data = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
+    g._require_writable(g.Paths(g.ENGINE, data))
 
     if args.answers:
         raw = json.loads(Path(args.answers).read_text(encoding="utf-8"))

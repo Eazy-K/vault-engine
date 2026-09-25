@@ -10,3 +10,4 @@ If `$VAULT_ENGINE` is empty, the terminal or agent was started before setup set 
 2. **If the task came from `inbox/`:** follow the `inbox/inbox.md` flow (`python "$VAULT_ENGINE/tools/graph.py" tasks --status open`).
 3. **When the task is done:** run the command on the last line of the `context` output: `reinforce --task <id>` followed by the notes that actually helped. If no note helped, run it with no notes.
 4. **If you learn something lasting:** write it to the relevant note following the rules in `standards/vault-notes.md`. Then run `python "$VAULT_ENGINE/tools/graph.py" lint`, commit in English, and push with `git pull --rebase && git push`. The guard hook blocks commits containing personal data or secrets.
+5. **If `context` reports a new vault-engine version:** tell the user once and ask before updating — never update without their permission.

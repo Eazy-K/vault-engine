@@ -419,6 +419,8 @@ def cmd_add(args) -> None:
 
 def cmd_set(args) -> None:
     paths = g.default_paths()
+    if not args.machine:
+        g._require_writable(paths)  # the machine override never touches shared config
     target = _machine_file(paths) if args.machine else paths.config_file
     data = _load_json(target)
     fb = data.get("feedback") if isinstance(data.get("feedback"), dict) else {}
