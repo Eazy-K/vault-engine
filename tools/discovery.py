@@ -173,7 +173,7 @@ def load_cached(paths: g.Paths, refresh: bool = False) -> list[dict]:
     results = discover(paths)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps({"roots": roots, "projects": results}, indent=2,
-                                     ensure_ascii=False), encoding="utf-8")
+                                     ensure_ascii=False), encoding="utf-8", newline="\n")
     return results
 
 

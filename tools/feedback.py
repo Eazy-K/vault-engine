@@ -117,7 +117,7 @@ def _save_state(paths: "g.Paths", state: dict) -> None:
     try:
         _fb_dir(paths).mkdir(parents=True, exist_ok=True)
         _state_file(paths).write_text(json.dumps(state, indent=2, ensure_ascii=False),
-                                       encoding="utf-8")
+                                       encoding="utf-8", newline="\n")
     except OSError:
         pass
 
@@ -254,7 +254,7 @@ def _log_sent(paths: "g.Paths", record: dict) -> None:
         sdir = _sent_dir(paths)
         sdir.mkdir(parents=True, exist_ok=True)
         (sdir / f"{secrets.token_hex(4)}.json").write_text(
-            json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+            json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
     except OSError:
         pass
 
@@ -402,7 +402,7 @@ def cmd_add(args) -> None:
             try:
                 _quarantine_dir(paths).mkdir(parents=True, exist_ok=True)
                 (_quarantine_dir(paths) / f"{record['id']}.json").write_text(
-                    json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+                    json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
             except OSError:
                 pass
             sys.exit(f"blocked: {field_name} looks like it contains a {hit}; edit it and try again")
@@ -413,7 +413,7 @@ def cmd_add(args) -> None:
     }
     _queue_dir(paths).mkdir(parents=True, exist_ok=True)
     (_queue_dir(paths) / f"{report['id']}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
     print(f"queued feedback report {report['id']}")
 
 
@@ -430,7 +430,7 @@ def cmd_set(args) -> None:
         fb["repo"] = args.repo
     data["feedback"] = fb
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote feedback settings to {target}")
 
 

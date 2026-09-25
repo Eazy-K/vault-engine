@@ -474,7 +474,7 @@ def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, li
         del notes[nid]
     if stale or removed:
         embed_cache.parent.mkdir(exist_ok=True)
-        embed_cache.write_text(json.dumps(cache), encoding="utf-8")
+        embed_cache.write_text(json.dumps(cache), encoding="utf-8", newline="\n")
     return cache, (vectors[-1] if query else None)
 
 
@@ -821,7 +821,7 @@ def log_usage(paths: Paths, event: dict) -> None:
     try:
         usage_log = paths.usage_log
         usage_log.parent.mkdir(exist_ok=True)
-        with usage_log.open("a", encoding="utf-8") as f:
+        with usage_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except OSError:
         pass

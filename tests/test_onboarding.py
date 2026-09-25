@@ -230,6 +230,32 @@ class TestSetup(unittest.TestCase):
         self.assertIn("already set", buf.getvalue())
 
 
+class TestDoctorTools(unittest.TestCase):
+    def _run(self, installed: set[str]) -> str:
+        home = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        with mock.patch("onboarding._which", side_effect=lambda t: f"/bin/{t}" if t in installed else None), \
+             mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True), \
+             mock.patch("pathlib.Path.home", return_value=home), \
+             mock.patch("onboarding.urllib.request.urlopen"), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        return buf.getvalue()
+
+    def test_reports_installed_agents(self):
+        out = self._run({"claude", "ollama"})
+        self.assertIn("OK   Claude Code: found", out)
+        self.assertIn("INFO Codex: not found", out)
+        self.assertNotIn("no supported agent CLI", out)
+        self.assertNotIn("ollama CLI not found", out)
+
+    def test_warns_without_any_agent(self):
+        out = self._run(set())
+        self.assertIn("WARN no supported agent CLI found", out)
+        self.assertIn("INFO ollama CLI not found", out)
+
+
 class TestDoctor(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()).resolve()
