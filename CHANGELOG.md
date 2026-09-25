@@ -2,11 +2,6 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**.
 
-## [Unreleased]
-
-### Fixed
-- The engine or data folder counts as a project when the data repo has `projects/<folder>/` notes, so people developing the engine get project context and discovery for it.
-
 ## [0.1.0] - 2026-09-25
 
 First public release.
