@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -335,7 +336,90 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _setup_env(data: Path, interactive: bool) -> None:
+# Marks the block this tool owns inside a shell rc file, so a rerun replaces
+# it in place instead of appending duplicates.
+RC_BLOCK_START = "# >>> vault-engine >>>"
+RC_BLOCK_END = "# <<< vault-engine <<<"
+
+
+def _shell_name() -> str:
+    """Basename of the user's login shell, e.g. 'zsh', 'bash', 'fish'."""
+    return Path(os.environ.get("SHELL", "")).name
+
+
+def _rc_file_for_shell(shell: str, platform: str, home: Path) -> Path:
+    """Pure so it's unit-testable without touching the real home or $SHELL."""
+    if shell == "zsh":
+        return home / ".zshrc"
+    if shell == "bash":
+        return home / (".bash_profile" if platform == "darwin" else ".bashrc")
+    if shell == "fish":
+        return home / ".config" / "fish" / "config.fish"
+    return home / ".profile"  # unknown/plain sh: the most portable fallback
+
+
+def _fish_quote(value: str) -> str:
+    # fish single quotes only recognise \\ and \' as escapes; shlex.quote's
+    # POSIX-style '\'' trick isn't valid fish syntax.
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def _render_rc_block(pairs: list[tuple[str, str]], shell: str) -> str:
+    """The delimited block written into the rc file, newline-terminated."""
+    lines = [RC_BLOCK_START]
+    for name, value in pairs:
+        if shell == "fish":
+            lines.append(f"set -gx {name} {_fish_quote(value)}")
+        else:
+            lines.append(f"export {name}={shlex.quote(value)}")
+    lines.append(RC_BLOCK_END)
+    return "\n".join(lines) + "\n"
+
+
+def _upsert_block(text: str, block: str) -> str:
+    """Replace an existing vault-engine block in `text`, or append `block` if
+    there isn't one. Pure text-in, text-out so it's easy to unit test."""
+    start = text.find(RC_BLOCK_START)
+    if start != -1:
+        end = text.find(RC_BLOCK_END, start)
+        if end != -1:
+            end += len(RC_BLOCK_END)
+            if text[end:end + 1] == "\n":
+                end += 1
+            return text[:start] + block + text[end:]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text:
+        text += "\n"
+    return text + block
+
+
+def _rc_block_present(path: Path, name: str) -> bool:
+    """True if `path` has a vault-engine block that mentions `name` (used by
+    doctor to tell 'set in the rc file but not in this process' from unset)."""
+    if not path.exists():
+        return False
+    text = _read_text(path)
+    start = text.find(RC_BLOCK_START)
+    if start == -1:
+        return False
+    end = text.find(RC_BLOCK_END, start)
+    return end != -1 and name in text[start:end]
+
+
+def _write_rc_block(path: Path, pairs: list[tuple[str, str]], shell: str) -> bool:
+    """Write/replace the vault-engine block in `path`. Returns True if the
+    file's content changed (False when a rerun found nothing to update)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    new_text = _upsert_block(text, _render_rc_block(pairs, shell))
+    if new_text == text:
+        return False
+    path.write_text(new_text, encoding="utf-8", newline="\n")
+    return True
+
+
+def _setup_env(data: Path, interactive: bool, assume_yes: bool = False) -> None:
     pairs = [("VAULT_ENGINE", str(g.ENGINE)), ("VAULT_DATA", str(data))]
     pending = [(n, v) for n, v in pairs if not (os.environ.get(n) and _same_path(os.environ[n], v))]
     for name, value in pairs:
@@ -357,9 +441,24 @@ def _setup_env(data: Path, interactive: bool) -> None:
             for name, value in pending:
                 print(f"  export {name}={value}")
     else:
-        print("  Add the following lines to your shell rc file:")
-        for name, value in pending:
-            print(f"    export {name}={value}")
+        rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
+        is_tty = sys.stdin.isatty()
+        if is_tty and not assume_yes:
+            do_it = _ask_yn(f"Write these to {rc_path}?", True)
+        else:
+            do_it = assume_yes or is_tty
+        if do_it:
+            changed = _write_rc_block(rc_path, pairs, _shell_name())
+            if changed:
+                print(f"  written: {rc_path}")
+                print("  Restart open terminals and agents (Claude Code, Codex): "
+                      "they only see the new values after a restart.")
+            else:
+                print(f"  ok: {rc_path} already set")
+        else:
+            print("  Add the following lines to your shell rc file:")
+            for name, value in pending:
+                print(f"    export {name}={value}")
 
 
 def _setup_agents() -> None:
@@ -429,7 +528,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     if not args.no_env:
         print("Environment variables:")
-        _setup_env(data, interactive)
+        _setup_env(data, interactive, args.yes)
     if not args.no_agents:
         print("Claude Code subagents:")
         _setup_agents()
@@ -517,8 +616,12 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("INFO", "ollama CLI not found (keyword-only search unless Ollama runs elsewhere)")
 
     raw_engine = os.environ.get("VAULT_ENGINE")
+    rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
     if not raw_engine and _user_env_var("VAULT_ENGINE"):
         check("WARN", "VAULT_ENGINE is set for the user but not in this process: "
+                      "restart the terminal and the agent")
+    elif not raw_engine and not _is_windows() and _rc_block_present(rc_path, "VAULT_ENGINE"):
+        check("WARN", f"VAULT_ENGINE is set in {rc_path} but not in this process: "
                       "restart the terminal and the agent")
     elif not raw_engine:
         check("WARN", "VAULT_ENGINE not set")
