@@ -30,12 +30,59 @@ from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 
-VAULT = Path(__file__).resolve().parent.parent
-# One file per machine so two machines never edit the same file (no merge
-# conflicts); effective learned weights are the sum over all files.
-LEARNED_DIR = VAULT / ".graph" / "learned"
-EMBED_CACHE = VAULT / ".graph" / "embeddings.json"  # derived, not committed
-USAGE_LOG = VAULT / ".graph" / "usage.log"  # local JSON lines, not committed
+# This repo is the user-independent engine; notes live in a separate data
+# folder (see resolve_data_dir). ENGINE never changes; DATA is resolved lazily
+# so importing this module needs no environment at all (tests rely on that).
+ENGINE = Path(__file__).resolve().parent.parent
+
+
+def resolve_data_dir() -> Path:
+    """Locate the notes folder. VAULT_DATA is the current name; VAULT_HOME is
+    kept for backward compatibility with setups that predate the split."""
+    raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+    if not raw:
+        sys.exit(
+            "VAULT_DATA is not set. Point it at your notes folder, e.g.\n"
+            "  export VAULT_DATA=/path/to/your/vault-data\n"
+            "(VAULT_HOME also works, for setups from before the engine/data split.)"
+        )
+    return Path(raw).expanduser().resolve()
+
+
+@dataclass
+class Paths:
+    """Every on-disk location the engine touches, rooted at engine + data."""
+
+    engine: Path
+    data: Path
+
+    @property
+    def defaults_dir(self) -> Path:
+        return self.engine / "defaults"
+
+    @property
+    def learned_dir(self) -> Path:
+        # One file per machine so two machines never edit the same file (no
+        # merge conflicts); effective learned weights are the sum over all files.
+        return self.data / ".graph" / "learned"
+
+    @property
+    def embed_cache(self) -> Path:
+        return self.data / ".graph" / "embeddings.json"  # derived, not committed
+
+    @property
+    def usage_log(self) -> Path:
+        return self.data / ".graph" / "usage.log"  # local JSON lines, not committed
+
+    @property
+    def config_file(self) -> Path:
+        return self.data / "vault.config.json"
+
+
+def default_paths() -> Paths:
+    return Paths(ENGINE, resolve_data_dir())
+
+
 OLLAMA_URL = os.environ.get("VAULT_OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL = os.environ.get("VAULT_EMBED_MODEL", "bge-m3")
 KEEP_ALIVE = "30m"
@@ -188,6 +235,7 @@ class Note:
     keywords: set[str] = field(default_factory=set)
     id_tokens: set[str] = field(default_factory=set)
     body_tokens: set[str] = field(default_factory=set)
+    source: str = "data"  # "default" (shipped with the engine) or "data" (the user's own)
 
     @property
     def core(self) -> bool:
@@ -210,10 +258,12 @@ class Note:
         return out
 
 
-def load_notes(vault: Path) -> dict[str, Note]:
+def _load_notes_from(root: Path, source: str) -> dict[str, Note]:
     notes: dict[str, Note] = {}
-    for path in sorted(vault.rglob("*.md")):
-        rel = path.relative_to(vault)
+    if not root.is_dir():
+        return notes
+    for path in sorted(root.rglob("*.md")):
+        rel = path.relative_to(root)
         if any(part in SKIP_DIRS for part in rel.parts[:-1]):
             continue
         if len(rel.parts) == 1 and rel.name in SKIP_ROOT_FILES:
@@ -228,6 +278,7 @@ def load_notes(vault: Path) -> dict[str, Note]:
             title=heading.group(1).strip() if heading else rel.stem,
             meta=meta,
             body=body,
+            source=source,
         )
         words = [note.title] + [str(v) for v in _as_list(meta.get("keywords"))]
         words += [str(v) for v in _as_list(meta.get("tags"))]
@@ -238,13 +289,22 @@ def load_notes(vault: Path) -> dict[str, Note]:
     return notes
 
 
+def load_notes(data: Path, defaults: Path | None = None) -> dict[str, Note]:
+    """Defaults (shipped generic notes) first, then data notes of the same id
+    override them, so a user can customise or replace any default note."""
+    notes = _load_notes_from(defaults, "default") if defaults is not None else {}
+    notes.update(_load_notes_from(data, "data"))
+    return notes
+
+
 def pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
 class Graph:
-    def __init__(self, vault: Path = VAULT):
-        self.notes = load_notes(vault)
+    def __init__(self, paths: Paths | None = None):
+        self.paths = paths or default_paths()
+        self.notes = load_notes(self.paths.data, self.paths.defaults_dir)
         self.problems: list[str] = []
         self.base: dict[tuple[str, str], float] = {}
         self.learned: dict[tuple[str, str], float] = {}
@@ -266,7 +326,8 @@ class Graph:
 
         self.machine = machine_name()
         self.own_learned: dict[tuple[str, str], float] = {}  # this machine's file only
-        for path in sorted(LEARNED_DIR.glob("*.json")) if LEARNED_DIR.exists() else []:
+        learned_dir = self.paths.learned_dir
+        for path in sorted(learned_dir.glob("*.json")) if learned_dir.exists() else []:
             raw = json.loads(path.read_text(encoding="utf-8") or "{}")
             for k, v in raw.items():
                 a, _, b = k.partition("|")
@@ -303,9 +364,10 @@ class Graph:
         self.learned[key] = self.learned.get(key, 0.0) + delta
 
     def save_learned(self) -> None:
-        LEARNED_DIR.mkdir(parents=True, exist_ok=True)
+        learned_dir = self.paths.learned_dir
+        learned_dir.mkdir(parents=True, exist_ok=True)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(self.own_learned.items())}
-        (LEARNED_DIR / f"{self.machine}.json").write_text(
+        (learned_dir / f"{self.machine}.json").write_text(
             json.dumps(data, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8", newline="\n",
         )
@@ -386,9 +448,10 @@ def chunks(note: Note) -> list[str]:
 
 def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, list | None]:
     """Embed changed notes (and the query) in one call. Returns (cache, query vector)."""
+    embed_cache = graph.paths.embed_cache
     cache = {"model": EMBED_MODEL, "notes": {}}
-    if EMBED_CACHE.exists():
-        loaded = json.loads(EMBED_CACHE.read_text(encoding="utf-8") or "{}")
+    if embed_cache.exists():
+        loaded = json.loads(embed_cache.read_text(encoding="utf-8") or "{}")
         if loaded.get("model") == EMBED_MODEL:
             cache = loaded
     notes = cache["notes"]
@@ -408,8 +471,8 @@ def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, li
     for nid in removed:
         del notes[nid]
     if stale or removed:
-        EMBED_CACHE.parent.mkdir(exist_ok=True)
-        EMBED_CACHE.write_text(json.dumps(cache), encoding="utf-8")
+        embed_cache.parent.mkdir(exist_ok=True)
+        embed_cache.write_text(json.dumps(cache), encoding="utf-8")
     return cache, (vectors[-1] if query else None)
 
 
@@ -502,6 +565,38 @@ def is_done_task(note: Note) -> bool:
     return note.meta.get("type") == "task" and note.meta.get("status") == "done"
 
 
+# --- project detection --------------------------------------------------------
+
+def project_roots(paths: Paths) -> list[Path]:
+    """Folders whose immediate subfolders are projects. vault.config.json in the
+    data folder can list them explicitly; otherwise the engine's own parent
+    folder is assumed (the common "sibling projects" layout)."""
+    try:
+        raw = json.loads(paths.config_file.read_text(encoding="utf-8"))
+        roots = raw.get("project_roots")
+    except (OSError, ValueError):
+        roots = None
+    if roots:
+        return [Path(r).expanduser().resolve() for r in roots]
+    return [paths.engine.resolve().parent]
+
+
+def detect_project(cwd: Path, paths: Paths) -> str | None:
+    """The project name for `cwd`, or None outside any project root.
+
+    A path inside the engine or the data folder is never a project, even if it
+    also happens to sit under a configured root.
+    """
+    cwd = cwd.resolve()
+    for excluded in (paths.engine.resolve(), paths.data.resolve()):
+        if cwd == excluded or excluded in cwd.parents:
+            return None
+    for root in project_roots(paths):
+        if root in cwd.parents:
+            return cwd.relative_to(root).parts[0]
+    return None
+
+
 # --- personal data guard -----------------------------------------------------
 # KVKK personal data and secrets must never reach a vault repository.
 # Checksums (TCKN, IBAN, Luhn) keep random digit runs from raising false alarms.
@@ -557,11 +652,28 @@ def scan_line(line: str) -> list[str]:
     return found
 
 
-def _staged_lines() -> list[tuple[str, int, str]]:
+def _repo_root() -> Path:
+    """Git top-level of the current working directory, so guard/leakcheck work on
+    whichever repo (engine or a data repo) they are invoked from."""
+    out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    return Path(out.strip())
+
+
+def _git_dir(root: Path) -> Path:
+    """Real .git directory for root, resolved via git so a worktree's shared
+    common dir (where .git/info lives) is found rather than its private one."""
+    out = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=root,
+                          capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+    p = Path(out)
+    return p if p.is_absolute() else root / p
+
+
+def _staged_lines(root: Path) -> list[tuple[str, int, str]]:
     """Added lines of the staged diff as (path, line number, text)."""
     diff = subprocess.run(
         ["git", "diff", "--cached", "-U0", "--no-color", "--diff-filter=ACMR"],
-        cwd=VAULT, capture_output=True, text=True, encoding="utf-8", check=True).stdout
+        cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout
     out, path, lineno = [], "", 0
     for line in diff.splitlines():
         if line.startswith("+++ "):
@@ -575,19 +687,20 @@ def _staged_lines() -> list[tuple[str, int, str]]:
 
 
 def cmd_guard(args) -> None:
+    root = _repo_root()
     if args.staged:
-        lines = _staged_lines()
+        lines = _staged_lines(root)
     elif args.message_file:
         text = Path(args.message_file).read_text(encoding="utf-8", errors="replace")
         lines = [("commit message", i, l) for i, l in enumerate(text.splitlines(), 1)
                  if not l.startswith("#")]
     else:
         paths = args.paths or subprocess.run(
-            ["git", "ls-files"], cwd=VAULT, capture_output=True, text=True,
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True,
             encoding="utf-8", check=True).stdout.splitlines()
         lines = []
         for p in paths:
-            full = Path(p) if Path(p).is_absolute() else VAULT / p
+            full = Path(p) if Path(p).is_absolute() else root / p
             try:
                 text = full.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
@@ -603,26 +716,121 @@ def cmd_guard(args) -> None:
     print("guard: clean")
 
 
+# --- engine leak check ---------------------------------------------------------
+# The ENGINE repo (this one) must never contain a user's content or identity;
+# that belongs in per-user DATA repos. leakcheck runs the guard patterns above
+# plus path- and identity-based checks scoped to whichever repo it runs in.
+
+CONTENT_TOP_DIRS = {"profile", "projects", "notes", "inbox", "decisions", ".graph"}
+CONTENT_TOP_FILES = {"vault.config.json"}
+# Example/scaffold content shipped by the engine lives under these, not the repo top level.
+CONTENT_EXEMPT_PREFIXES = ("defaults/", "templates/")
+
+
+def _is_user_content_path(p: str) -> bool:
+    """True for a path that is user content and must not live in the engine repo."""
+    norm = p.replace("\\", "/")
+    if norm.startswith(CONTENT_EXEMPT_PREFIXES):
+        return False
+    first, sep, rest = norm.partition("/")
+    if sep and first in CONTENT_TOP_DIRS:
+        return True
+    return not sep and norm in CONTENT_TOP_FILES
+
+
+def _leak_terms(root: Path) -> list[tuple[str, str]]:
+    """(term, kind) pairs that would identify the user: home path, git identity,
+    and an optional local (never committed) denylist."""
+    terms: list[tuple[str, str]] = []
+    home = str(Path.home())
+    for variant in {home, home.replace("\\", "/"), home.replace("/", "\\")}:
+        if len(variant) >= 4:
+            terms.append((variant, "home path"))
+    for key in ("user.name", "user.email"):
+        val = subprocess.run(["git", "config", key], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+        if len(val) >= 4:
+            terms.append((val, "git identity"))
+    try:
+        deny = (_git_dir(root) / "info" / "vault-denylist").read_text(encoding="utf-8")
+    except OSError:
+        deny = ""
+    for line in deny.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and len(line) >= 4:
+            terms.append((line, "denylist term"))
+    return terms
+
+
+def _scan_leak(line: str, terms: list[tuple[str, str]]) -> list[str]:
+    if GUARD_IGNORE in line:
+        return []
+    found = scan_line(line)
+    low = line.lower()
+    found += [kind for term, kind in terms if term.lower() in low]
+    return found
+
+
+def cmd_leakcheck(args) -> None:
+    root = _repo_root()
+    terms = _leak_terms(root)
+    findings: list[tuple[str, int, str]] = []
+    if args.message_file:
+        text = Path(args.message_file).read_text(encoding="utf-8", errors="replace")
+        lines = [("commit message", i, l) for i, l in enumerate(text.splitlines(), 1)
+                 if not l.startswith("#")]
+    elif args.staged:
+        paths = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout.splitlines()
+        findings += [(p, 0, "user content path") for p in paths if _is_user_content_path(p)]
+        lines = _staged_lines(root)
+    else:
+        paths = args.paths or subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True,
+            encoding="utf-8", check=True).stdout.splitlines()
+        findings += [(p, 0, "user content path") for p in paths if _is_user_content_path(p)]
+        lines = []
+        for p in paths:
+            full = Path(p) if Path(p).is_absolute() else root / p
+            try:
+                text = full.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            lines += [(p, i, l) for i, l in enumerate(text.splitlines(), 1)]
+    # Report only where and what kind: echoing the value would leak it into logs.
+    findings += [(p, n, label) for p, n, text in lines for label in _scan_leak(text, terms)]
+    for p, n, label in findings:
+        print(f"{p}:{n}: possible {label}" if n else f"{p}: {label}")
+    if findings:
+        sys.exit(f"blocked: {len(findings)} leak risk(s). The engine repo must not contain user content "
+                 f"(it belongs in a data repo) or secrets (standards/data-policy.md); add "
+                 f"'{GUARD_IGNORE}' to a line if it's a false alarm.")
+    print("leakcheck: clean")
+
+
 # --- usage log ---------------------------------------------------------------
 
-def log_usage(event: dict) -> None:
+def log_usage(paths: Paths, event: dict) -> None:
     # Telemetry must never break retrieval, so write errors are ignored.
     agent, session = detect_agent()
     event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": agent,
              "session": session, "machine": machine_name(), **event}
     try:
-        USAGE_LOG.parent.mkdir(exist_ok=True)
-        with USAGE_LOG.open("a", encoding="utf-8") as f:
+        usage_log = paths.usage_log
+        usage_log.parent.mkdir(exist_ok=True)
+        with usage_log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
 
-def read_usage() -> list[dict]:
-    if not USAGE_LOG.exists():
+def read_usage(paths: Paths) -> list[dict]:
+    usage_log = paths.usage_log
+    if not usage_log.exists():
         return []
     events = []
-    for line in USAGE_LOG.read_text(encoding="utf-8").splitlines():
+    for line in usage_log.read_text(encoding="utf-8").splitlines():
         try:
             events.append(json.loads(line))
         except ValueError:
@@ -633,12 +841,20 @@ def read_usage() -> list[dict]:
 # --- commands ----------------------------------------------------------------
 
 def cmd_query(args, content: bool) -> None:
-    graph = Graph()
-    results = retrieve(graph, args.text, args.seed, args.threshold, args.depth,
+    paths = default_paths()
+    graph = Graph(paths)
+    project = args.project or (None if args.no_project else detect_project(Path.cwd(), paths))
+    project_seeds = (sorted(nid for nid in graph.notes if nid.startswith(f"projects/{project}/"))
+                     if project else [])
+    results = retrieve(graph, args.text, args.seed + project_seeds, args.threshold, args.depth,
                        include_core=content or args.core, semantic=not args.no_semantic)
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
         return
+    if content and project and not project_seeds:
+        print(f"<!-- project {project} has no notes: ask the user whether to create "
+              f"projects/{project}/{project}-overview.md and "
+              f"projects/{project}/{project}-status.md -->")
     if not results:
         print("No notes above threshold.")
         return
@@ -674,9 +890,10 @@ def cmd_query(args, content: bool) -> None:
         print(f"<!-- omitted over budget: {', '.join(omitted)} -->")
     if not args.no_log:
         task = secrets.token_hex(3)
-        log_usage({"event": "context", "task": task, "query": args.text,
-                   "notes": loaded, "omitted": omitted})
-        print(f"<!-- when done: python tools/graph.py reinforce --task {task} "
+        log_usage(paths, {"event": "context", "task": task, "query": args.text,
+                          "notes": loaded, "omitted": omitted})
+        # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
+        print(f"<!-- when done: python \"{Path(__file__).resolve()}\" reinforce --task {task} "
               f"<notes you actually used, or none> -->")
 
 
@@ -691,7 +908,8 @@ def cmd_index(_args) -> None:
 
 
 def cmd_reinforce(args) -> None:
-    graph = Graph()
+    paths = default_paths()
+    graph = Graph(paths)
     ids = []
     for target in args.notes:
         nid, error = graph.resolve(target)
@@ -703,7 +921,7 @@ def cmd_reinforce(args) -> None:
         sys.exit("reinforce needs notes, or --task to record that none were useful")
     # Fewer than two notes strengthens nothing but still closes the task in the
     # usage log: "only one note / no note helped" is a useful signal too.
-    log_usage({"event": "reinforce", "task": args.task, "notes": ids})
+    log_usage(paths, {"event": "reinforce", "task": args.task, "notes": ids})
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
         return
@@ -715,7 +933,7 @@ def cmd_reinforce(args) -> None:
 
 
 def cmd_stats(_args) -> None:
-    events = read_usage()
+    events = read_usage(default_paths())
     contexts = [e for e in events if e.get("event") == "context"]
     reinforces = [e for e in events if e.get("event") == "reinforce"]
     closed = {e["task"] for e in reinforces if e.get("task")}
@@ -829,6 +1047,8 @@ def main() -> None:
         p.add_argument("--depth", type=int, default=DEFAULT_DEPTH)
         p.add_argument("--json", action="store_true")
         p.add_argument("--no-semantic", action="store_true", help="keyword match only")
+        p.add_argument("--project", help="seed projects/<name>/* notes (default: detect from cwd)")
+        p.add_argument("--no-project", action="store_true", help="disable project detection")
         if name == "query":
             p.add_argument("--core", action="store_true", help="include core notes")
         else:
@@ -860,13 +1080,19 @@ def main() -> None:
     p.add_argument("--staged", action="store_true", help="scan added lines of the staged diff")
     p.add_argument("--message-file", help="scan a commit message file")
 
+    p = sub.add_parser("leakcheck", help="block user content and secrets from leaking into the engine repo")
+    p.add_argument("paths", nargs="*", help="files to scan (default: all tracked files)")
+    p.add_argument("--staged", action="store_true", help="scan the staged diff and staged paths")
+    p.add_argument("--message-file", help="scan a commit message file")
+
     args = parser.parse_args()
     if args.command in ("query", "context"):
         cmd_query(args, content=args.command == "context")
     else:
         {"reinforce": cmd_reinforce, "decay": cmd_decay, "show": cmd_show,
          "lint": cmd_lint, "index": cmd_index, "stats": cmd_stats,
-         "tasks": cmd_tasks, "guard": cmd_guard}[args.command](args)
+         "tasks": cmd_tasks, "guard": cmd_guard,
+         "leakcheck": cmd_leakcheck}[args.command](args)
 
 
 if __name__ == "__main__":
