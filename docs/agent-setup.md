@@ -65,7 +65,7 @@ Confirm both paths with the user before creating anything.
 
 Also ask: "Have you used vault-engine on another computer, with your notes backed up
 on GitHub?" If yes, ask for that backup's address and follow **Step 3b** instead of
-Steps 3 and 4.
+Step 3 and Step 5.
 
 ---
 
@@ -108,18 +108,47 @@ downloads their own notes from their private backup.
    Use forward slashes in the `core.hooksPath` value, also on Windows.
 
 Do **not** run `init` on it: it would recreate template files the user deleted on
-purpose. `vault.config.json` is shared by every computer using this data repo, so don't
-add this computer's paths to it: without `project_roots`, each computer uses the folder
-that holds its engine, which is why Step 1 puts the engine inside the projects folder.
+purpose. `vault.config.json` is shared by every computer using this data repo; per-computer
+project roots instead live in `<data repo>/.graph/machine.json`, written by `init
+--project-root` — without it, each computer uses the folder that holds its engine, which
+is why Step 1 puts the engine inside the projects folder.
 
-Then skip Step 4, do Step 5 (git identity is per computer) and Step 6, and skip Step 7
-unless `doctor` says the profile is still the unfilled skeleton.
+Then do Step 4 (git identity is per computer), skip Step 5 (the backup already exists),
+do Step 6, and skip Step 7 unless `doctor` says the profile is still the unfilled
+skeleton.
 
 ---
 
-## Step 4 — Optional private backup on GitHub
+## Step 4 — Git identity for the data repo (only if missing)
 
-Ask: "Do you want your notes backed up privately on GitHub?" Only proceed if yes.
+Check inside the data repo:
+```
+git -C "<projects folder>/vault" config user.email
+git -C "<projects folder>/vault" config user.name
+```
+If either is empty, ask the user for a name to use for their own notes' commit history
+(it never leaves their machine unless they chose the GitHub backup in the next step).
+Suggest GitHub's private no-reply email format (`<username>@users.noreply.github.com`) if
+they plan to back up to GitHub, otherwise any name/email they're comfortable with. Never
+ask for more personal data than git itself needs.
+```
+git -C "<projects folder>/vault" config user.name "<name>"
+git -C "<projects folder>/vault" config user.email "<email>"
+```
+
+`init` (Step 3) already tried to make an initial `chore: initialize vault` commit; if it
+printed that it couldn't (no git identity yet), make that commit now that identity is set:
+```
+git -C "<projects folder>/vault" add -A
+git -C "<projects folder>/vault" commit -m "chore: initialize vault"
+```
+
+---
+
+## Step 5 — Optional private backup on GitHub
+
+Ask: "Do you want your notes backed up privately on GitHub?" Only proceed if yes. This
+needs a commit to push, which is why it comes after Step 4.
 
 1. Check `gh` is installed and logged in: `gh auth status`. If not logged in, run
    `gh auth login` and let the user complete it interactively.
@@ -129,26 +158,8 @@ Ask: "Do you want your notes backed up privately on GitHub?" Only proceed if yes
    gh repo create <name> --private --source "<projects folder>/vault" --push
    ```
 3. If there's no GitHub account or the user declines, say clearly: "Your notes will
-   stay only on this computer, that's fine."
-
----
-
-## Step 5 — Git identity for the data repo (only if missing)
-
-Check inside the data repo:
-```
-git -C "<projects folder>/vault" config user.email
-git -C "<projects folder>/vault" config user.name
-```
-If either is empty, ask the user for a name to use for their own notes' commit history
-(it never leaves their machine unless they chose the GitHub backup). Suggest GitHub's
-private no-reply email format (`<username>@users.noreply.github.com`) if they pushed to
-GitHub in step 4, otherwise any name/email they're comfortable with. Never ask for more
-personal data than git itself needs.
-```
-git -C "<projects folder>/vault" config user.name "<name>"
-git -C "<projects folder>/vault" config user.email "<email>"
-```
+   stay only on this computer, that's fine." Mention that this also means later steps
+   that would `git pull`/`git push` are simply skipped — the vault works fully offline.
 
 ---
 
@@ -169,8 +180,12 @@ python "<projects folder>/vault-engine/tools/graph.py" setup --data "<projects f
 the git root of the repo it's running in — this adds a pointer in `~/.codex/AGENTS.md`
 so it's picked up everywhere.)
 
-On Windows this uses `setx`, which only takes effect in a **new terminal window** —
-mention this to the user.
+On Windows this uses `setx`, which only takes effect in a **new terminal window** — mention
+this to the user. On macOS/Linux, it asks first, then writes `VAULT_ENGINE`/`VAULT_DATA`
+into the shell startup file it detects (`~/.zshrc`, `~/.bashrc`/`~/.bash_profile` on macOS,
+the fish config, or `~/.profile`), inside a clearly marked `# >>> vault-engine >>>` block.
+Either way, tell the user to restart their open terminal(s) and any coding agent
+(Claude Code, Codex) afterward — they only see the new values after that restart.
 
 ---
 

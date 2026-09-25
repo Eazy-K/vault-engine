@@ -126,6 +126,36 @@ class TestInit(unittest.TestCase):
         self.assertIn(onboarding.ENGINE_REPO_PLACEHOLDER, text)
         self.assertIn("vault.yml", buf.getvalue())
 
+    def test_ci_workflow_pins_stable_tag(self):
+        import update
+        target = self.tmp / "example-data8"
+        workflow = target / ".github" / "workflows" / "vault.yml"
+        with mock.patch.object(update, "channel", return_value=("stable", "v0.3.0")), \
+                redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("@v0.3.0", text)
+        self.assertNotIn(onboarding.ENGINE_REF_PLACEHOLDER, text)
+
+    def test_ci_workflow_pins_main_on_dev_channel(self):
+        import update
+        target = self.tmp / "example-data9"
+        workflow = target / ".github" / "workflows" / "vault.yml"
+        with mock.patch.object(update, "channel", return_value=("dev", "main")), \
+                redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("@main", text)
+        self.assertNotIn(onboarding.ENGINE_REF_PLACEHOLDER, text)
+
+    def test_ci_workflow_pins_main_when_update_module_unavailable(self):
+        target = self.tmp / "example-data10"
+        workflow = target / ".github" / "workflows" / "vault.yml"
+        with mock.patch.dict(sys.modules, {"update": None}), redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("@main", text)
+
     def test_explicit_feedback_level_honoured(self):
         target = self.tmp / "example-data3"
         with redirect_stdout(StringIO()):

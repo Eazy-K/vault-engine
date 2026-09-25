@@ -102,13 +102,17 @@ def _copy_templates(target: Path) -> tuple[list[str], list[str]]:
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
-        if ENGINE_REPO_PLACEHOLDER in _read_text(dest):
+        text = _read_text(dest)
+        if ENGINE_REPO_PLACEHOLDER in text:
             _fill_engine_repo(dest)
+        if ENGINE_REF_PLACEHOLDER in _read_text(dest):
+            _fill_engine_ref(dest)
         copied.append(str(rel))
     return copied, skipped
 
 
 ENGINE_REPO_PLACEHOLDER = "{{ENGINE_REPO}}"
+ENGINE_REF_PLACEHOLDER = "{{ENGINE_REF}}"
 
 
 def _read_text(path: Path) -> str:
@@ -131,6 +135,32 @@ def _fill_engine_repo(path: Path) -> None:
         path.write_text(text, encoding="utf-8", newline="\n")
     else:
         print(f"  note: set the engine repo (owner/name) in {path.name}: no GitHub remote found")
+
+
+def _engine_ref() -> str:
+    """Ref to pin the data repo's CI workflow to: the installed engine's release
+    tag when this checkout is on the stable channel, else `main` (dev/unknown
+    channel, or update.py unavailable). Guarded import so onboarding.py never
+    hard-depends on update.py."""
+    update = sys.modules.get("update")
+    if update is None:
+        try:
+            import update as update_mod
+        except Exception:
+            return "main"
+        update = update_mod
+    try:
+        status, ref = update.channel(g.ENGINE)
+    except Exception:
+        return "main"
+    return ref if status == "stable" and ref else "main"
+
+
+def _fill_engine_ref(path: Path) -> None:
+    """Templates (the CI workflow) pin the engine action to a ref; fill it with
+    the installed engine's release tag (or `main` off the stable channel)."""
+    text = _read_text(path).replace(ENGINE_REF_PLACEHOLDER, _engine_ref())
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def _load_existing_config(path: Path) -> dict:

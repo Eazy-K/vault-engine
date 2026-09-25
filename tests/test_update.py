@@ -420,6 +420,42 @@ class TestUpdateApply(UpdateTestCase):
         self.assertIn("graph.py", buf.getvalue())
 
 
+class TestRewriteCiPin(UpdateTestCase):
+    def test_rewrites_matching_pin(self):
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.1.0\n")
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertTrue(changed)
+        self.assertIn("uses: example/vault-engine@v0.2.0", workflow.read_text(encoding="utf-8"))
+
+    def test_noop_when_file_missing(self):
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertFalse(changed)
+
+    def test_noop_when_line_absent(self):
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: actions/checkout@v4\n")
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertFalse(changed)
+        self.assertIn("actions/checkout@v4", workflow.read_text(encoding="utf-8"))
+
+    def test_noop_when_already_pinned(self):
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.2.0\n")
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertFalse(changed)
+
+    def test_pin_rewritten_during_cmd_update(self):
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.1.0\n")
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        self.assertIn("uses: example/vault-engine@v0.2.0", workflow.read_text(encoding="utf-8"))
+        self.assertIn("updated CI pin", buf.getvalue())
+
+
 class TestUpdateDowngradeGuard(UpdateTestCase):
     def test_refused_when_target_schema_below_vault_schema(self):
         self.checkout("v0.10.0")

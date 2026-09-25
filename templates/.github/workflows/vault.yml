@@ -1,6 +1,7 @@
 # Guard (personal data / secrets), commit messages and note lint on every push and
-# PR, so commits made from the cloud or a phone are checked too. The engine is a
-# private action: in the engine repo, Settings > Actions > Access must allow
+# PR, so commits made from the cloud or a phone are checked too. The engine is
+# public, so this works as-is. If you instead use a private fork of the engine,
+# do this once: in that repo, Settings > Actions > General > Access must allow
 # repositories of the same owner.
 name: vault guard
 on:
@@ -15,6 +16,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: {{ENGINE_REPO}}@main
+      - uses: {{ENGINE_REPO}}@{{ENGINE_REF}}
         with:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
