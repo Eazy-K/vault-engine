@@ -42,12 +42,31 @@ Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar
 
 ## Güncelleme
 
-Yeni bir sürüm çıktığında asistanınız size haber verecek. Güncellemek için asistanınıza
-sadece "vault-engine'i güncelle" demeniz yeterli — ne değiştiğini size gösterecek ve
-geçmeden önce onayınızı isteyecek. Siz sormadan kendiliğinden güncelleme yapmaz.
+0.3.0 ve sonraki sürümlerde, yeni bir sürüm çıktığında asistanınız size haber verecek.
+Güncellemek için asistanınıza sadece "vault-engine'i güncelle" demeniz yeterli — ne
+değiştiğini size gösterecek ve geçmeden önce onayınızı isteyecek. Siz sormadan
+kendiliğinden güncelleme yapmaz.
 
-Eğer notlarınızı birden fazla bilgisayardan kullanıyorsanız, her ikisini de güncellemeyi
-unutmayın; aksi halde eski bilgisayardaki asistan bazı komutları çalıştıramayabilir ve
-sizden o bilgisayarda da güncellemenizi isteyecektir.
+### 0.1.0 veya 0.2.0 kullanıyorsanız
+
+Bu iki sürüm yeni sürümü haber vermez ve `update` komutunu bilmez (`invalid choice:
+'update'` hatası verir). İlk güncelleme bir kereliğine elle yapılır, sonrasında `update`
+çalışır. Asistanınıza şunu yazmanız yeterli:
+
+> Update vault-engine: my version has no `update` command, so follow "Updating from 0.1.0 or 0.2.0" in docs/agent-setup.md on GitHub (https://github.com/Eazy-K/vault-engine), asking me before each change, and talk to me in Turkish.
+
+Asistanın izleyeceği adımlar kısaca: motor klasöründe yerel değişiklik olmadığını
+kontrol etmek, `git fetch --tags origin` ile sürümleri indirmek, en yeni etiketin
+CHANGELOG'daki "Upgrade notes" bölümünü size özetlemek, onayınızla `git checkout <yeni
+etiket>`, ardından `migrate --yes`, `setup --yes` ve `doctor` çalıştırmak, `doctor`'ın
+uyarılarını düzeltmek ve veri reposunu göndermek.
+
+### Birden fazla bilgisayar
+
+Eğer notlarınızı birden fazla bilgisayardan kullanıyorsanız, hepsini güncellemeyi
+unutmayın. 0.3.0 ve sonrası, veri düzeni kendisinden yeni bir vault'a yazmayı reddeder ve
+sizden o bilgisayarda da güncellemenizi ister. 0.1.0 ve 0.2.0 bu kontrolü yapmaz; bu
+yüzden bütün bilgisayarlar en az 0.3.0'a geçmeden, Upgrade notes'unda veri düzenini
+(schema) yükselttiğini söyleyen bir sürüme geçmeyin.
 
 Sorularınız veya sorun yaşarsanız, tam İngilizce referansa bakın: [README.md](README.md)
