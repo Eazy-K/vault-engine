@@ -63,6 +63,10 @@ Default locations, inside that folder:
 
 Confirm both paths with the user before creating anything.
 
+Also ask: "Have you used vault-engine on another computer, with your notes backed up
+on GitHub?" If yes, ask for that backup's address and follow **Step 3b** instead of
+Steps 3 and 4.
+
 ---
 
 ## Step 2 — Clone the engine
@@ -86,6 +90,30 @@ This creates the folder that will hold the user's own notes, as a local git repo
 ```
 python "<projects folder>/vault-engine/tools/graph.py" init "<projects folder>/vault" --yes
 ```
+
+---
+
+## Step 3b — Use an existing data repo (second computer)
+
+Only if the user already has a data repo from another computer. Tell them this
+downloads their own notes from their private backup.
+
+1. Check `gh auth status`; if not logged in, run `gh auth login` and let the user
+   complete it (the backup is private, so git needs their login).
+2. Clone it and point it at this engine's guard hooks:
+   ```
+   git clone <backup address> "<projects folder>/vault"
+   git -C "<projects folder>/vault" config core.hooksPath "<projects folder>/vault-engine/tools/hooks"
+   ```
+   Use forward slashes in the `core.hooksPath` value, also on Windows.
+
+Do **not** run `init` on it: `init` rewrites `vault.config.json` (shared settings such
+as feedback and project roots) and recreates template files the user may have deleted.
+If their project folder differs from the other computer's, add it to `project_roots` in
+`vault.config.json` by hand instead.
+
+Then skip Step 4, do Step 5 (git identity is per computer) and Step 6, and skip Step 7
+unless `doctor` says the profile is still the unfilled skeleton.
 
 ---
 
