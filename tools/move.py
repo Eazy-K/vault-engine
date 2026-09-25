@@ -108,6 +108,7 @@ def move_note(paths: g.Paths, source: str, dest: str) -> dict:
 
 def cmd_mv(args) -> None:
     paths = g.default_paths()
+    g._require_writable(paths)
     try:
         result = move_note(paths, args.source, args.dest)
     except ValueError as exc:

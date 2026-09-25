@@ -114,7 +114,7 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move")  # optional modules in tools/
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema")  # optional modules in tools/
 
 
 def machine_name() -> str:
@@ -373,6 +373,7 @@ class Graph:
         self.learned[key] = self.learned.get(key, 0.0) + delta
 
     def save_learned(self) -> None:
+        _require_writable(self.paths)
         learned_dir = self.paths.learned_dir
         learned_dir.mkdir(parents=True, exist_ok=True)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(self.own_learned.items())}
@@ -384,6 +385,15 @@ class Graph:
 
 def _clamp(w: float) -> float:
     return max(0.0, min(1.0, w))
+
+
+def _require_writable(paths: "Paths") -> None:
+    """Guard shared by every command that writes shared data into the vault.
+    A no-op when tools/schema.py is not loaded, so graph.py keeps working
+    without it (see EXTENSIONS)."""
+    schema = sys.modules.get("schema")
+    if schema is not None:
+        schema.require_writable(paths)
 
 
 # --- retrieval ---------------------------------------------------------------
