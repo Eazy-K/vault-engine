@@ -114,7 +114,7 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema")  # optional modules in tools/
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update")  # optional modules in tools/
 
 
 def machine_name() -> str:
@@ -956,6 +956,11 @@ def cmd_query(args, content: bool) -> None:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
                           "notes": loaded, "omitted": omitted})
+        update = sys.modules.get("update")
+        if update is not None:
+            hint = update.context_hint(paths)
+            if hint:
+                print(hint)
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
         print(f"<!-- when done: python \"{Path(__file__).resolve()}\" reinforce --task {task} "
               f"<notes you actually used, or none> -->")
@@ -990,6 +995,9 @@ def cmd_reinforce(args) -> None:
     feedback = sys.modules.get("feedback")
     if feedback is not None:
         feedback.maybe_auto_send(paths)
+    update = sys.modules.get("update")
+    if update is not None:
+        update.maybe_check(paths)
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
         return

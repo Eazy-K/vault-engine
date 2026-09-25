@@ -40,4 +40,14 @@ bakabilirsiniz.
 Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar içerir):
 [docs/agent-setup.md](docs/agent-setup.md)
 
+## Güncelleme
+
+Yeni bir sürüm çıktığında asistanınız size haber verecek. Güncellemek için asistanınıza
+sadece "vault-engine'i güncelle" demeniz yeterli — ne değiştiğini size gösterecek ve
+geçmeden önce onayınızı isteyecek. Siz sormadan kendiliğinden güncelleme yapmaz.
+
+Eğer notlarınızı birden fazla bilgisayardan kullanıyorsanız, her ikisini de güncellemeyi
+unutmayın; aksi halde eski bilgisayardaki asistan bazı komutları çalıştıramayabilir ve
+sizden o bilgisayarda da güncellemenizi isteyecektir.
+
 Sorularınız veya sorun yaşarsanız, tam İngilizce referansa bakın: [README.md](README.md)

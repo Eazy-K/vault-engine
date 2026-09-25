@@ -404,6 +404,36 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         checks.append((status, msg))
 
     check("OK", f"vault-engine {g.__version__}")
+
+    update = sys.modules.get("update")
+    if update is not None:
+        status, ref = update.channel(g.ENGINE)
+        if status == "stable":
+            check("OK", f"channel: stable ({ref})")
+        elif status == "dev":
+            check("INFO", f"channel: dev ({ref}): update with git pull, then migrate")
+        else:
+            check("INFO", "channel: unknown (not a git checkout)")
+        if status == "stable":
+            try:
+                update_data = g.resolve_data_dir()
+            except SystemExit:
+                update_data = None
+            settings = (update.load_settings(g.Paths(g.ENGINE, update_data))
+                       if update_data is not None else dict(update.DEFAULT_SETTINGS))
+            if settings.get("check", True):
+                latest = update.record_check(g.ENGINE)
+                if latest is None:
+                    check("INFO", "could not check for updates")
+                else:
+                    current_v = update.parse_version(g.__version__)
+                    latest_v = update.parse_version(latest)
+                    if latest_v and current_v and latest_v > current_v:
+                        check("WARN", f"vault-engine {'.'.join(str(n) for n in latest_v)} "
+                                      f"available (current {g.__version__}): run update")
+                    else:
+                        check("OK", "up to date")
+
     if sys.version_info >= (3, 10):
         check("OK", f"Python {sys.version.split()[0]}")
     else:
