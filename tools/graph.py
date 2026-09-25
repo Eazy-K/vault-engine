@@ -49,40 +49,6 @@ def resolve_data_dir() -> Path:
     return Path(raw).expanduser().resolve()
 
 
-class _LazyPath:
-    """A Path that resolves on first use, not at module import.
-
-    Used only so the personal-data guard section below (out of scope for this
-    change; another agent is rewriting it) keeps compiling and working against
-    a bare `VAULT` name without forcing VAULT_DATA to be set just to import
-    this module.
-    """
-
-    def __init__(self, resolver):
-        self._resolver = resolver
-        self._cached: Path | None = None
-
-    def _resolve(self) -> Path:
-        if self._cached is None:
-            self._cached = self._resolver()
-        return self._cached
-
-    def __truediv__(self, other):
-        return self._resolve() / other
-
-    def __fspath__(self) -> str:
-        return str(self._resolve())
-
-    def __str__(self) -> str:
-        return str(self._resolve())
-
-
-# TODO(guard): the guard section still treats "the vault" as one folder. Once
-# it is rewritten it should probably scan DATA (and maybe ENGINE) explicitly
-# instead of this lazy alias.
-VAULT = _LazyPath(resolve_data_dir)
-
-
 @dataclass
 class Paths:
     """Every on-disk location the engine touches, rooted at engine + data."""
@@ -688,7 +654,7 @@ def scan_line(line: str) -> list[str]:
 
 def _repo_root() -> Path:
     """Git top-level of the current working directory, so guard/leakcheck work on
-    whichever repo (engine or a data repo) they are invoked from, not just VAULT."""
+    whichever repo (engine or a data repo) they are invoked from."""
     out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                           capture_output=True, text=True, encoding="utf-8", check=True).stdout
     return Path(out.strip())
