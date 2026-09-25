@@ -79,7 +79,7 @@ cd "<projects folder>/vault-engine"
 git checkout "$(git describe --tags --abbrev=0)"
 ```
 
-The last command switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet, skip it. Later, to update: `git fetch --tags`, then `git checkout <newer tag>` after reading that version's "Upgrade notes" in `CHANGELOG.md`.
+The last command switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet, skip it. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
 
 ---
 
@@ -227,6 +227,22 @@ End with a short, plain-language summary covering:
 
 ---
 
+## Updating (later sessions)
+
+When `context` output includes the update line, or `doctor` shows a `WARN` about a
+newer version, ask the user once, in plain language ("A new version of vault-engine is
+available, want me to check what changed?"). If they agree:
+
+1. Run `python "<projects folder>/vault-engine/tools/graph.py" update --check` to see
+   what's new, and summarize the changelog for the user in their own language.
+2. Only after the user agrees to proceed, run `update --yes` to actually switch versions.
+3. If the update shows a diff for `AGENTS.md`, explain in plain language what changed
+   and ask before re-running with `--apply-agents`.
+4. If a command refuses to run because the vault's data schema is newer than this
+   computer's engine, run `update` on this computer too.
+
+---
+
 ## Troubleshooting
 
 - **`python` / `python3` not found**: the user needs to install Python (step 0) and
@@ -242,3 +258,5 @@ End with a short, plain-language summary covering:
 - **Ollama not running / unreachable**: not a problem. `doctor` will warn, but the
   engine falls back to keyword-only search; tell the user it's optional and they can
   start Ollama (or install it) anytime later.
+- **`git pull` says you are not on a branch**: stable installs are checked out at a
+  release tag (detached HEAD) on purpose; use `update` instead of `git pull`.
