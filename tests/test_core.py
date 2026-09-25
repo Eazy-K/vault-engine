@@ -229,6 +229,38 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertNotIn("has no notes", output)
         self.assertIn("projects/example-project/example-project-overview", output)
 
+    def test_status_and_overview_load_before_larger_project_notes(self):
+        folder = self.data / "projects" / "example-project"
+        write(folder / "example-project-aaa-research.md", note("Research", "filler " * 2000))
+        write(folder / "example-project-overview.md", note("Overview", "what it is"))
+        write(folder / "example-project-status.md", note("Status", "where we are"))
+        output = self._run_context()
+        self.assertIn("note: projects/example-project/example-project-status", output)
+        self.assertIn("note: projects/example-project/example-project-overview", output)
+        self.assertIn("omitted over budget: projects/example-project/example-project-aaa-research",
+                      output)
+
+    def test_status_and_overview_bypass_the_budget(self):
+        folder = self.data / "projects" / "example-project"
+        write(self.data / "standards" / "big-core.md", note("Core", "rule " * 2000, core=True))
+        write(folder / "example-project-overview.md", note("Overview", "what it is"))
+        write(folder / "example-project-status.md", note("Status", "where we are"))
+        output = self._run_context()
+        self.assertIn("note: projects/example-project/example-project-status", output)
+        self.assertIn("note: projects/example-project/example-project-overview", output)
+
+    def test_other_projects_entry_notes_stay_in_budget(self):
+        self.assertFalse(graph.is_project_entry("projects/other/example-project-status"))
+        self.assertFalse(graph.is_project_entry("notes/example-status"))
+        self.assertTrue(graph.is_project_entry("projects/example-project/example-project-status"))
+
+    def test_task_relevance_orders_other_project_notes(self):
+        folder = self.data / "projects" / "example-project"
+        write(folder / "example-project-aaa.md", note("Aaa", "unrelated"))
+        write(folder / "example-project-zzz.md", note("Zzz", "release checklist"))
+        output = self._run_context(text="release checklist")
+        self.assertLess(output.index("example-project-zzz"), output.index("example-project-aaa"))
+
     def test_no_project_flag_disables_detection(self):
         output = self._run_context(no_project=True)
         self.assertNotIn("has no notes", output)

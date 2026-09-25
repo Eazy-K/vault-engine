@@ -101,6 +101,7 @@ DECAY_RATE = 0.05
 DEFAULT_THRESHOLD = 0.6  # 0.5 let two-hop neighbours of every seed in
 DEFAULT_DEPTH = 3
 SEED_RATIO = 0.3  # notes scoring below this share of the best match are not seeds
+PROJECT_SEED = 0.8  # base score of project notes besides <project>-status/-overview (those get 1.0)
 SEMANTIC_WEIGHT = 0.5  # share of the seed score from embeddings; rest is curated keywords
 # Raw cosine scores sit close together, so they are sharpened relative to the
 # best match: exp((cos - best) / T). A gap of T drops a note to ~0.37.
@@ -501,7 +502,8 @@ def semantic_scores(graph: Graph, text: str) -> dict[str, float] | None:
     return {nid: math.exp((c - best) / SEMANTIC_TEMPERATURE) for nid, c in cosines.items()}
 
 
-def seed(graph: Graph, text: str, explicit: list[str], semantic: bool = True) -> dict[str, float]:
+def seed(graph: Graph, text: str, explicit: list[str], semantic: bool = True,
+         project_notes: list[str] = ()) -> dict[str, float]:
     seeds: dict[str, float] = {}
     for target in explicit:
         nid, error = graph.resolve(target)
@@ -529,6 +531,14 @@ def seed(graph: Graph, text: str, explicit: list[str], semantic: bool = True) ->
     for nid, s in combined.items():
         if s >= SEED_RATIO:
             seeds[nid] = max(seeds.get(nid, 0.0), s)
+    # Every project note is seeded, but the budget may not fit them all: status and
+    # overview come first, the rest in order of relevance to the task.
+    for nid in project_notes:
+        if is_project_entry(nid):
+            project_score = 1.0
+        else:
+            project_score = PROJECT_SEED + (0.99 - PROJECT_SEED) * combined.get(nid, 0.0)
+        seeds[nid] = max(seeds.get(nid, 0.0), project_score)
     return seeds
 
 
@@ -552,8 +562,10 @@ def spread(graph: Graph, seeds: dict[str, float], threshold: float, depth: int):
 
 
 def retrieve(graph: Graph, text: str, seeds: list[str], threshold: float, depth: int,
-             include_core: bool = True, semantic: bool = True) -> list[dict]:
-    activation, via = spread(graph, seed(graph, text, seeds, semantic), threshold, depth)
+             include_core: bool = True, semantic: bool = True,
+             project_notes: list[str] = ()) -> list[dict]:
+    activation, via = spread(graph, seed(graph, text, seeds, semantic, project_notes),
+                             threshold, depth)
     results = {
         nid: {"id": nid, "activation": round(a, 3), "via": via[nid], "core": False}
         for nid, a in activation.items() if a >= threshold
@@ -567,6 +579,14 @@ def retrieve(graph: Graph, text: str, seeds: list[str], threshold: float, depth:
     for nid in [n for n in results if is_done_task(graph.notes[n])]:
         del results[nid]
     return sorted(results.values(), key=lambda r: (not r["core"], -r["activation"], r["id"]))
+
+
+def is_project_entry(nid: str) -> bool:
+    """projects/<name>/<name>-status and -overview: the notes every project task
+    starts from, so `context` loads them like core notes, outside the budget."""
+    parts = nid.split("/")
+    return (len(parts) == 3 and parts[0] == "projects"
+            and parts[2] in (f"{parts[1]}-status", f"{parts[1]}-overview"))
 
 
 def is_done_task(note: Note) -> bool:
@@ -875,8 +895,9 @@ def cmd_query(args, content: bool) -> None:
     project = args.project or (None if args.no_project else detect_project(Path.cwd(), paths))
     project_seeds = (sorted(nid for nid in graph.notes if nid.startswith(f"projects/{project}/"))
                      if project else [])
-    results = retrieve(graph, args.text, args.seed + project_seeds, args.threshold, args.depth,
-                       include_core=content or args.core, semantic=not args.no_semantic)
+    results = retrieve(graph, args.text, args.seed, args.threshold, args.depth,
+                       include_core=content or args.core, semantic=not args.no_semantic,
+                       project_notes=project_seeds)
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
         return
@@ -892,9 +913,10 @@ def cmd_query(args, content: bool) -> None:
             origin = "core" if r["core"] else (f"via {r['via']}" if r["via"] else "seed")
             print(f"{r['activation']:.3f}  {r['id']}  ({origin})")
         return
-    # Core notes always go in; the rest follow in activation order and stop at the
-    # first note that does not fit, so a less relevant small note never displaces
-    # a more relevant large one. If not even the top note fits, it is truncated.
+    # Core notes and the project's status/overview always go in; the rest follow in
+    # activation order and stop at the first note that does not fit, so a less
+    # relevant small note never displaces a more relevant large one. If not even
+    # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
     used, omitted, loaded = 0, [], []
     for r in results:
@@ -905,7 +927,8 @@ def cmd_query(args, content: bool) -> None:
         origin = "core" if r["core"] else (f"via {r['via']}" if r["via"] else "seed")
         header = f"<!-- note: {note.id} | activation: {r['activation']:.3f} | {origin} -->\n"
         body = note.body.rstrip()
-        if not r["core"] and used + len(header) + len(body) > budget:
+        required = r["core"] or (r["via"] is None and is_project_entry(note.id))
+        if not required and used + len(header) + len(body) > budget:
             room = budget - used - len(header)
             if loaded or room < 200:
                 omitted.append(note.id)
