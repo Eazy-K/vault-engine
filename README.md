@@ -2,6 +2,16 @@
 
 A model-independent "second brain" engine. Notes are loaded as a weighted graph; the agent gets only the relevant context for each task. The engine is user-independent: your notes live in a separate **data repository**, and no user information ever enters this repo.
 
+*[Türkçe kısa kurulum için README.tr.md](README.tr.md)*
+
+## Quick start (no technical knowledge needed)
+
+You need an AI coding agent installed and logged in — [Claude Code](https://claude.com/claude-code) or [Codex](https://openai.com/codex). Then paste this to your agent:
+
+> Install vault-engine for me: clone https://github.com/Eazy-K/vault-engine and follow docs/agent-setup.md step by step, asking me before each change.
+
+The agent will check what's on your computer, ask before installing anything or creating any accounts, create two folders (the engine and your personal notes), optionally set up a *private* backup of your notes on GitHub, and ask you a few short questions about how you like to work (language, level of detail, when it should double-check with you). Everything it plans to do, it explains first in plain language — you just answer yes/no and a few simple questions.
+
 ## Structure
 | Path | Content |
 |---|---|
@@ -19,7 +29,8 @@ A model-independent "second brain" engine. Notes are loaded as a weighted graph;
 2. Create a data repo: `python tools/graph.py init <data repo path>`. This copies the contents of `templates/` (without overwriting existing files), initializes a git repo, points `core.hooksPath` at this engine's `tools/hooks` folder, and writes the project roots and feedback preference into `vault.config.json` (feedback is `off` by default — opt-in). In a TTY, if `--yes` is not given, it prompts for missing values; they can also be set manually with `--feedback`, `--feedback-mode`, `--project-root` (repeatable), and `--yes`.
 3. Connect the engine to the data repo: `python tools/graph.py setup [--data <data repo path>]`. This sets environment variables (persisted with `setx` on Windows; on other platforms it prints `export` lines), copies `tools/claude-agents/*.md` into `~/.claude/agents/`, and, for each project root that isn't itself a git repo, writes a `@<data repo path>/AGENTS.md` line into `CLAUDE.md`. Running it twice changes nothing. `--user-level` also adds a one-line pointer to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. `--no-env`, `--no-agents`, `--no-routing`, `--yes` skip/automate the corresponding steps.
 4. Fill in the notes under `profile/`.
-5. Check: `python tools/graph.py doctor` — one check per line (`OK`/`WARN`/`FAIL`); any `FAIL` sets the exit code to 1.
+5. Optional: `python tools/graph.py onboard` asks a short set of profile questions (chat/notes/code language, detail level, explain level, what to always ask before doing) and writes them into `profile/`. Non-interactive equivalents: `onboard --questions` prints the questions as JSON, `onboard --answers <file.json>` writes given answers.
+6. Check: `python tools/graph.py doctor` — one check per line (`OK`/`WARN`/`FAIL`); any `FAIL` sets the exit code to 1. It also warns while the profile is still the unfilled skeleton.
 
 ## Project discovery
 `tools/discovery.py` scans the git repos next to the engine (or under `project_roots` in `vault.config.json`) and finds which projects have no notes yet. It only reads lightweight metadata (the README's first line, a file-extension count, the last commit date, the remote's host part only); code is never indexed and nothing leaves the machine. The `exclude` list (names or globs) in `vault.config.json` and a `.vaultignore` file in a repo exclude it from the scan. The result is cached for 1 hour in `<data repo>/.graph/projects.json` (not committed). Usage: `python tools/graph.py projects` (table), `--json`, `--missing` (only projects without notes, with a suggestion line at the end), or `--refresh` (ignore the cache).
