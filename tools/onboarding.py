@@ -26,12 +26,12 @@ FEEDBACK_MODES = ("auto", "ask")
 
 # Shown to the user when asking interactively; one line per level.
 FEEDBACK_EXPLAIN = {
-    "off": "off: hiçbir şey gönderilmez",
-    "metrics": "metrics: sadece anonim sayaçlar gönderilir",
-    "reports": "reports: sayaçlar + filtrelenmiş şablon sürtünme raporları gönderilir",
+    "off": "off: nothing is sent",
+    "metrics": "metrics: only anonymous counters are sent",
+    "reports": "reports: counters + filtered template friction reports are sent",
 }
 
-USER_LEVEL_CODEX_LINE = "Bağlam ve kurallar {agents} dosyasında, önce onu oku ve izle."
+USER_LEVEL_CODEX_LINE = "Context and rules are in {agents}, read it first and follow it."
 
 
 # --- shared helpers ------------------------------------------------------------
@@ -46,14 +46,14 @@ def _ask(prompt: str, default: str) -> str:
 
 
 def _ask_yn(prompt: str, default: bool) -> bool:
-    shown = "E/h" if default else "e/H"
+    shown = "Y/n" if default else "y/N"
     try:
         raw = input(f"{prompt} [{shown}]: ").strip().lower()
     except EOFError:
         return default
     if not raw:
         return default
-    return raw.startswith("e")
+    return raw.startswith("y") or raw.startswith("e")
 
 
 def _is_interactive(args: argparse.Namespace) -> bool:
@@ -156,7 +156,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     if not project_roots:
         default = str(g.ENGINE.parent)
         if interactive:
-            raw = _ask("Proje kökü klasörü (virgülle ayrılmış birden fazla yol olabilir)", default)
+            raw = _ask("Project root folder (comma-separated for multiple paths)", default)
             project_roots = [p.strip() for p in raw.split(",") if p.strip()]
         else:
             project_roots = [default]
@@ -166,7 +166,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         if interactive:
             for line in FEEDBACK_EXPLAIN.values():
                 print(f"  {line}")
-            feedback_level = _ask("Feedback seviyesi (off/metrics/reports)", "off")
+            feedback_level = _ask("Feedback level (off/metrics/reports)", "off")
         else:
             feedback_level = "off"  # opt-in only
     if feedback_level not in FEEDBACK_LEVELS:
@@ -175,7 +175,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     feedback_mode = args.feedback_mode
     if not feedback_mode:
         if interactive:
-            feedback_mode = _ask("Feedback modu (auto/ask)", "ask")
+            feedback_mode = _ask("Feedback mode (auto/ask)", "ask")
         else:
             feedback_mode = "ask"
     if feedback_mode not in FEEDBACK_MODES:
@@ -190,9 +190,9 @@ def cmd_init(args: argparse.Namespace) -> None:
                             encoding="utf-8", newline="\n")
     print(f"  wrote: {config_file.relative_to(target).as_posix()}")
 
-    print("\nSonraki adımlar:")
+    print("\nNext steps:")
     print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
-    print(f"  2. profile/ altındaki notları doldur ({target / 'profile'})")
+    print(f"  2. fill in the notes under profile/ ({target / 'profile'})")
 
 
 # --- setup -----------------------------------------------------------------------
@@ -227,16 +227,16 @@ def _setup_env(data: Path, interactive: bool) -> None:
     if _is_windows():
         do_it = True
         if interactive:
-            do_it = _ask_yn("Ortam değişkenleri (setx ile kalıcı) ayarlansın mı?", True)
+            do_it = _ask_yn("Set environment variables (persisted via setx)?", True)
         if do_it:
             for name, value in pending:
                 _set_user_env_var(name, value)
-                print(f"  set (setx): {name}={value}  (yeni terminalde etkili olur)")
+                print(f"  set (setx): {name}={value}  (takes effect in a new terminal)")
         else:
             for name, value in pending:
                 print(f"  export {name}={value}")
     else:
-        print("  Aşağıdaki satırları shell rc dosyana ekle:")
+        print("  Add the following lines to your shell rc file:")
         for name, value in pending:
             print(f"    export {name}={value}")
 
@@ -307,16 +307,16 @@ def cmd_setup(args: argparse.Namespace) -> None:
     interactive = _is_interactive(args)
 
     if not args.no_env:
-        print("Ortam değişkenleri:")
+        print("Environment variables:")
         _setup_env(data, interactive)
     if not args.no_agents:
-        print("Claude Code alt ajanları:")
+        print("Claude Code subagents:")
         _setup_agents()
     if not args.no_routing:
-        print("Proje kökü yönlendirmesi:")
+        print("Project root routing:")
         _setup_routing(data)
     if args.user_level:
-        print("Kullanıcı seviyesi yönlendirme:")
+        print("User-level routing:")
         _setup_user_level(data)
 
 
