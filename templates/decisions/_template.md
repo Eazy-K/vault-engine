@@ -1,13 +1,13 @@
-# NNNN — Başlık
+# NNNN — Title
 
-- **Tarih:** YYYY-MM-DD
-- **Durum:** Önerildi | Kabul edildi | Değiştirildi (→ NNNN)
+- **Date:** YYYY-MM-DD
+- **Status:** Proposed | Accepted | Superseded (→ NNNN)
 
-## Bağlam
-Neden bir karar gerekti?
+## Context
+Why was a decision needed?
 
-## Karar
-Ne karar verildi?
+## Decision
+What was decided?
 
-## Sonuçlar
-Artıları, eksileri, etkileri.
+## Consequences
+Pros, cons, effects.

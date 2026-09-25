@@ -7,10 +7,10 @@ weights:
   vault-notes: 0.5
 ---
 
-# Veri Kuralı
+# Data Rule
 
-- Yasak: KVKK kişisel verisi (ad-soyad + kimlik/iletişim bilgisi, TCKN, telefon, e-posta, adres, IBAN/kart, sağlık, müşteri kaydı).
-- Yasak: secret (parola, token, anahtar, bağlantı cümlesindeki kimlik bilgisi).
-- Log, örnek veri, hata çıktısı yazmadan önce maskele: `***`, `ornek@example.com`, sahte ad.
-- Guard hook commit'i durdurursa veriyi maskele; yanlış alarmsa satıra `guard:ignore` ekle.
-- Vault dosyaları ilgisiz repolara (ekip, şirket, açık kaynak) commit edilmez; gerekirse `.git/info/exclude` kullanılır.
+- Forbidden: personal data under KVKK (Turkish personal data protection law) / GDPR-style rules (full name + ID/contact info, national ID number, phone, email, address, IBAN/card, health data, customer records).
+- Forbidden: secrets (passwords, tokens, keys, credentials embedded in connection strings).
+- Mask before writing to logs, sample data, or error output: `***`, `example@example.com`, a fake name.
+- If the guard hook blocks a commit, mask the data; if it's a false positive, add `guard:ignore` to the line.
+- Vault files are never committed to unrelated repos (team, company, open source); use `.git/info/exclude` if needed.

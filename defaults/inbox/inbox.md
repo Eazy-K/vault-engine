@@ -6,21 +6,21 @@ weights:
   data-policy: 0.6
 ---
 
-# Görev Kuyruğu
+# Task Queue
 
-Bir oturumda ya da cihazda (ör. telefon) yazılan görev, başka bir oturumdaki ajan tarafından yapılır.
+A task written in one session or on one device (e.g. a phone) gets done by an agent in another session.
 
-## Görev yazma
-- Dosya: `inbox/<proje>/NNNN-<kisa-ad>.md`. Numara proje içinde artar.
-- Şablon: `inbox/_template.md`. Frontmatter'daki `type: task`, `project` ve `status` alanları zorunlu.
-- Görevde kişisel veri olmaz (bkz. [[data-policy]]).
+## Writing a task
+- File: `inbox/<project>/NNNN-<short-name>.md`. The number increases within the project.
+- Template: `inbox/_template.md`. The `type: task`, `project`, and `status` frontmatter fields are required.
+- No personal data in a task (see [[data-policy]]).
 
-## Görevi yapan ajan
-1. `git pull --rebase`, ardından `python tools/graph.py tasks --status open`.
-2. Görevin durumunu `in-progress` yap, commit edip push et. Böylece diğer makine görevin alındığını görür.
-3. İşi yap. Proje reposunda kendi kurallarıyla: branch, PR, test.
-4. Görevin `## Log` bölümünü doldur (tarih, yapılanlar, PR linki, test sonucu, sorunlar). Durumu `done` ya da `blocked` yap.
-5. Projenin status notunu güncelle, sonra commit edip push et.
+## The agent doing the task
+1. `git pull --rebase`, then `python tools/graph.py tasks --status open`.
+2. Set the task's status to `in-progress`, commit and push it. That way other machines see the task has been picked up.
+3. Do the work. Follow the project repo's own rules: branch, PR, tests.
+4. Fill in the task's `## Log` section (date, what was done, PR link, test result, issues). Set the status to `done` or `blocked`.
+5. Update the project's status note, then commit and push.
 
-## Durumlar
-`open` → `in-progress` → `done` / `blocked`. `done` durumundaki görevler geçmiş olarak kalır, ama `context` çıktısına artık yüklenmez.
+## Statuses
+`open` → `in-progress` → `done` / `blocked`. Tasks marked `done` remain as history, but are no longer loaded into `context` output.

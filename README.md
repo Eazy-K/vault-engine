@@ -1,59 +1,62 @@
 # vault-engine
 
-Model bağımsız "ikinci beyin" motoru. Notlar ağırlıklı bir graf olarak yüklenir; ajan her görevde sadece ilgili bağlamı alır. Motor kullanıcı bağımsızdır: senin notların ayrı bir **veri reposunda** durur, bu repoya hiçbir kullanıcı bilgisi girmez.
+A model-independent "second brain" engine. Notes are loaded as a weighted graph; the agent gets only the relevant context for each task. The engine is user-independent: your notes live in a separate **data repository**, and no user information ever enters this repo.
 
-## Yapı
-| Yol | İçerik |
+## Structure
+| Path | Content |
 |---|---|
-| `tools/graph.py` | Arama, yayılım, öğrenme, guard, leakcheck. Sadece Python standart kütüphanesi. |
-| `tools/feedback.py` | İsteğe bağlı, sızıntısız geri bildirim (bkz. aşağıda). |
-| `tools/hooks/` | Veri repoları için guard hook'ları (`core.hooksPath` buraya işaret eder) |
-| `tools/claude-agents/` | Claude Code alt ajan tanımları (`~/.claude/agents/` altına kopyalanır) |
-| `defaults/` | Genel notlar. Veri reposunda aynı yoldaki not bunları ezer. |
-| `templates/` | Yeni bir veri reposunun iskeleti |
-| `.githooks/` | Bu reponun kendi hook'ları: `leakcheck` |
+| `tools/graph.py` | Search, propagation, learning, guard, leakcheck. Python standard library only. |
+| `tools/feedback.py` | Optional, leak-free feedback (see below). |
+| `tools/hooks/` | Guard hooks for data repos (`core.hooksPath` points here) |
+| `tools/claude-agents/` | Claude Code subagent definitions (copied into `~/.claude/agents/`) |
+| `defaults/` | General notes. A note at the same path in the data repo overrides these. |
+| `templates/` | Skeleton for a new data repository |
+| `.githooks/` | This repo's own hooks: `leakcheck` |
 | `tests/` | `python -m unittest discover -s tests` |
 
-## Kurulum
-1. Motoru klonla. Python 3.10+ yeterli. İsteğe bağlı: Ollama + `ollama pull bge-m3` (yoksa sadece kelime eşleşmesi).
-2. Veri reposu oluştur: `python tools/graph.py init <veri reposu yolu>`. `templates/` içeriğini kopyalar (var olan dosyaların üzerine yazmaz), git reposu başlatır, `core.hooksPath`'i bu motorun `tools/hooks` klasörüne ayarlar ve `vault.config.json` içine proje kökleri ile feedback tercihini yazar (feedback varsayılan olarak `off`'tur — opt-in). TTY'de ve `--yes` verilmediyse eksik değerler için sorar; `--feedback`, `--feedback-mode`, `--project-root` (tekrarlanabilir) ve `--yes` ile elle de verilebilir.
-3. Motoru veri reposuna bağla: `python tools/graph.py setup [--data <veri reposu yolu>]`. Ortam değişkenlerini ayarlar (Windows'ta `setx` ile kalıcı; diğer platformlarda `export` satırlarını yazdırır), `tools/claude-agents/*.md` dosyalarını `~/.claude/agents/`'a kopyalar, ve her proje kökü için (git reposu değilse) `CLAUDE.md` içine `@<veri reposu yolu>/AGENTS.md` satırını yazar. İki kez çalıştırmak hiçbir şeyi değiştirmez. `--user-level` ile `~/.claude/CLAUDE.md` ve `~/.codex/AGENTS.md` dosyalarına da tek satırlık yönlendirme eklenir. `--no-env`, `--no-agents`, `--no-routing`, `--yes` adımları atlar/otomatikleştirir.
-4. `profile/` altındaki notları doldur.
-5. Kontrol: `python tools/graph.py doctor` — her satırda bir kontrol (`OK`/`WARN`/`FAIL`); herhangi bir `FAIL` çıkış kodunu 1 yapar.
+## Setup
+1. Clone the engine. Python 3.10+ is enough. Optional: Ollama + `ollama pull bge-m3` (without it, only keyword matching is used).
+2. Create a data repo: `python tools/graph.py init <data repo path>`. This copies the contents of `templates/` (without overwriting existing files), initializes a git repo, points `core.hooksPath` at this engine's `tools/hooks` folder, and writes the project roots and feedback preference into `vault.config.json` (feedback is `off` by default — opt-in). In a TTY, if `--yes` is not given, it prompts for missing values; they can also be set manually with `--feedback`, `--feedback-mode`, `--project-root` (repeatable), and `--yes`.
+3. Connect the engine to the data repo: `python tools/graph.py setup [--data <data repo path>]`. This sets environment variables (persisted with `setx` on Windows; on other platforms it prints `export` lines), copies `tools/claude-agents/*.md` into `~/.claude/agents/`, and, for each project root that isn't itself a git repo, writes a `@<data repo path>/AGENTS.md` line into `CLAUDE.md`. Running it twice changes nothing. `--user-level` also adds a one-line pointer to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. `--no-env`, `--no-agents`, `--no-routing`, `--yes` skip/automate the corresponding steps.
+4. Fill in the notes under `profile/`.
+5. Check: `python tools/graph.py doctor` — one check per line (`OK`/`WARN`/`FAIL`); any `FAIL` sets the exit code to 1.
 
-## Proje keşfi
-`tools/discovery.py`, motorun yanındaki (ya da `vault.config.json`'daki `project_roots` altındaki) git repolarını tarar ve hangi projelerin henüz not almadığını bulur. Sadece hafif metadata okunur (README'nin ilk satırı, dosya uzantısı sayımı, son commit tarihi, remote'un sadece host kısmı); kod hiçbir zaman indekslenmez ve hiçbir şey makineden dışarı çıkmaz. `vault.config.json`'daki `exclude` listesi (isim veya glob) ve bir repodaki `.vaultignore` dosyası taramadan hariç tutar. Sonuç `<veri reposu>/.graph/projects.json` içinde 1 saat önbelleğe alınır (bu dosya commit'lenmez). Kullanım: `python tools/graph.py projects` (tablo), `--json`, `--missing` (sadece notu olmayan projeler, sonunda öneri satırıyla) veya `--refresh` (önbelleği yok say).
+## Project discovery
+`tools/discovery.py` scans the git repos next to the engine (or under `project_roots` in `vault.config.json`) and finds which projects have no notes yet. It only reads lightweight metadata (the README's first line, a file-extension count, the last commit date, the remote's host part only); code is never indexed and nothing leaves the machine. The `exclude` list (names or globs) in `vault.config.json` and a `.vaultignore` file in a repo exclude it from the scan. The result is cached for 1 hour in `<data repo>/.graph/projects.json` (not committed). Usage: `python tools/graph.py projects` (table), `--json`, `--missing` (only projects without notes, with a suggestion line at the end), or `--refresh` (ignore the cache).
 
-## Proje tanıma
-`context` çalıştığı klasörden projeyi bulur ve `projects/<ad>/` notlarını başlangıç noktası yapar. Proje kökleri veri reposundaki `vault.config.json` dosyasından okunur (`{"project_roots": ["..."]}`); dosya yoksa motorun üst klasörü kullanılır. `--project <ad>` ya da `--no-project` ile elle belirlenir.
+## Project recognition
+`context` finds the project from the directory it's run in and uses `projects/<name>/` notes as the starting point. Project roots are read from `vault.config.json` in the data repo (`{"project_roots": ["..."]}`); if the file doesn't exist, the engine's parent folder is used. Set manually with `--project <name>` or `--no-project`.
 
-## Geri bildirim
-`tools/feedback.py` kurulumundan motorun geliştiricilerine isteğe bağlı geri bildirim gönderir (GitHub issue olarak). Varsayılan kapalıdır; hiçbir şey göndermeden önce açıkça açman gerekir.
+## Feedback
+`tools/feedback.py` optionally sends feedback from your setup to the engine's developers (as a GitHub issue). It is off by default; you must explicitly turn it on before anything is sent.
 
-Seviyeler (`vault.config.json` içinde `"feedback": {"level": ..., "mode": ..., "repo": "owner/name"}`):
-- `off` (varsayılan): hiçbir şey gönderilmez.
-- `metrics`: sadece sayılar ve sabit kategoriler gönderilir -- motor sürümü, işletim sistemi, Python sürümü, not sayısı aralığı (`<25`, `25-100`, ...), `context`/`reinforce` kullanım sayaçları, ajan başına dağılım. Not id'si, sorgu metni, dosya yolu veya makine adı **asla** gönderilmez. En sık 7 günde bir gönderilir.
-- `reports`: yukarıdakine ek olarak, `feedback add --kind friction|bug|idea --command <komut> --summary "..." [--details "..."]` ile kuyruğa alınan kısa serbest metin notları da gönderilir (özet en fazla 200, detay en fazla 1000 karakter).
+Levels (in `vault.config.json` under `"feedback": {"level": ..., "mode": ..., "repo": "owner/name"}`):
+- `off` (default): nothing is sent.
+- `metrics`: only counts and fixed categories are sent -- engine version, OS, Python version, note-count bucket (`<25`, `25-100`, ...), `context`/`reinforce` usage counters, per-agent distribution. Note IDs, query text, file paths, and machine names are **never** sent. Sent at most once every 7 days.
+- `reports`: in addition to the above, short free-text notes queued with `feedback add --kind friction|bug|idea --command <command> --summary "..." [--details "..."]` are also sent (summary max 200, details max 1000 characters).
 
-`mode`: `auto` (varsayılan; motor arka planda `reinforce` sonrasında günde en fazla bir kez gönderir) veya `ask` (önce önizleme gösterir, ajan kullanıcıya sorar, `feedback send --yes` ile onaylanır).
+`mode`: `ask` (default; shows a preview first, the agent asks the user, confirmed with `feedback send --yes`) or `auto` (the engine sends in the background at most once a day after `reinforce`).
 
-Hedef repo `feedback.repo` alanından, yoksa motorun `origin` remote'undan çıkarılır; hiçbiri yoksa gönderim devre dışıdır (hata vermez).
+The target repo is taken from the `feedback.repo` field, or otherwise from the engine's `origin` remote; if neither is set, sending is disabled (no error).
 
-Serbest metin (özet/detay/komut) kuyruğa alınırken ve gönderilmeden hemen önce iki kez süzülür: notlardaki aynı guard kalıpları (TCKN, IBAN, kart no, telefon, e-posta, token, parola), ev dizini yolu, git kimliği, `.git/info/vault-denylist` terimleri ve veri reposundaki proje adları taranır. Bir eşleşme bulunursa metin **hiçbir zaman** gönderilmez veya ekrana yazılmaz; sadece eşleşmenin türü (ör. "TCKN") raporlanır ve içerik `.graph/feedback/quarantine/` altına taşınır.
+Free text (summary/details/command) is filtered twice, once when queued and once right before sending: it's scanned against the same guard patterns used for notes (national ID numbers, IBAN, card numbers, phone, email, tokens, passwords), the home directory path, the git identity, terms from `.git/info/vault-denylist`, and project names in the data repo. If anything matches, the text is **never** sent or printed; only the match type (e.g. "national ID") is reported, and the content is moved to `.graph/feedback/quarantine/`.
 
-Komutlar:
-- `feedback status` -- etkin ayarlar, hedef repo, kuyruk/karantina sayıları, son gönderim zamanı.
-- `feedback list` -- tam olarak ne gönderileceğini JSON olarak gösterir (gönderim yapmaz).
-- `feedback send [--yes]` -- kuyruktakileri gönderir.
-- `feedback set --level ... [--mode ...] [--repo ...] [--machine]` -- ayarları yazar. `--machine` ile hassas bir makinede sadece o makineye özel, gitignore'lı `.graph/machine.json` dosyasına yazılır (veri reposundaki ortak ayarı ezer).
+Commands:
+- `feedback status` -- active settings, target repo, queue/quarantine counts, last send time.
+- `feedback list` -- shows exactly what would be sent, as JSON (does not send).
+- `feedback send [--yes]` -- sends what's queued.
+- `feedback set --level ... [--mode ...] [--repo ...] [--machine]` -- writes settings. With `--machine`, writes to a machine-local, gitignored `.graph/machine.json` (overrides the shared setting in the data repo) — useful on a sensitive machine.
 
-Kapatmak için: `feedback set --level off` (veya belirli bir makinede `--machine` ile).
+To turn off: `feedback set --level off` (or with `--machine` for a specific machine).
 
 ## CI (GitHub Actions)
-- Motor reposu: her push ve PR'da testler (Ubuntu: Python 3.10 ve 3.13, Windows: 3.13) ve `leakcheck` (dosyalar + commit mesajları).
-- Veri reposu: `init` ile gelen `.github/workflows/vault.yml`, motoru private bir composite action olarak kullanır (`uses: <sahip>/vault-engine@main`): guard, commit mesajları ve not lint'i. Böylece buluttan ya da telefondan atılan commit'ler de denetlenir.
-- Motor private ise bir kez: motor reposunda Settings > Actions > General > Access → "Accessible from repositories owned by the user". Komutla: `gh api -X PUT repos/<sahip>/vault-engine/actions/permissions/access -f access_level=user`
+- Engine repo: on every push and PR, tests run (Ubuntu: Python 3.10 and 3.13, Windows: 3.13) along with `leakcheck` (files + commit messages).
+- Data repo: the `.github/workflows/vault.yml` shipped by `init` uses the engine as a private composite action (`uses: <owner>/vault-engine@main`): guard, commit messages, and note lint. This way commits pushed from the cloud or a phone are checked too.
+- If the engine is private, do this once: in the engine repo, Settings > Actions > General > Access → "Accessible from repositories owned by the user". Or via the CLI: `gh api -X PUT repos/<owner>/vault-engine/actions/permissions/access -f access_level=user`
 
-## Motora katkı
-- Bu repoda `git config core.hooksPath .githooks` çalıştır. `leakcheck`; kullanıcı içeriğini (`profile/`, `projects/`, ...), ev dizini yolunu, git kimliğini ve `.git/info/vault-denylist` listesindeki terimleri commit'te durdurur.
-- Yeni kod testli yazılır.
+## Contributing to the engine
+- Run `git config core.hooksPath .githooks` in this repo. `leakcheck` blocks commits containing user content (`profile/`, `projects/`, ...), the home directory path, the git identity, or terms from `.git/info/vault-denylist`.
+- New code should come with tests.
+
+## License
+MIT, see LICENSE.

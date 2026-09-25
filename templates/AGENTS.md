@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Model bağımsız ikinci beyin. Bilgi ağırlıklı bir graf üzerinden yüklenir, dosyaları tek tek okuma. Komutlar vault kökünden çalışır. Motor aracı `$VAULT_ENGINE` ortam değişkeniyle çağrılır (Windows cmd'de `%VAULT_ENGINE%`). Veri klasörünün yolu `$VAULT_DATA` değişkenindedir (Windows cmd'de `%VAULT_DATA%`).
+A model-independent second brain. Information loads through a weighted graph — don't read files one by one. Commands run from the vault root. The engine tool is invoked via the `$VAULT_ENGINE` environment variable (`%VAULT_ENGINE%` in Windows cmd). The data folder's path is in `$VAULT_DATA` (`%VAULT_DATA%` in Windows cmd).
 
-1. **Göreve başlarken:** Vault'ta `git pull --rebase` çalıştır, sonra `python "$VAULT_ENGINE/tools/graph.py" context "<görev özeti; TR + EN anahtar kelimeler>"`. Çıkan notlara uy.
-   Python yoksa `profile/working-style.md`, `profile/language.md`, `standards/vault-notes.md` ve `standards/data-policy.md` dosyalarını oku.
-2. **Görev `inbox/` klasöründen geldiyse:** `inbox/inbox.md` akışını izle (`python "$VAULT_ENGINE/tools/graph.py" tasks --status open`).
-3. **Görev bitince:** `context` çıktısının son satırındaki komutu çalıştır: `reinforce --task <id>` ve ardından gerçekten işe yarayan notlar. Hiçbir not işe yaramadıysa not vermeden çalıştır.
-4. **Kalıcı bir bilgi öğrenirsen:** `standards/vault-notes.md` kurallarına göre ilgili nota yaz. Sonra `python "$VAULT_ENGINE/tools/graph.py" lint` çalıştır, İngilizce commit at ve `git pull --rebase && git push` ile gönder. Guard hook, kişisel veri veya secret içeren commit'leri durdurur.
+1. **Starting a task:** Run `git pull --rebase` in the vault, then `python "$VAULT_ENGINE/tools/graph.py" context "<task summary; keywords in the languages you use>"`. Follow the notes it returns.
+   If Python isn't available, read `profile/working-style.md`, `profile/language.md`, `standards/vault-notes.md`, and `standards/data-policy.md`.
+2. **If the task came from `inbox/`:** follow the `inbox/inbox.md` flow (`python "$VAULT_ENGINE/tools/graph.py" tasks --status open`).
+3. **When the task is done:** run the command on the last line of the `context` output: `reinforce --task <id>` followed by the notes that actually helped. If no note helped, run it with no notes.
+4. **If you learn something lasting:** write it to the relevant note following the rules in `standards/vault-notes.md`. Then run `python "$VAULT_ENGINE/tools/graph.py" lint`, commit in English, and push with `git pull --rebase && git push`. The guard hook blocks commits containing personal data or secrets.

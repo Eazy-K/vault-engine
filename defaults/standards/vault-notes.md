@@ -1,54 +1,54 @@
 ---
-keywords: [vault, not, yazma, güncelleme, frontmatter, lint, hafıza, memory, note, update, kural]
+keywords: [vault, not, yazma, güncelleme, frontmatter, lint, hafıza, memory, note, update, kural, rule]
 links:
   - "[[data-policy]]"
 weights:
   data-policy: 0.4
 ---
 
-# Vault Not Yazma Kuralları
+# Vault Note-Writing Rules
 
-## Ne yazılır
-- Kalıcı ve önemli bilgiler yazılır: tercihler, kararlar, proje bilgisi, öğrenilenler.
-- Sadece o konuşmayı ilgilendiren geçici bilgiler yazılmaz.
-- Önce mevcut notu güncellemeyi dene, kopya not oluşturma. Yanlış çıkan bilgiyi sil veya düzelt.
+## What to write
+- Write lasting, important information: preferences, decisions, project facts, things learned.
+- Don't write information that only matters for that one conversation.
+- Try to update an existing note first, don't create a duplicate. Delete or fix information that turns out to be wrong.
 
-## Nasıl yazılır
-- Bir not tek bir konuyu anlatır. Karışık konulu notlar aramada kötü eşleşir.
-- Maddeler ve tablo satırları kendi başına anlaşılır olmalı, çünkü aramada her biri ayrı bir parça olarak değerlendirilir.
-- Placeholder veya örnek satır yazma, bunlar yanlış eşleşmeye yol açar.
-- Tarihler mutlak yazılır (YYYY-MM-DD).
-- Dosya adları İngilizce ve kebab-case, içerik Türkçe olur.
+## How to write
+- One note covers one topic. Notes mixing topics match poorly in search.
+- Bullet points and table rows must stand on their own, because search treats each one as a separate chunk.
+- Don't write placeholder or example lines — they cause false matches.
+- Dates are written in absolute form (YYYY-MM-DD).
+- File names are English and kebab-case; content language is whatever the user has set in `profile/language.md`.
 
 ## Frontmatter
 ```
 ---
-keywords: [türkçe, english, eşanlamlılar, kısaltmalar]
+keywords: [english, other-language, synonyms, abbreviations]
 links:
-  - "[[ilgili-not]]"
+  - "[[related-note]]"
 weights:
-  ilgili-not: 0.8
+  related-note: 0.8
 ---
 ```
-- `keywords` alanı kelime eşleşmesinde kullanılır. Kısaltmalar (db, api) ve İngilizce karşılıklar buraya eklenir.
-- Ağırlık rehberi: 0.8–1.0 güçlü ilişki, 0.5–0.7 ilgili, 0.3 zayıf ilişki. Ağırlık yazılmazsa 0.7 kabul edilir.
-- `core: true` sadece her görevde geçerli zorunlu kurallar için kullanılır. Core notlar her çağrıda yüklendiği için **15 satırı geçmemeli**.
+- `keywords` is used for keyword matching. Add abbreviations (db, api) and equivalents in other languages here.
+- Weight guide: 0.8-1.0 strong relation, 0.5-0.7 related, 0.3 weak relation. Defaults to 0.7 if omitted.
+- `core: true` is only for mandatory rules that apply to every task. Core notes load on every call, so they **must not exceed 15 lines**.
 
-## Klasörler
-- `profile/`: kullanıcı ve tercihleri
-- `projects/<proje>/`: proje bilgisi
-- `standards/`: konvansiyonlar
-- `notes/`: kişisel notlar
-- `decisions/`: vault kararları (ADR)
-- `inbox/`: makineler arası görev kuyruğu (bkz. [[inbox]])
+## Folders
+- `profile/`: the user and their preferences
+- `projects/<project>/`: project information
+- `standards/`: conventions
+- `notes/`: personal notes
+- `decisions/`: vault decisions (ADR)
+- `inbox/`: cross-machine task queue (see [[inbox]])
 
-## Araç
-`python tools/graph.py <komut>`
-- `context`, `query`: bağlam yükleme ve listeleme (`--seed`, `--threshold`, `--budget`, `--no-semantic`, `--no-log`)
-- `show`: bir notun kenarlarını gösterir
-- `reinforce --task <id>`, `decay`: öğrenme
-- `stats`: `context` çağrılarının ne kadarının `reinforce` ile kapatıldığını ve hangi notların getirilip hiç kullanılmadığını gösterir
-- `lint`: tutarlılık kontrolü
-- `index`: embedding'leri önceden hesaplar
-- `tasks`: inbox görevlerini listeler (`--status`, `--project`)
-- `guard`: kişisel veri ve secret taraması (hook'lar otomatik çalıştırır)
+## Tool
+`python tools/graph.py <command>`
+- `context`, `query`: load and list context (`--seed`, `--threshold`, `--budget`, `--no-semantic`, `--no-log`)
+- `show`: shows a note's edges
+- `reinforce --task <id>`, `decay`: learning
+- `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used
+- `lint`: consistency check
+- `index`: precomputes embeddings
+- `tasks`: lists inbox tasks (`--status`, `--project`)
+- `guard`: scans for personal data and secrets (hooks run it automatically)

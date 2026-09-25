@@ -5,8 +5,8 @@ links: []
 weights: {}
 ---
 
-# Dil Tercihi
+# Language Preference
 
-Buraya hangi dilde konuşulacağını ve hangi dilde yazılacağını yaz.
-Örnek: konuşma dili X, dosya adları İngilizce, içerik Y dilinde.
-Kod ve teknik terimlerde istisna varsa burada belirt.
+Write here which language to converse in and which language to write content in.
+Example: conversation language X, file names in English, content in language Y.
+Note any exceptions for code and technical terms.
