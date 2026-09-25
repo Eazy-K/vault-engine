@@ -557,11 +557,28 @@ def scan_line(line: str) -> list[str]:
     return found
 
 
-def _staged_lines() -> list[tuple[str, int, str]]:
+def _repo_root() -> Path:
+    """Git top-level of the current working directory, so guard/leakcheck work on
+    whichever repo (engine or a data repo) they are invoked from, not just VAULT."""
+    out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    return Path(out.strip())
+
+
+def _git_dir(root: Path) -> Path:
+    """Real .git directory for root, resolved via git so a worktree's shared
+    common dir (where .git/info lives) is found rather than its private one."""
+    out = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=root,
+                          capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+    p = Path(out)
+    return p if p.is_absolute() else root / p
+
+
+def _staged_lines(root: Path) -> list[tuple[str, int, str]]:
     """Added lines of the staged diff as (path, line number, text)."""
     diff = subprocess.run(
         ["git", "diff", "--cached", "-U0", "--no-color", "--diff-filter=ACMR"],
-        cwd=VAULT, capture_output=True, text=True, encoding="utf-8", check=True).stdout
+        cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout
     out, path, lineno = [], "", 0
     for line in diff.splitlines():
         if line.startswith("+++ "):
@@ -575,19 +592,20 @@ def _staged_lines() -> list[tuple[str, int, str]]:
 
 
 def cmd_guard(args) -> None:
+    root = _repo_root()
     if args.staged:
-        lines = _staged_lines()
+        lines = _staged_lines(root)
     elif args.message_file:
         text = Path(args.message_file).read_text(encoding="utf-8", errors="replace")
         lines = [("commit message", i, l) for i, l in enumerate(text.splitlines(), 1)
                  if not l.startswith("#")]
     else:
         paths = args.paths or subprocess.run(
-            ["git", "ls-files"], cwd=VAULT, capture_output=True, text=True,
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True,
             encoding="utf-8", check=True).stdout.splitlines()
         lines = []
         for p in paths:
-            full = Path(p) if Path(p).is_absolute() else VAULT / p
+            full = Path(p) if Path(p).is_absolute() else root / p
             try:
                 text = full.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
@@ -601,6 +619,99 @@ def cmd_guard(args) -> None:
         sys.exit(f"blocked: {len(findings)} possible personal data / secret match(es). Mask them "
                  f"(standards/data-policy.md) or, if a false alarm, add '{GUARD_IGNORE}' to the line.")
     print("guard: clean")
+
+
+# --- engine leak check ---------------------------------------------------------
+# The ENGINE repo (this one) must never contain a user's content or identity;
+# that belongs in per-user DATA repos. leakcheck runs the guard patterns above
+# plus path- and identity-based checks scoped to whichever repo it runs in.
+
+CONTENT_TOP_DIRS = {"profile", "projects", "notes", "inbox", "decisions", ".graph"}
+CONTENT_TOP_FILES = {"vault.config.json"}
+# Example/scaffold content shipped by the engine lives under these, not the repo top level.
+CONTENT_EXEMPT_PREFIXES = ("defaults/", "templates/")
+
+
+def _is_user_content_path(p: str) -> bool:
+    """True for a path that is user content and must not live in the engine repo."""
+    norm = p.replace("\\", "/")
+    if norm.startswith(CONTENT_EXEMPT_PREFIXES):
+        return False
+    first, sep, rest = norm.partition("/")
+    if sep and first in CONTENT_TOP_DIRS:
+        return True
+    return not sep and norm in CONTENT_TOP_FILES
+
+
+def _leak_terms(root: Path) -> list[tuple[str, str]]:
+    """(term, kind) pairs that would identify the user: home path, git identity,
+    and an optional local (never committed) denylist."""
+    terms: list[tuple[str, str]] = []
+    home = str(Path.home())
+    for variant in {home, home.replace("\\", "/"), home.replace("/", "\\")}:
+        if len(variant) >= 4:
+            terms.append((variant, "home path"))
+    for key in ("user.name", "user.email"):
+        val = subprocess.run(["git", "config", key], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+        if len(val) >= 4:
+            terms.append((val, "git identity"))
+    try:
+        deny = (_git_dir(root) / "info" / "vault-denylist").read_text(encoding="utf-8")
+    except OSError:
+        deny = ""
+    for line in deny.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and len(line) >= 4:
+            terms.append((line, "denylist term"))
+    return terms
+
+
+def _scan_leak(line: str, terms: list[tuple[str, str]]) -> list[str]:
+    if GUARD_IGNORE in line:
+        return []
+    found = scan_line(line)
+    low = line.lower()
+    found += [kind for term, kind in terms if term.lower() in low]
+    return found
+
+
+def cmd_leakcheck(args) -> None:
+    root = _repo_root()
+    terms = _leak_terms(root)
+    findings: list[tuple[str, int, str]] = []
+    if args.message_file:
+        text = Path(args.message_file).read_text(encoding="utf-8", errors="replace")
+        lines = [("commit message", i, l) for i, l in enumerate(text.splitlines(), 1)
+                 if not l.startswith("#")]
+    elif args.staged:
+        paths = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout.splitlines()
+        findings += [(p, 0, "user content path") for p in paths if _is_user_content_path(p)]
+        lines = _staged_lines(root)
+    else:
+        paths = args.paths or subprocess.run(
+            ["git", "ls-files"], cwd=root, capture_output=True, text=True,
+            encoding="utf-8", check=True).stdout.splitlines()
+        findings += [(p, 0, "user content path") for p in paths if _is_user_content_path(p)]
+        lines = []
+        for p in paths:
+            full = Path(p) if Path(p).is_absolute() else root / p
+            try:
+                text = full.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            lines += [(p, i, l) for i, l in enumerate(text.splitlines(), 1)]
+    # Report only where and what kind: echoing the value would leak it into logs.
+    findings += [(p, n, label) for p, n, text in lines for label in _scan_leak(text, terms)]
+    for p, n, label in findings:
+        print(f"{p}:{n}: possible {label}" if n else f"{p}: {label}")
+    if findings:
+        sys.exit(f"blocked: {len(findings)} leak risk(s). The engine repo must not contain user content "
+                 f"(it belongs in a data repo) or secrets (standards/data-policy.md); add "
+                 f"'{GUARD_IGNORE}' to a line if it's a false alarm.")
+    print("leakcheck: clean")
 
 
 # --- usage log ---------------------------------------------------------------
@@ -860,13 +971,19 @@ def main() -> None:
     p.add_argument("--staged", action="store_true", help="scan added lines of the staged diff")
     p.add_argument("--message-file", help="scan a commit message file")
 
+    p = sub.add_parser("leakcheck", help="block user content and secrets from leaking into the engine repo")
+    p.add_argument("paths", nargs="*", help="files to scan (default: all tracked files)")
+    p.add_argument("--staged", action="store_true", help="scan the staged diff and staged paths")
+    p.add_argument("--message-file", help="scan a commit message file")
+
     args = parser.parse_args()
     if args.command in ("query", "context"):
         cmd_query(args, content=args.command == "context")
     else:
         {"reinforce": cmd_reinforce, "decay": cmd_decay, "show": cmd_show,
          "lint": cmd_lint, "index": cmd_index, "stats": cmd_stats,
-         "tasks": cmd_tasks, "guard": cmd_guard}[args.command](args)
+         "tasks": cmd_tasks, "guard": cmd_guard,
+         "leakcheck": cmd_leakcheck}[args.command](args)
 
 
 if __name__ == "__main__":

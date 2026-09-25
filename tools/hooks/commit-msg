@@ -1,4 +1,5 @@
 #!/bin/sh
 # Same guard for the commit message itself.
+HOOK_DIR=$(dirname "$0")
 PY=$(command -v python || command -v python3 || command -v py) || { echo "guard: python not found" >&2; exit 1; }
-exec "$PY" "$(git rev-parse --show-toplevel)/tools/graph.py" guard --message-file "$1"
+exec "$PY" "$HOOK_DIR/../graph.py" guard --message-file "$1"

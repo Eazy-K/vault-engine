@@ -1,0 +1,6 @@
+#!/bin/sh
+# Engine repo: block commits that add user content or secrets (leakcheck covers
+# the guard patterns too, so this replaces tools/hooks/pre-commit here).
+HOOK_DIR=$(dirname "$0")
+PY=$(command -v python || command -v python3 || command -v py) || { echo "leakcheck: python not found" >&2; exit 1; }
+exec "$PY" "$HOOK_DIR/../tools/graph.py" leakcheck --staged
