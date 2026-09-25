@@ -49,6 +49,7 @@ weights:
 - `reinforce --task <id>`, `decay`: learning
 - `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used
 - `lint`: consistency check
+- `mv <note> <new path or name>`: moves or renames a note and updates `[[links]]`, `weights` and learned edges. Don't move notes by hand.
 - `index`: precomputes embeddings
 - `tasks`: lists inbox tasks (`--status`, `--project`)
 - `guard`: scans for personal data and secrets (hooks run it automatically)
