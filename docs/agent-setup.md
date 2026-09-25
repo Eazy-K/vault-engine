@@ -107,10 +107,10 @@ downloads their own notes from their private backup.
    ```
    Use forward slashes in the `core.hooksPath` value, also on Windows.
 
-Do **not** run `init` on it: `init` rewrites `vault.config.json` (shared settings such
-as feedback and project roots) and recreates template files the user may have deleted.
-If their project folder differs from the other computer's, add it to `project_roots` in
-`vault.config.json` by hand instead.
+Do **not** run `init` on it: it would recreate template files the user deleted on
+purpose. `vault.config.json` is shared by every computer using this data repo, so don't
+add this computer's paths to it: without `project_roots`, each computer uses the folder
+that holds its engine, which is why Step 1 puts the engine inside the projects folder.
 
 Then skip Step 4, do Step 5 (git identity is per computer) and Step 6, and skip Step 7
 unless `doctor` says the profile is still the unfilled skeleton.
