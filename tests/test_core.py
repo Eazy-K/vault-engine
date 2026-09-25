@@ -234,5 +234,24 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertIn("reinforce --task", output)
 
 
+
+
+class TestDetectAgent(unittest.TestCase):
+    def test_codex_wins_over_inherited_claude_code(self):
+        env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "outer",
+               "CODEX_THREAD_ID": "thread-1", "CODEX_SESSION_ID": "inner"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(graph.detect_agent(), ("codex", "inner"))
+
+    def test_claude_code(self):
+        with mock.patch.dict(os.environ, {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "s"}, clear=True):
+            self.assertEqual(graph.detect_agent(), ("claude-code", "s"))
+
+    def test_codex_install_variables_alone_are_not_codex(self):
+        # Set by the npm launcher; not proof that Codex is running this command.
+        with mock.patch.dict(os.environ, {"CODEX_MANAGED_BY_NPM": "1"}, clear=True):
+            self.assertEqual(graph.detect_agent(), ("unknown", None))
+
+
 if __name__ == "__main__":
     unittest.main()

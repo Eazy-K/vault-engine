@@ -121,11 +121,14 @@ def machine_name() -> str:
 
 
 def detect_agent() -> tuple[str, str | None]:
+    # Codex first: an agent started from another agent inherits the parent's
+    # variables (Codex launched from Claude Code still sees CLAUDECODE), and the
+    # innermost agent is the one running this command. Codex sets
+    # CODEX_THREAD_ID / CODEX_SESSION_ID for its commands (checked with v0.157).
+    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID"):
+        return "codex", os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID")
     if os.environ.get("CLAUDECODE"):
         return "claude-code", os.environ.get("CLAUDE_CODE_SESSION_ID")
-    # Unverified: Codex's environment variables have not been checked yet.
-    if any(key.startswith("CODEX") for key in os.environ):
-        return "codex", None
     return "unknown", None
 
 WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
