@@ -323,5 +323,244 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("VAULT_ENGINE", buf.getvalue())
 
 
+class TestOnboardQuestions(unittest.TestCase):
+    def test_questions_json_shape(self):
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_onboard(Namespace(questions=True, answers=None, data=None, force=False))
+        data = json.loads(buf.getvalue())
+        ids = [q["id"] for q in data]
+        self.assertEqual(ids, ["chat_language", "notes_language", "code_language", "detail",
+                                "explain_level", "ask_before", "extra"])
+        for q in data:
+            self.assertIn("question", q)
+            self.assertIn("kind", q)
+            self.assertIn(q["kind"], ("choice", "multi", "text"))
+        by_id = {q["id"]: q for q in data}
+        self.assertEqual(by_id["detail"]["options"], ["short", "balanced", "detailed"])
+        self.assertEqual(by_id["explain_level"]["options"], ["beginner", "intermediate", "expert"])
+        self.assertEqual(sorted(by_id["ask_before"]["options"]),
+                          sorted(["architecture", "new-dependencies", "deleting",
+                                  "paid-or-external-services", "pushing-or-publishing"]))
+
+
+class TestResolveAnswers(unittest.TestCase):
+    def test_defaults_when_keys_missing(self):
+        answers = onboarding.resolve_answers({})
+        self.assertEqual(answers["chat_language"], "English")
+        self.assertEqual(answers["notes_language"], "English")  # same as chat by default
+        self.assertEqual(answers["code_language"], "English")
+        self.assertEqual(answers["detail"], "balanced")
+        self.assertEqual(answers["explain_level"], "intermediate")
+        self.assertEqual(sorted(answers["ask_before"]), sorted(onboarding.ASK_BEFORE_OPTIONS))
+        self.assertEqual(answers["extra"], [])
+
+    def test_notes_language_defaults_to_chat_language(self):
+        answers = onboarding.resolve_answers({"chat_language": "Turkish"})
+        self.assertEqual(answers["notes_language"], "Turkish")
+
+    def test_invalid_choice_rejected(self):
+        with self.assertRaises(onboarding.AnswersError):
+            onboarding.resolve_answers({"detail": "extremely-long"})
+
+    def test_invalid_multi_choice_rejected(self):
+        with self.assertRaises(onboarding.AnswersError):
+            onboarding.resolve_answers({"ask_before": ["not-a-real-option"]})
+
+    def test_extra_capped_at_5_lines_and_200_chars(self):
+        raw = {"extra": "\n".join([f"line{i} " + "x" * 300 for i in range(8)])}
+        answers = onboarding.resolve_answers(raw)
+        self.assertEqual(len(answers["extra"]), 5)
+        for line in answers["extra"]:
+            self.assertLessEqual(len(line), 200)
+
+
+class TestOnboardAnswers(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.data = self.tmp / "example-data"
+        self.data.mkdir()
+        (self.data / "profile").mkdir()
+        shutil.copy2(REPO_ROOT / "templates" / "profile" / "language.md",
+                     self.data / "profile" / "language.md")
+        shutil.copy2(REPO_ROOT / "templates" / "profile" / "working-style.md",
+                     self.data / "profile" / "working-style.md")
+
+    def _answers_file(self, answers: dict) -> Path:
+        path = self.tmp / "answers.json"
+        path.write_text(json.dumps(answers), encoding="utf-8")
+        return path
+
+    def _run(self, answers: dict, force: bool = False):
+        answers_file = self._answers_file(answers)
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(answers_file),
+                                             data=str(self.data), force=force))
+        return buf.getvalue()
+
+    def test_writes_both_notes_with_valid_frontmatter(self):
+        self._run({"chat_language": "Turkish", "notes_language": "Turkish",
+                    "code_language": "English", "detail": "short",
+                    "explain_level": "beginner",
+                    "ask_before": ["architecture", "deleting"],
+                    "extra": "Prefer bullet points."})
+
+        lang_path = self.data / "profile" / "language.md"
+        style_path = self.data / "profile" / "working-style.md"
+        self.assertTrue(lang_path.exists())
+        self.assertTrue(style_path.exists())
+
+        lang_meta, lang_body = graph.parse_frontmatter(lang_path.read_text(encoding="utf-8"))
+        style_meta, style_body = graph.parse_frontmatter(style_path.read_text(encoding="utf-8"))
+
+        self.assertIs(lang_meta["core"], True)
+        self.assertIs(style_meta["core"], True)
+        self.assertEqual(lang_meta["links"], [])
+        self.assertIn(style_meta["weights"], ({}, "{}"))
+
+        self.assertNotIn(onboarding.SKELETON_MARKER, lang_body)
+        self.assertNotIn(onboarding.SKELETON_MARKER, style_body)
+
+        for body in (lang_body, style_body):
+            non_empty = [l for l in body.splitlines() if l.strip()]
+            self.assertLessEqual(len(non_empty), graph.MAX_CORE_LINES)
+
+        self.assertIn("Talk in Turkish.", lang_body)
+        self.assertIn("Write notes and docs in Turkish.", lang_body)
+        self.assertIn("Write code, identifiers and commit messages in English.", lang_body)
+
+        self.assertIn("Keep answers short.", style_body)
+        self.assertIn("Explain technical terms simply; the user is a beginner.", style_body)
+        self.assertIn("Ask before: architecture, deleting.", style_body)
+        self.assertIn("Prefer bullet points.", style_body)
+
+    def test_defaults_when_answers_file_omits_keys(self):
+        self._run({})
+        lang_body = (self.data / "profile" / "language.md").read_text(encoding="utf-8")
+        self.assertIn("Talk in English.", lang_body)
+        self.assertIn("Write notes and docs in English.", lang_body)
+
+    def test_invalid_choice_reported_and_nothing_written(self):
+        answers_file = self._answers_file({"detail": "way-too-much"})
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as ctx:
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(answers_file),
+                                             data=str(self.data), force=False))
+        self.assertIn("invalid answers", str(ctx.exception.code))
+        # Still the skeleton (untouched).
+        self.assertIn(onboarding.SKELETON_MARKER,
+                       (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
+
+    def test_guard_refuses_without_echoing_value(self):
+        local_part = "kursad" + ".test"
+        domain = "example" + "-personal.com"
+        email = f"{local_part}@{domain}"
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(StringIO()):
+            self._run({"extra": f"Contact me at {email}"})
+        message = str(ctx.exception.code)
+        self.assertIn("email", message)
+        self.assertNotIn(email, message)
+        self.assertIn(onboarding.SKELETON_MARKER,
+                       (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
+
+    def test_skips_already_filled_note_without_force(self):
+        self._run({"chat_language": "Turkish"})
+        out = self._run({"chat_language": "German"})
+        self.assertIn("already filled", out)
+        lang_body = (self.data / "profile" / "language.md").read_text(encoding="utf-8")
+        self.assertIn("Talk in Turkish.", lang_body)
+        self.assertNotIn("Talk in German.", lang_body)
+
+    def test_force_overwrites_already_filled_note(self):
+        self._run({"chat_language": "Turkish"})
+        out = self._run({"chat_language": "German"}, force=True)
+        self.assertIn("written", out)
+        lang_body = (self.data / "profile" / "language.md").read_text(encoding="utf-8")
+        self.assertIn("Talk in German.", lang_body)
+
+
+class TestOnboardNonInteractive(unittest.TestCase):
+    def test_no_flags_non_tty_prints_hint(self):
+        with mock.patch("sys.stdin.isatty", return_value=False), redirect_stdout(StringIO()) as buf, \
+             mock.patch.dict(os.environ, {"VAULT_DATA": str(Path(tempfile.mkdtemp()))}, clear=False):
+            onboarding.cmd_onboard(Namespace(questions=False, answers=None, data=None, force=False))
+        self.assertIn("--questions", buf.getvalue())
+        self.assertIn("--answers", buf.getvalue())
+
+
+class TestOnboardDoctorIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.data = self.tmp / "example-data"
+        self.data.mkdir()
+        (self.data / "AGENTS.md").write_text("root\n", encoding="utf-8")
+        (self.data / "profile").mkdir()
+        shutil.copy2(REPO_ROOT / "templates" / "profile" / "language.md",
+                     self.data / "profile" / "language.md")
+        shutil.copy2(REPO_ROOT / "templates" / "profile" / "working-style.md",
+                     self.data / "profile" / "working-style.md")
+        git(["init"], self.data)
+        git(["config", "core.hooksPath", (graph.ENGINE / "tools" / "hooks").as_posix()], self.data)
+
+    def _env(self):
+        return {"VAULT_ENGINE": str(graph.ENGINE), "VAULT_DATA": str(self.data),
+                "PATH": os.environ.get("PATH", "")}
+
+    def test_warns_with_skeleton_marker(self):
+        with mock.patch.dict(os.environ, self._env(), clear=True), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        self.assertIn("profile not filled yet", buf.getvalue())
+
+    def test_no_warn_after_onboarding(self):
+        answers_file = self.tmp / "answers.json"
+        answers_file.write_text(json.dumps({"chat_language": "English"}), encoding="utf-8")
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(answers_file),
+                                             data=str(self.data), force=False))
+        with mock.patch.dict(os.environ, self._env(), clear=True), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit) as ctx:
+                onboarding.cmd_doctor(Namespace())
+        self.assertNotIn("profile not filled yet", buf.getvalue())
+        self.assertEqual(ctx.exception.code, 0)
+
+
+class TestOnboardEndToEnd(unittest.TestCase):
+    def test_init_then_onboard_answers_lints_clean(self):
+        tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        target = tmp / "example-data"
+
+        init_args = Namespace(dir=str(target), feedback=None, feedback_mode=None,
+                              project_root=None, yes=True)
+        with mock.patch("sys.stdin.isatty", return_value=False), redirect_stdout(StringIO()):
+            onboarding.cmd_init(init_args)
+
+        answers_file = tmp / "answers.json"
+        answers_file.write_text(json.dumps({
+            "chat_language": "Turkish", "notes_language": "Turkish", "code_language": "English",
+            "detail": "balanced", "explain_level": "intermediate",
+            "ask_before": ["architecture"], "extra": "",
+        }), encoding="utf-8")
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(answers_file),
+                                             data=str(target), force=False))
+
+        with mock.patch.dict(os.environ, {"VAULT_DATA": str(target), "VAULT_HOME": ""}, clear=False), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit) as ctx:
+                graph.cmd_lint(Namespace())
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("0 errors", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

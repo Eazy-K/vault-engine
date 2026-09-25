@@ -33,6 +33,8 @@ FEEDBACK_EXPLAIN = {
 
 USER_LEVEL_CODEX_LINE = "Context and rules are in {agents}, read it first and follow it."
 
+SKELETON_MARKER = "<!-- vault:skeleton -->"
+
 
 # --- shared helpers ------------------------------------------------------------
 
@@ -192,7 +194,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print("\nNext steps:")
     print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
-    print(f"  2. fill in the notes under profile/ ({target / 'profile'})")
+    print(f"  2. python \"{g.ENGINE / 'tools' / 'graph.py'}\" onboard --data \"{target}\""
+          "   (a few questions that fill in your profile)")
 
 
 # --- setup -----------------------------------------------------------------------
@@ -396,6 +399,13 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         else:
             check("FAIL", f"core.hooksPath={out or '(unset)'}, expected {expected}")
 
+    if data is not None:
+        profile_dir = data / "profile"
+        unfilled = [p.name for p in sorted(profile_dir.glob("*.md"))
+                    if SKELETON_MARKER in _read_text(p)] if profile_dir.is_dir() else []
+        if unfilled:
+            check("WARN", "profile not filled yet (run `onboard`)")
+
     src_dir = g.ENGINE / "tools" / "claude-agents"
     dest_dir = Path.home() / ".claude" / "agents"
     stale = []
@@ -445,6 +455,226 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
     sys.exit(1 if any(status == "FAIL" for status, _ in checks) else 0)
 
 
+# --- onboard -----------------------------------------------------------------------
+# Fills profile/language.md and profile/working-style.md from a few questions, so
+# people who never write YAML/Markdown still get a filled profile. Works both from
+# a terminal (interactive prompts) and through an agent (--questions / --answers),
+# since most users will go through the latter, conversationally.
+
+ASK_BEFORE_OPTIONS = ["architecture", "new-dependencies", "deleting",
+                      "paid-or-external-services", "pushing-or-publishing"]
+
+# Module level so docs and tests can rely on the exact question set.
+QUESTIONS: list[dict] = [
+    {"id": "chat_language", "kind": "text", "default": "English",
+     "question": "What language should the agent talk to you in?"},
+    {"id": "notes_language", "kind": "text", "default": None, "default_note": "same as chat_language",
+     "question": "What language should notes and docs be written in?"},
+    {"id": "code_language", "kind": "text", "default": "English",
+     "question": "What language should code, identifiers and commit messages use?"},
+    {"id": "detail", "kind": "choice", "options": ["short", "balanced", "detailed"], "default": "balanced",
+     "question": "How much detail do you want in answers?"},
+    {"id": "explain_level", "kind": "choice",
+     "options": ["beginner", "intermediate", "expert"], "default": "intermediate",
+     "question": "How much should the agent explain technical terms?"},
+    {"id": "ask_before", "kind": "multi", "options": list(ASK_BEFORE_OPTIONS), "default": list(ASK_BEFORE_OPTIONS),
+     "question": "Before which kinds of actions should the agent ask first?"},
+    {"id": "extra", "kind": "text", "default": "",
+     "question": "Anything else the agent should know? (optional, max 5 lines)"},
+]
+
+_QUESTIONS_BY_ID = {q["id"]: q for q in QUESTIONS}
+
+
+class AnswersError(Exception):
+    """An answers JSON file failed validation."""
+
+
+def _trim_single_line(value: str, max_len: int = 200) -> str:
+    text = str(value).replace("\r\n", "\n")
+    line = text.splitlines()[0] if text.splitlines() else ""
+    return line.strip()[:max_len]
+
+
+def _trim_multiline(value: str, max_lines: int = 5, max_len: int = 200) -> list[str]:
+    text = str(value).replace("\r\n", "\n")
+    lines = [l.strip()[:max_len] for l in text.splitlines() if l.strip()]
+    return lines[:max_lines]
+
+
+def _validate_choice(qid: str, value, options: list[str], default: str) -> str:
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str) or value not in options:
+        raise AnswersError(f"invalid choice for {qid}: {value!r} (expected one of {', '.join(options)})")
+    return value
+
+
+def _validate_multi(qid: str, value, options: list[str], default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        value = [v.strip() for v in value.split(",") if v.strip()]
+    if not isinstance(value, list):
+        raise AnswersError(f"invalid value for {qid}: expected a list")
+    bad = [v for v in value if v not in options]
+    if bad:
+        raise AnswersError(f"invalid choice(s) for {qid}: {', '.join(bad)} (expected one of {', '.join(options)})")
+    return list(value)
+
+
+def resolve_answers(raw: dict) -> dict:
+    """Validate a raw answers dict (from JSON or interactive prompts), fill in
+    defaults for missing keys, and trim text. Raises AnswersError on bad choices."""
+    raw = raw or {}
+    out: dict = {}
+    out["chat_language"] = _trim_single_line(raw.get("chat_language") or "English") or "English"
+    out["notes_language"] = _trim_single_line(raw.get("notes_language") or out["chat_language"]) \
+        or out["chat_language"]
+    out["code_language"] = _trim_single_line(raw.get("code_language") or "English") or "English"
+    out["detail"] = _validate_choice("detail", raw.get("detail"), _QUESTIONS_BY_ID["detail"]["options"],
+                                      _QUESTIONS_BY_ID["detail"]["default"])
+    out["explain_level"] = _validate_choice(
+        "explain_level", raw.get("explain_level"), _QUESTIONS_BY_ID["explain_level"]["options"],
+        _QUESTIONS_BY_ID["explain_level"]["default"])
+    out["ask_before"] = _validate_multi("ask_before", raw.get("ask_before"), ASK_BEFORE_OPTIONS,
+                                         ASK_BEFORE_OPTIONS)
+    out["extra"] = _trim_multiline(raw.get("extra") or "")
+    return out
+
+
+def _scan_answers(answers: dict) -> list[str]:
+    """Runs every answer text through the personal-data/secret guard. Callers must
+    report only the returned kinds, never the offending value."""
+    texts = [answers["chat_language"], answers["notes_language"], answers["code_language"]]
+    texts += answers["extra"]
+    findings: list[str] = []
+    for text in texts:
+        findings += g.scan_line(text)
+    return findings
+
+
+_DETAIL_TEXT = {
+    "short": "Keep answers short.",
+    "balanced": "Keep answers balanced: not too short, not too long.",
+    "detailed": "Give detailed, thorough answers.",
+}
+_EXPLAIN_TEXT = {
+    "beginner": "Explain technical terms simply; the user is a beginner.",
+    "intermediate": "Explain unusual technical terms briefly; the user has intermediate experience.",
+    "expert": "Skip basic explanations; the user is an expert.",
+}
+
+
+def _build_rules(answers: dict) -> tuple[list[str], list[str]]:
+    """Turns validated answers into short bullet rules for each profile note.
+    Returns (language_note_rules, working_style_rules)."""
+    lang_rules = [
+        f"Talk in {answers['chat_language']}.",
+        f"Write notes and docs in {answers['notes_language']}.",
+        f"Write code, identifiers and commit messages in {answers['code_language']}.",
+    ]
+
+    style_rules = [_DETAIL_TEXT[answers["detail"]], _EXPLAIN_TEXT[answers["explain_level"]]]
+    if answers["ask_before"]:
+        readable = ", ".join(a.replace("-", " ") for a in answers["ask_before"])
+        style_rules.append(f"Ask before: {readable}.")
+    style_rules += answers["extra"]
+    return lang_rules, style_rules
+
+
+def _note_text(title: str, keywords: list[str], rules: list[str]) -> str:
+    kw = ", ".join(keywords)
+    lines = ["---", "core: true", f"keywords: [{kw}]", "links: []", "weights: {}", "---", "", f"# {title}", ""]
+    lines += [f"- {rule}" for rule in rules]
+    return "\n".join(lines) + "\n"
+
+
+def _write_profile_note(data: Path, rel: str, title: str, keywords: list[str], rules: list[str],
+                         force: bool) -> str:
+    path = data / "profile" / rel
+    if path.exists() and SKELETON_MARKER not in _read_text(path) and not force:
+        return "already filled, skipped"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_note_text(title, keywords, rules), encoding="utf-8", newline="\n")
+    return "written"
+
+
+def _run_onboard(data: Path, raw: dict, force: bool) -> None:
+    try:
+        answers = resolve_answers(raw)
+    except AnswersError as exc:
+        sys.exit(f"invalid answers: {exc}")
+
+    findings = _scan_answers(answers)
+    if findings:
+        kinds = ", ".join(sorted(set(findings)))
+        sys.exit(f"refused: an answer looks like personal data / a secret ({kinds}). "
+                 "Rephrase it (see standards/data-policy.md) and try again.")
+
+    lang_rules, style_rules = _build_rules(answers)
+    status_lang = _write_profile_note(
+        data, "language.md", "Language Preference",
+        ["dil", "language", "türkçe", "ingilizce", "english"], lang_rules, force)
+    status_style = _write_profile_note(
+        data, "working-style.md", "Working Style",
+        ["çalışma tarzı", "working style", "tercih", "preference", "iletişim", "communication"],
+        style_rules, force)
+    print(f"  profile/language.md: {status_lang}")
+    print(f"  profile/working-style.md: {status_style}")
+
+
+def _default_for(qid: str, raw: dict) -> object:
+    if qid == "notes_language":
+        return raw.get("chat_language") or _QUESTIONS_BY_ID["chat_language"]["default"]
+    return _QUESTIONS_BY_ID[qid]["default"]
+
+
+def _ask_question(q: dict, default) -> object:
+    if q["kind"] == "choice":
+        prompt = f"{q['question']} ({'/'.join(q['options'])})"
+        while True:
+            raw = _ask(prompt, str(default))
+            if raw in q["options"]:
+                return raw
+            print(f"  invalid choice: {raw!r}; options: {', '.join(q['options'])}")
+    if q["kind"] == "multi":
+        prompt = f"{q['question']} ({', '.join(q['options'])}; comma-separated)"
+        default_str = ",".join(default)
+        while True:
+            raw = _ask(prompt, default_str)
+            items = [x.strip() for x in raw.split(",") if x.strip()]
+            bad = [i for i in items if i not in q["options"]]
+            if not bad:
+                return items
+            print(f"  invalid option(s): {', '.join(bad)}; options: {', '.join(q['options'])}")
+    return _ask(q["question"], str(default))
+
+
+def cmd_onboard(args: argparse.Namespace) -> None:
+    if args.questions:
+        print(json.dumps(QUESTIONS, indent=2, ensure_ascii=False))
+        return
+
+    if not args.answers and not sys.stdin.isatty():
+        print("Not an interactive terminal. Get the questions with "
+              "`onboard --questions`, ask the user, then run "
+              "`onboard --answers <file>` with the answers as JSON.")
+        return
+
+    data = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
+
+    if args.answers:
+        raw = json.loads(Path(args.answers).read_text(encoding="utf-8"))
+        _run_onboard(data, raw, args.force)
+        return
+
+    raw: dict = {}
+    for q in QUESTIONS:
+        raw[q["id"]] = _ask_question(q, _default_for(q["id"], raw))
+    _run_onboard(data, raw, args.force)
+
+
 # --- registration ------------------------------------------------------------------
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -467,3 +697,10 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     p = sub.add_parser("doctor", help="check the onboarding setup, one line per check")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("onboard", help="fill in profile/ from a few questions")
+    p.add_argument("--questions", action="store_true", help="print the questions as JSON")
+    p.add_argument("--answers", help="JSON file with answers")
+    p.add_argument("--data", help="data dir (default: resolve_data_dir())")
+    p.add_argument("--force", action="store_true", help="overwrite even if already filled")
+    p.set_defaults(func=cmd_onboard)

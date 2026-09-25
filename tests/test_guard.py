@@ -82,6 +82,10 @@ class TestGuardPatterns(unittest.TestCase):
     def test_email_flagged(self):
         self.assertIn("email", graph.scan_line("contact someone@example.org.notreal"))  # guard:ignore
 
+    def test_versioned_package_is_not_an_email(self):
+        # Package specs such as brew's name@version look like addresses.
+        self.assertNotIn("email", graph.scan_line("brew install python@3.12"))
+
     def test_email_allowlist_not_flagged(self):
         self.assertNotIn("email", graph.scan_line("contact test@example.com"))
 
@@ -235,6 +239,24 @@ class TestLeakcheckIdentity(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("possible git identity", result.stdout)
             self.assertNotIn("Test Runner", result.stdout)  # value itself must never be echoed
+
+    def test_repo_owner_handle_is_not_identity(self):
+        # The maintainer's handle equals the origin owner and is public in every URL.
+        with _TempRepo() as repo:
+            repo._run(["git", "config", "user.name", "exampleowner"])
+            repo._run(["git", "remote", "add", "origin", "https://github.com/exampleowner/tool.git"])
+            repo.write("README.md", "clone https://github.com/exampleowner/tool\n")
+            repo.add("README.md")
+            result = repo.graph_cli("leakcheck", "--staged")
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_identity_still_flagged_when_owner_differs(self):
+        with _TempRepo() as repo:
+            repo._run(["git", "remote", "add", "origin", "https://github.com/someoneelse/tool.git"])
+            repo.write("note.txt", "written by Test Runner today\n")
+            repo.add("note.txt")
+            result = repo.graph_cli("leakcheck", "--staged")
+            self.assertIn("possible git identity", result.stdout)
 
     def test_denylist_flagged_without_echoing_value(self):
         with _TempRepo() as repo:
