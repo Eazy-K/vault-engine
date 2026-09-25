@@ -381,6 +381,18 @@ class TestUpdateAlreadyCurrent(UpdateTestCase):
         self.assertIn("already up to date", buf.getvalue())
         self.assertEqual(self.head_tag(), "v0.10.0")
 
+    def test_already_up_to_date_still_repins_a_hand_upgraded_vault(self):
+        # A vault upgraded by hand (git checkout <tag>) kept its old CI pin;
+        # doctor points at `update` to fix it, so the no-op path must re-pin.
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@main\n")
+        with redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(yes=True))
+        self.assertIn("already up to date", buf.getvalue())
+        self.assertIn("uses: example/vault-engine@v0.10.0", workflow.read_text(encoding="utf-8"))
+
 
 class TestUpdatePreviewAndNonTty(UpdateTestCase):
     def test_preview_has_only_the_right_sections_and_refuses_non_tty(self):

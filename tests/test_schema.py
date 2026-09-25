@@ -121,97 +121,291 @@ def _step_two(paths: "graph.Paths") -> list[Path]:
     return [marker]
 
 
-class TestMigrate(SchemaTestCase):
+class MigrateRepoCase(SchemaTestCase):
+    """A data repo with vault.config.json committed, like a v0.2.0 vault."""
+
+    def commit_config(self, data: dict) -> None:
+        write_config(self.paths, data)
+        init_repo(self.data)
+        git(["add", "vault.config.json"], self.data)
+        git(["commit", "-q", "-m", "initial"], self.data)
+
+    def log(self) -> list[str]:
+        return git(["log", "--format=%s"], self.data).stdout.strip().splitlines()
+
+    def head_files(self) -> list[str]:
+        return git(["show", "--name-only", "--format=", "HEAD"], self.data).stdout.split()
+
+    def config(self) -> dict:
+        return json.loads(self.paths.config_file.read_text(encoding="utf-8"))
+
+    def machine(self) -> dict:
+        return json.loads((self.data / ".graph" / "machine.json").read_text(encoding="utf-8"))
+
+    def other_root(self) -> Path:
+        root = self.tmp / "projects"
+        root.mkdir(exist_ok=True)
+        return root
+
+    def missing_root(self) -> str:
+        return str(self.tmp / "other-computer" / "Dev")
+
+
+class TestMigrate(MigrateRepoCase):
     def test_no_op_when_already_current_and_field_explicit(self):
-        write_config(self.paths, {"schema": 1})
-        reached = schema.migrate(self.paths)
-        self.assertEqual(reached, [])
+        self.commit_config({"schema": 1})
+        result = schema.migrate(self.paths)
+        self.assertTrue(result.plan.empty)
+        self.assertFalse(result.written)
+        self.assertIsNone(result.committed)
+        self.assertEqual(self.log(), ["initial"])
 
     def test_writes_implicit_field_when_current_and_missing(self):
-        write_config(self.paths, {"project_roots": ["/x"]})
-        reached = schema.migrate(self.paths, commit=False)
-        self.assertEqual(reached, [1])
-        # Only recording the field is not a migration; the commit says so.
-        init_repo(self.data)
-        write_config(self.paths, {"project_roots": ["/x"]})
-        schema.migrate(self.paths)
-        self.assertIn("chore: record vault schema 1", git(["log", "--format=%s"], self.data).stdout)
-        data = json.loads(self.paths.config_file.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema"], 1)
-        self.assertEqual(data["project_roots"], ["/x"])
+        self.commit_config({"feedback": {"level": "off"}})
+        result = schema.migrate(self.paths)
+        self.assertTrue(result.plan.record_field)
+        self.assertEqual(result.committed, "chore: record vault schema 1")
+        self.assertEqual(self.log()[0], "chore: record vault schema 1")
+        self.assertEqual(self.config(), {"feedback": {"level": "off"}, "schema": 1})
+
+    def test_not_a_git_repo_just_writes(self):
+        write_config(self.paths, {"feedback": {"level": "off"}})
+        result = schema.migrate(self.paths)
+        self.assertTrue(result.written)
+        self.assertIsNone(result.committed)
+        self.assertIn("not a git repo", result.uncommitted_reason)
+        self.assertEqual(self.config()["schema"], 1)
 
     def test_refuses_newer_vault(self):
         write_config(self.paths, {"schema": 99})
         with self.assertRaises(SystemExit):
             schema.migrate(self.paths)
 
-    def test_missing_step_raises(self):
-        write_config(self.paths, {"project_roots": ["/x"]})  # schema 1
+    def test_missing_step_raises_before_writing(self):
+        write_config(self.paths, {"feedback": {"level": "off"}})  # schema 1
+        before = self.paths.config_file.read_bytes()
         with mock.patch.object(schema, "SCHEMA_VERSION", 3), \
              mock.patch.object(schema, "MIGRATIONS", {1: _step_one}):  # step 2->3 missing
             with self.assertRaises(SystemExit) as ctx:
                 schema.migrate(self.paths, commit=False)
         self.assertIn("2 -> 3", str(ctx.exception))
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+        self.assertFalse((self.data / "migrated-1.txt").exists())
 
     def test_two_step_migration_writes_schema_preserves_keys_and_commits_once(self):
-        write_config(self.paths, {"project_roots": ["/x"], "feedback": {"level": "off"}})
-        init_repo(self.data)
-        git(["add", "vault.config.json"], self.data)
-        git(["commit", "-q", "-m", "initial"], self.data)
+        self.commit_config({"feedback": {"level": "off"}, "exclude": ["tmp"]})
 
         with mock.patch.object(schema, "SCHEMA_VERSION", 3), \
              mock.patch.object(schema, "MIGRATIONS", {1: _step_one, 2: _step_two}):
-            reached = schema.migrate(self.paths)
+            result = schema.migrate(self.paths)
 
-        self.assertEqual(reached, [2, 3])
-        data = json.loads(self.paths.config_file.read_text(encoding="utf-8"))
+        self.assertEqual(result.plan.steps, [2, 3])
+        data = self.config()
+        self.assertEqual(list(data), ["feedback", "exclude", "schema"])  # order kept
         self.assertEqual(data["schema"], 3)
-        self.assertEqual(data["project_roots"], ["/x"])
-        self.assertEqual(data["feedback"], {"level": "off"})
         self.assertTrue((self.data / "migrated-1.txt").exists())
         self.assertTrue((self.data / "migrated-2.txt").exists())
 
-        log = git(["log", "--oneline"], self.data).stdout.strip().splitlines()
+        log = self.log()
         self.assertEqual(len(log), 2)  # initial commit + exactly one migration commit
-        self.assertIn("chore: migrate vault schema 1 -> 3", log[0])
-
-        show = git(["show", "--stat", "--format=", "HEAD"], self.data).stdout
-        self.assertIn("vault.config.json", show)
-        self.assertIn("migrated-1.txt", show)
-        self.assertIn("migrated-2.txt", show)
+        self.assertEqual(log[0], "chore: migrate vault schema 1 -> 3")
+        self.assertEqual(sorted(self.head_files()),
+                         ["migrated-1.txt", "migrated-2.txt", "vault.config.json"])
 
     def test_no_commit_flag_leaves_changes_uncommitted(self):
-        write_config(self.paths, {"project_roots": ["/x"]})
-        init_repo(self.data)
-        git(["add", "vault.config.json"], self.data)
-        git(["commit", "-q", "-m", "initial"], self.data)
+        self.commit_config({"feedback": {"level": "off"}})
 
         with mock.patch.object(schema, "SCHEMA_VERSION", 2), \
              mock.patch.object(schema, "MIGRATIONS", {1: _step_one}):
-            schema.migrate(self.paths, commit=False)
+            result = schema.migrate(self.paths, commit=False)
 
-        log = git(["log", "--oneline"], self.data).stdout.strip().splitlines()
-        self.assertEqual(len(log), 1)  # only the initial commit
+        self.assertEqual(result.uncommitted_reason, "--no-commit")
+        self.assertEqual(self.log(), ["initial"])
         status = git(["status", "--porcelain"], self.data).stdout
         self.assertIn("vault.config.json", status)
 
-    def test_preexisting_staged_changes_block_the_commit(self):
-        write_config(self.paths, {"project_roots": ["/x"]})
-        init_repo(self.data)
-        git(["add", "vault.config.json"], self.data)
-        git(["commit", "-q", "-m", "initial"], self.data)
+    def test_dry_run_writes_nothing(self):
+        root = self.other_root()
+        self.commit_config({"project_roots": [str(root)]})
+        before = self.paths.config_file.read_bytes()
+        result = schema.migrate(self.paths, dry_run=True)
+        self.assertEqual(result.plan.roots_action, "move")
+        self.assertTrue(result.plan.record_field)
+        self.assertFalse(result.written)
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+        self.assertEqual(self.log(), ["initial"])
+
+
+class TestMigrateStagedChanges(MigrateRepoCase):
+    def test_unrelated_staged_changes_stay_staged_and_out_of_the_commit(self):
+        self.commit_config({"feedback": {"level": "off"}})
         (self.data / "unrelated.txt").write_text("pending\n", encoding="utf-8", newline="\n")
         git(["add", "unrelated.txt"], self.data)
 
         with mock.patch.object(schema, "SCHEMA_VERSION", 2), \
-             mock.patch.object(schema, "MIGRATIONS", {1: _step_one}), \
-             redirect_stdout(StringIO()) as buf:
-            reached = schema.migrate(self.paths)
+             mock.patch.object(schema, "MIGRATIONS", {1: _step_one}):
+            result = schema.migrate(self.paths)
 
-        self.assertEqual(reached, [2])  # the field/step still ran locally
-        self.assertIn("commit them yourself", buf.getvalue())
-        log = git(["log", "--oneline"], self.data).stdout.strip().splitlines()
-        self.assertEqual(len(log), 1)  # migration was not committed
+        self.assertEqual(result.committed, "chore: migrate vault schema 1 -> 2")
+        self.assertEqual(len(self.log()), 2)
+        self.assertEqual(sorted(self.head_files()), ["migrated-1.txt", "vault.config.json"])
+        staged = git(["diff", "--cached", "--name-only"], self.data).stdout.split()
+        self.assertEqual(staged, ["unrelated.txt"])
+        # A rerun has nothing left to do and makes no commit.
+        with mock.patch.object(schema, "SCHEMA_VERSION", 2), \
+             mock.patch.object(schema, "MIGRATIONS", {1: _step_one}):
+            again = schema.migrate(self.paths)
+        self.assertTrue(again.plan.empty)
+        self.assertIsNone(again.committed)
+        self.assertEqual(len(self.log()), 2)
+
+    def test_own_uncommitted_config_edit_blocks_and_writes_nothing(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        write_config(self.paths, {"feedback": {"level": "reports"}})  # the user's edit
+        git(["add", "vault.config.json"], self.data)
+        before = self.paths.config_file.read_bytes()
+        with self.assertRaises(SystemExit) as ctx:
+            schema.migrate(self.paths)
+        self.assertIn("uncommitted changes", str(ctx.exception))
+        self.assertIn("nothing was written", str(ctx.exception))
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+        self.assertEqual(self.log(), ["initial"])
+
+    def test_rerun_commits_an_earlier_uncommitted_migration(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        schema.migrate(self.paths, commit=False)
+        self.assertEqual(self.log(), ["initial"])
+
+        result = schema.migrate(self.paths)
+        self.assertTrue(result.plan.empty)
+        self.assertIsNotNone(result.leftover)
+        self.assertEqual(result.committed, "chore: record vault schema 1")
+        self.assertEqual(self.log()[0], "chore: record vault schema 1")
+        self.assertEqual(git(["status", "--porcelain"], self.data).stdout, "")
+
+        third = schema.migrate(self.paths)
+        self.assertIsNone(third.committed)
+        self.assertEqual(len(self.log()), 2)
+
+    def test_v030_leftover_plus_roots_move_is_one_commit(self):
+        # v0.3.0's migrate wrote "schema" but left it uncommitted when something
+        # else was staged, and never touched project_roots.
+        root = self.other_root()
+        self.commit_config({"project_roots": [str(root)]})
+        write_config(self.paths, {"project_roots": [str(root)], "schema": 1})
+
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.plan.roots_action, "move")
+        self.assertEqual(result.committed,
+                         "chore: record vault schema 1, move project_roots to machine.json")
+        self.assertEqual(len(self.log()), 2)
+        self.assertEqual(self.config(), {"schema": 1})
+        self.assertEqual(self.machine()["project_roots"], [str(root)])
+
+
+class TestMigrateProjectRoots(MigrateRepoCase):
+    def test_moves_existing_roots_to_machine_json_in_one_commit(self):
+        root = self.other_root()
+        self.commit_config({"project_roots": [str(root)], "feedback": {"level": "off"}})
+        (self.data / ".graph").mkdir()
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"updates": {"check": False}}), encoding="utf-8", newline="\n")
+
+        result = schema.migrate(self.paths)
+
+        self.assertEqual(result.plan.roots_action, "move")
+        self.assertEqual(self.config(), {"feedback": {"level": "off"}, "schema": 1})
+        self.assertEqual(self.machine(), {"updates": {"check": False}, "project_roots": [str(root)]})
+        self.assertEqual(len(self.log()), 2)
+        self.assertEqual(self.head_files(), ["vault.config.json"])  # machine.json never committed
+        self.assertEqual(graph.project_roots(self.paths), [root.resolve()])
+        self.assertEqual(schema.shared_project_roots(self.paths), [])
+
+    def test_engine_parent_is_just_removed(self):
+        default = str(graph.ENGINE.resolve().parent)
+        self.commit_config({"schema": 1, "project_roots": [default]})
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.plan.roots_action, "drop")
+        self.assertEqual(result.committed, "chore: remove project_roots from the shared config")
+        self.assertEqual(self.config(), {"schema": 1})
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_roots_missing_here_stay_with_a_note(self):
+        missing = self.missing_root()
+        self.commit_config({"project_roots": [missing]})
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.plan.roots_action, "keep")
+        self.assertTrue(any("do not exist on this computer" in n for n in result.plan.notes))
+        self.assertEqual(result.committed, "chore: record vault schema 1")
+        self.assertEqual(self.config(), {"project_roots": [missing], "schema": 1})
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_machine_json_roots_are_not_overwritten(self):
+        root = self.other_root()
+        own = self.tmp / "own"
+        own.mkdir()
+        self.commit_config({"schema": 1, "project_roots": [str(root)]})
+        (self.data / ".graph").mkdir()
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"project_roots": [str(own)]}), encoding="utf-8", newline="\n")
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.plan.roots_action, "drop")
+        self.assertEqual(self.machine(), {"project_roots": [str(own)]})
+        self.assertNotIn("project_roots", self.config())
+
+
+class TestCmdMigrate(MigrateRepoCase):
+    def _run(self, **kw) -> str:
+        args = Namespace(yes=kw.get("yes", True), no_commit=kw.get("no_commit", False),
+                         dry_run=kw.get("dry_run", False))
+        with mock.patch.object(graph, "default_paths", return_value=self.paths), \
+             redirect_stdout(StringIO()) as buf:
+            schema.cmd_migrate(args)
+        return buf.getvalue()
+
+    def test_up_to_date_prints_one_line_verdict(self):
+        self.commit_config({"schema": 1})
+        out = self._run()
+        self.assertIn("vault schema 1; this engine writes schema 1", out)
+        self.assertIn("nothing to migrate", out)
+        self.assertNotIn("committed", out)
+
+    def test_implicit_field_output_is_consistent(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        out = self._run()
+        self.assertIn("vault schema 1 (implicit)", out)
+        self.assertIn("migrate will:", out)
+        self.assertIn('record "schema": 1', out)
+        self.assertIn("committed: chore: record vault schema 1", out)
+        self.assertNotIn("up to date", out)
+        # Rerun: the same header, then nothing to do.
+        again = self._run()
+        self.assertIn("nothing to migrate", again)
+
+    def test_dry_run_prints_plan_and_writes_nothing(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        before = self.paths.config_file.read_bytes()
+        out = self._run(yes=False, dry_run=True)
+        self.assertIn("migrate will:", out)
+        self.assertIn("dry run: nothing written", out)
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+
+    def test_non_interactive_without_yes_writes_nothing(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        before = self.paths.config_file.read_bytes()
+        with mock.patch("sys.stdin.isatty", return_value=False), \
+             self.assertRaises(SystemExit) as ctx:
+            self._run(yes=False)
+        self.assertIn("--yes", str(ctx.exception))
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+
+    def test_leftover_is_reported_and_committed(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        self._run(no_commit=True)
+        out = self._run()
+        self.assertIn("never committed", out)
+        self.assertIn("committed: chore: record vault schema 1", out)
 
 
 # --- schema_of_engine_ref -------------------------------------------------------
@@ -387,7 +581,7 @@ class TestReadingStillWorks(SchemaTestCase):
 
 # --- doctor ---------------------------------------------------------------------
 
-class TestDoctorSchemaLine(unittest.TestCase):
+class DoctorCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -412,6 +606,8 @@ class TestDoctorSchemaLine(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         return buf.getvalue()
 
+
+class TestDoctorSchemaLine(DoctorCase):
     def test_ok_when_current(self):
         write_config(graph.Paths(graph.ENGINE, self.data), {"schema": schema.SCHEMA_VERSION})
         out = self._run_doctor()
@@ -428,6 +624,82 @@ class TestDoctorSchemaLine(unittest.TestCase):
         out = self._run_doctor()
         self.assertIn("FAIL vault schema 99 is newer than this engine", out)
         self.assertIn("run update on this computer", out)
+
+    def test_warn_when_schema_field_is_missing(self):
+        write_config(graph.Paths(graph.ENGINE, self.data), {"feedback": {"level": "off"}})
+        out = self._run_doctor()
+        self.assertIn("WARN vault schema 1 (implicit, not recorded in vault.config.json): "
+                      "run migrate", out)
+        self.assertNotIn("OK   vault schema", out)
+
+
+class TestDoctorUpgradeLeftovers(DoctorCase):
+    """What a vault upgraded by hand from v0.2.0 still carries (task 0007)."""
+
+    WORKFLOW = ("name: vault guard\non:\n  push:\n    branches: [main]\n  pull_request:\n\n"
+                "jobs:\n  guard:\n    runs-on: ubuntu-latest\n    steps:\n"
+                "      - uses: example/vault-engine@{ref}\n")
+
+    def setUp(self):
+        super().setUp()
+        write_config(graph.Paths(graph.ENGINE, self.data), {"schema": schema.SCHEMA_VERSION})
+
+    def _workflow(self, ref: str) -> None:
+        path = self.data / ".github" / "workflows" / "vault.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.WORKFLOW.format(ref=ref), encoding="utf-8", newline="\n")
+
+    def _on_branch(self, name: str) -> None:
+        git(["symbolic-ref", "HEAD", f"refs/heads/{name}"], self.data)
+
+    def _run_doctor_on(self, channel: tuple[str, str | None]) -> str:
+        import update
+        with mock.patch.object(update, "channel", return_value=channel), \
+             mock.patch.object(update, "record_check", return_value=None), \
+             mock.patch.dict(sys.modules, {"update": update}):
+            return self._run_doctor()
+
+    def test_shared_project_roots_present_here(self):
+        root = self.tmp / "projects"
+        root.mkdir()
+        write_config(graph.Paths(graph.ENGINE, self.data),
+                     {"schema": schema.SCHEMA_VERSION, "project_roots": [str(root)]})
+        out = self._run_doctor()
+        self.assertIn("WARN vault.config.json sets project_roots, a per-computer path, in the "
+                      "shared config: run migrate", out)
+
+    def test_shared_project_roots_of_another_computer(self):
+        write_config(graph.Paths(graph.ENGINE, self.data),
+                     {"schema": schema.SCHEMA_VERSION,
+                      "project_roots": [str(self.tmp / "other-computer")]})
+        out = self._run_doctor()
+        self.assertIn("WARN vault.config.json sets project_roots that do not exist on this "
+                      "computer", out)
+
+    def test_ci_pinned_to_main_on_a_stable_install(self):
+        self._workflow("main")
+        self._on_branch("main")
+        out = self._run_doctor_on(("stable", "v0.3.0"))
+        self.assertIn("WARN vault CI runs the engine at @main, this engine is v0.3.0: run update", out)
+
+    def test_ci_pin_matches_stable_install(self):
+        self._workflow("v0.3.0")
+        self._on_branch("main")
+        out = self._run_doctor_on(("stable", "v0.3.0"))
+        self.assertNotIn("vault CI", out)
+
+    def test_ci_pin_on_dev_channel_is_not_flagged(self):
+        self._workflow("main")
+        self._on_branch("main")
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertNotIn("vault CI", out)
+
+    def test_master_branch_never_triggers_ci(self):
+        self._workflow("main")
+        self._on_branch("master")
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("WARN vault CI runs on pushes to main, but the data repo is on master, "
+                      "so CI never runs: git branch -m master main && git push -u origin main", out)
 
 
 if __name__ == "__main__":
