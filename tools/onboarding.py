@@ -164,7 +164,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"  wrote: {config_file.relative_to(target).as_posix()}")
 
     print("\nSonraki adımlar:")
-    print(f"  1. python \"{g.ENGINE / "tools" / "graph.py"}\" setup --data \"{target}\"")
+    print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
     print(f"  2. profile/ altındaki notları doldur ({target / 'profile'})")
 
 
