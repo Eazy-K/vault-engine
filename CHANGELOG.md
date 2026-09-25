@@ -2,11 +2,6 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**.
 
-## [Unreleased]
-
-### Fixed
-- `context` in a project always loads `<project>-status` and `<project>-overview`, outside the token budget like core notes. The project's other notes follow in order of relevance to the task instead of alphabetically, so a long note no longer pushes the status note out.
-
 ## [0.1.0] - 2026-09-25
 
 First public release.
