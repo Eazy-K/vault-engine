@@ -637,7 +637,8 @@ GUARD_PATTERNS = [
     ("card number", re.compile(r"(?<![\d.])\d(?:[ -]?\d){12,18}(?![\d.])"), _luhn_ok),
     ("phone", re.compile(r"(?<![\d+])(?:\+90|0)[ -]?\(?[2-5]\d{2}\)?[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}(?!\d)"), None),
     ("phone", re.compile(r"(?<!\d)5\d{2}[ -]\d{3}[ -]\d{2}[ -]\d{2}(?!\d)"), None),
-    ("email", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), lambda m: not EMAIL_ALLOW.search(m)),
+    # The last label must contain a letter, so `python@3.12` is not an address.
+    ("email", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z][\w-]*"), lambda m: not EMAIL_ALLOW.search(m)),
     ("private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----"), None),
     ("token", re.compile(r"\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}"
                          r"|sk-(?:ant-)?[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,})"), None),
@@ -743,6 +744,14 @@ def _is_user_content_path(p: str) -> bool:
     return not sep and norm in CONTENT_TOP_FILES
 
 
+def _origin_owner(root: Path) -> str | None:
+    """Owner of the GitHub `origin` remote (https or ssh form), if any."""
+    url = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, capture_output=True,
+                         text=True, encoding="utf-8").stdout.strip()
+    m = re.search(r"github\.com[:/]+([^/]+)/", url)
+    return m.group(1) if m else None
+
+
 def _leak_terms(root: Path) -> list[tuple[str, str]]:
     """(term, kind) pairs that would identify the user: home path, git identity,
     and an optional local (never committed) denylist."""
@@ -751,9 +760,14 @@ def _leak_terms(root: Path) -> list[tuple[str, str]]:
     for variant in {home, home.replace("\\", "/"), home.replace("/", "\\")}:
         if len(variant) >= 4:
             terms.append((variant, "home path"))
+    owner = _origin_owner(root)
     for key in ("user.name", "user.email"):
         val = subprocess.run(["git", "config", key], cwd=root, capture_output=True,
                               text=True, encoding="utf-8").stdout.strip()
+        # A maintainer's handle that equals the repo owner is already public in
+        # every clone URL; flagging it would block each README link.
+        if key == "user.name" and owner and val.casefold() == owner.casefold():
+            continue
         if len(val) >= 4:
             terms.append((val, "git identity"))
     try:
