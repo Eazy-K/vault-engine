@@ -213,7 +213,7 @@ class TestSetup(unittest.TestCase):
         calls = []
         with mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch("onboarding._set_user_env_var", side_effect=lambda n, v: calls.append((n, v))), \
-             mock.patch("os.name", "nt"), \
+             mock.patch("onboarding._is_windows", return_value=True), \
              mock.patch.dict(os.environ, {}, clear=True), \
              redirect_stdout(StringIO()):
             onboarding.cmd_setup(self._args(no_env=False))
