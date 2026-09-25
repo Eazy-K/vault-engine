@@ -126,7 +126,8 @@ def _commit_migration(paths: "g.Paths", touched: set[Path], from_schema: int, to
     if add.returncode != 0:
         print(f"git add failed: {add.stderr.strip()}")
         return
-    message = f"chore: migrate vault schema {from_schema} -> {to_schema}"
+    message = (f"chore: migrate vault schema {from_schema} -> {to_schema}"
+               if to_schema != from_schema else f"chore: record vault schema {to_schema}")
     commit = subprocess.run(["git", "commit", "-q", "-m", message], cwd=data,
                             capture_output=True, text=True)
     if commit.returncode != 0:

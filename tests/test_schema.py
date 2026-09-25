@@ -131,6 +131,11 @@ class TestMigrate(SchemaTestCase):
         write_config(self.paths, {"project_roots": ["/x"]})
         reached = schema.migrate(self.paths, commit=False)
         self.assertEqual(reached, [1])
+        # Only recording the field is not a migration; the commit says so.
+        init_repo(self.data)
+        write_config(self.paths, {"project_roots": ["/x"]})
+        schema.migrate(self.paths)
+        self.assertIn("chore: record vault schema 1", git(["log", "--format=%s"], self.data).stdout)
         data = json.loads(self.paths.config_file.read_text(encoding="utf-8"))
         self.assertEqual(data["schema"], 1)
         self.assertEqual(data["project_roots"], ["/x"])
@@ -253,6 +258,16 @@ class TestSaveLearnedGuard(SchemaTestCase):
         g = graph.Graph(self.paths)
         g.save_learned()  # must not raise
         self.assertTrue((self.paths.learned_dir / f"{g.machine}.json").exists())
+
+    def test_reinforce_refuses_before_printing_unsaved_changes(self):
+        write_config(self.paths, {"schema": 99})
+        for name in ("alpha", "beta"):
+            (self.data / f"{name}.md").write_text(f"# {name}\n", encoding="utf-8", newline="\n")
+        args = Namespace(notes=["alpha", "beta"], task=None, rate=graph.LEARNING_RATE)
+        with mock.patch.object(graph, "default_paths", return_value=self.paths), \
+             redirect_stdout(StringIO()) as out, self.assertRaises(SystemExit):
+            graph.cmd_reinforce(args)
+        self.assertNotIn("->", out.getvalue())
 
 
 class TestMoveGuard(SchemaTestCase):

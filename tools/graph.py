@@ -993,6 +993,7 @@ def cmd_reinforce(args) -> None:
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
         return
+    _require_writable(paths)  # before printing changes that would not be saved
     for a, b in combinations(ids, 2):
         before = graph.weight(a, b)
         graph.add_learned(pair(a, b), args.rate * (1.0 - before))
@@ -1028,6 +1029,7 @@ def cmd_stats(_args) -> None:
 def cmd_decay(args) -> None:
     # Each machine decays only its own file, so decay never causes merge conflicts.
     graph = Graph()
+    _require_writable(graph.paths)
     kept = {}
     for key, delta in graph.own_learned.items():
         delta *= 1.0 - args.rate
