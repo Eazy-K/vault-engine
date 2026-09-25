@@ -65,6 +65,12 @@ To turn off: `feedback set --level off` (or with `--machine` for a specific mach
 - Data repo: the `.github/workflows/vault.yml` shipped by `init` uses the engine as a private composite action (`uses: <owner>/vault-engine@main`): guard, commit messages, and note lint. This way commits pushed from the cloud or a phone are checked too.
 - If the engine is private, do this once: in the engine repo, Settings > Actions > General > Access → "Accessible from repositories owned by the user". Or via the CLI: `gh api -X PUT repos/<owner>/vault-engine/actions/permissions/access -f access_level=user`
 
+## Versions and updates
+- Releases follow [SemVer](https://semver.org/) and are listed in [CHANGELOG.md](CHANGELOG.md). While the version is 0.x, a minor bump (0.1 → 0.2) may change config, commands or the data layout; its changelog entry then has **Upgrade notes**.
+- Current version: `python tools/graph.py --version` (also the first line of `doctor`).
+- Update: `git fetch --tags && git checkout <tag>` in the engine folder, read the upgrade notes, then run `doctor`.
+- Maintainers: bump `__version__` in `tools/graph.py`, add a CHANGELOG entry, merge, then tag `vX.Y.Z` and create a GitHub release.
+
 ## Contributing to the engine
 - Run `git config core.hooksPath .githooks` in this repo. `leakcheck` blocks commits containing user content (`profile/`, `projects/`, ...), the home directory path, the git identity, or terms from `.git/info/vault-denylist`.
 - New code should come with tests.

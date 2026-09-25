@@ -353,6 +353,7 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
     def check(status: str, msg: str) -> None:
         checks.append((status, msg))
 
+    check("OK", f"vault-engine {g.__version__}")
     if sys.version_info >= (3, 10):
         check("OK", f"Python {sys.version.split()[0]}")
     else:

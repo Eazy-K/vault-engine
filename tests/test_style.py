@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -32,6 +33,16 @@ class TestTextWrites(unittest.TestCase):
                 tree = ast.parse(path.read_text(encoding="utf-8"))
                 self.assertEqual(_text_writes_without_newline(tree), [],
                                  f"{path.name}: pass newline=\"\n\" on these lines")
+
+
+class TestVersion(unittest.TestCase):
+    def test_changelog_top_entry_matches_version(self):
+        # A release bumps both; forgetting one ships a misleading --version.
+        source = (TOOLS / "graph.py").read_text(encoding="utf-8")
+        version = re.search(r'^__version__ = "([^"]+)"', source, re.M).group(1)
+        changelog = (TOOLS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        top = re.search(r"^## \[([^\]]+)\]", changelog, re.M).group(1)
+        self.assertEqual(top, version)
 
 
 if __name__ == "__main__":

@@ -71,7 +71,11 @@ Tell the user this downloads the vault-engine program itself (no personal data i
 
 ```
 git clone https://github.com/Eazy-K/vault-engine.git "<projects folder>/vault-engine"
+cd "<projects folder>/vault-engine"
+git checkout "$(git describe --tags --abbrev=0)"
 ```
+
+The last command switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet, skip it. Later, to update: `git fetch --tags`, then `git checkout <newer tag>` after reading that version's "Upgrade notes" in `CHANGELOG.md`.
 
 ---
 
