@@ -169,6 +169,13 @@ class TestDetectProject(unittest.TestCase):
         inner.mkdir()
         self.assertIsNone(graph.detect_project(inner, self.paths))
 
+    def test_engine_with_notes_is_a_project(self):
+        inner = self.engine / "tools"
+        inner.mkdir()
+        write(self.data / "projects" / "vault-engine" / "vault-engine-status.md", "# status\n")
+        self.assertEqual(graph.detect_project(inner, self.paths), "vault-engine")
+        self.assertEqual(graph.detect_project(self.engine, self.paths), "vault-engine")
+
     def test_config_overrides_default_root(self):
         other_root = self.tmp / "other-root"
         (other_root / "example-project").mkdir(parents=True)

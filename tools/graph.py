@@ -589,16 +589,23 @@ def project_roots(paths: Paths) -> list[Path]:
     return [paths.engine.resolve().parent]
 
 
+def has_project_notes(paths: Paths, name: str) -> bool:
+    """True when the data folder holds notes under projects/<name>/."""
+    notes_root = paths.data / "projects" / name
+    return notes_root.is_dir() and any(notes_root.rglob("*.md"))
+
+
 def detect_project(cwd: Path, paths: Paths) -> str | None:
     """The project name for `cwd`, or None outside any project root.
 
-    A path inside the engine or the data folder is never a project, even if it
-    also happens to sit under a configured root.
+    A path inside the engine or the data folder is not a project, even if it
+    also happens to sit under a configured root, unless projects/<folder>/
+    notes exist: then the user develops that folder and it counts as one.
     """
     cwd = cwd.resolve()
     for excluded in (paths.engine.resolve(), paths.data.resolve()):
         if cwd == excluded or excluded in cwd.parents:
-            return None
+            return excluded.name if has_project_notes(paths, excluded.name) else None
     for root in project_roots(paths):
         if root in cwd.parents:
             return cwd.relative_to(root).parts[0]

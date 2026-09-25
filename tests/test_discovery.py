@@ -82,6 +82,15 @@ class TestDiscover(unittest.TestCase):
         self.assertNotIn("data", names)
         self.assertIn("alpha", names)
 
+    def test_engine_with_notes_is_discovered(self):
+        init_repo(self.engine)
+        notes = self.data / "projects" / "vault-engine"
+        notes.mkdir(parents=True)
+        (notes / "vault-engine-status.md").write_text("# status\n", encoding="utf-8")
+        results = {p["name"]: p for p in discovery.discover(self.paths)}
+        self.assertIn("vault-engine", results)
+        self.assertTrue(results["vault-engine"]["has_notes"])
+
     def test_non_repo_folder_is_skipped(self):
         (self.root / "not-a-repo").mkdir()
         init_repo(self.root / "alpha")
