@@ -79,6 +79,27 @@ class TestInit(unittest.TestCase):
         config = json.loads((target / "vault.config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["feedback"]["level"], "off")
 
+    def test_ci_workflow_names_the_engine_repo(self):
+        import feedback
+        target = self.tmp / "example-data6"
+        workflow = target / ".github" / "workflows" / "vault.yml"
+        with mock.patch.object(feedback, "_derive_repo", return_value="example/vault-engine"), \
+                redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        text = workflow.read_text(encoding="utf-8")
+        self.assertIn("uses: example/vault-engine@main", text)
+        self.assertNotIn(onboarding.ENGINE_REPO_PLACEHOLDER, text)
+
+    def test_ci_workflow_placeholder_kept_without_remote(self):
+        import feedback
+        target = self.tmp / "example-data7"
+        with mock.patch.object(feedback, "_derive_repo", return_value=None), \
+                redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_init(self._args(target))
+        text = (target / ".github" / "workflows" / "vault.yml").read_text(encoding="utf-8")
+        self.assertIn(onboarding.ENGINE_REPO_PLACEHOLDER, text)
+        self.assertIn("vault.yml", buf.getvalue())
+
     def test_explicit_feedback_level_honoured(self):
         target = self.tmp / "example-data3"
         with redirect_stdout(StringIO()):
@@ -192,7 +213,7 @@ class TestSetup(unittest.TestCase):
         calls = []
         with mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch("onboarding._set_user_env_var", side_effect=lambda n, v: calls.append((n, v))), \
-             mock.patch("os.name", "nt"), \
+             mock.patch("onboarding._is_windows", return_value=True), \
              mock.patch.dict(os.environ, {}, clear=True), \
              redirect_stdout(StringIO()):
             onboarding.cmd_setup(self._args(no_env=False))

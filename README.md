@@ -49,6 +49,11 @@ Komutlar:
 
 Kapatmak için: `feedback set --level off` (veya belirli bir makinede `--machine` ile).
 
+## CI (GitHub Actions)
+- Motor reposu: her push ve PR'da testler (Ubuntu: Python 3.10 ve 3.13, Windows: 3.13) ve `leakcheck` (dosyalar + commit mesajları).
+- Veri reposu: `init` ile gelen `.github/workflows/vault.yml`, motoru private bir composite action olarak kullanır (`uses: <sahip>/vault-engine@main`): guard, commit mesajları ve not lint'i. Böylece buluttan ya da telefondan atılan commit'ler de denetlenir.
+- Motor private ise bir kez: motor reposunda Settings > Actions > General > Access → "Accessible from repositories owned by the user". Komutla: `gh api -X PUT repos/<sahip>/vault-engine/actions/permissions/access -f access_level=user`
+
 ## Motora katkı
 - Bu repoda `git config core.hooksPath .githooks` çalıştır. `leakcheck`; kullanıcı içeriğini (`profile/`, `projects/`, ...), ev dizini yolunu, git kimliğini ve `.git/info/vault-denylist` listesindeki terimleri commit'te durdurur.
 - Yeni kod testli yazılır.
