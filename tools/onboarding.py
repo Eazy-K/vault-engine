@@ -194,7 +194,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 
     print("\nNext steps:")
     print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
-    print(f"  2. fill in the notes under profile/ ({target / 'profile'})")
+    print(f"  2. python \"{g.ENGINE / 'tools' / 'graph.py'}\" onboard --data \"{target}\""
+          "   (a few questions that fill in your profile)")
 
 
 # --- setup -----------------------------------------------------------------------
