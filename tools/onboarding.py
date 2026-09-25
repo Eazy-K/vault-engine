@@ -76,7 +76,7 @@ def _append_if_missing(path: Path, line: str) -> None:
     if line in text:
         print(f"  ok: {path} already has the line")
         return
-    with path.open("a", encoding="utf-8") as f:
+    with path.open("a", encoding="utf-8", newline="\n") as f:
         if text and not text.endswith("\n"):
             f.write("\n")
         f.write(line + "\n")
@@ -253,7 +253,7 @@ def _setup_agents() -> None:
         if dest.exists() and dest.read_text(encoding="utf-8") == content:
             print(f"  unchanged: {dest}")
             continue
-        dest.write_text(content, encoding="utf-8")
+        dest.write_text(content, encoding="utf-8", newline="\n")
         print(f"  copied: {dest}")
 
 
@@ -291,7 +291,7 @@ def _setup_routing(data: Path) -> None:
             else:
                 print(f"  skipped (exists, no routing line): {claude_md}")
             continue
-        claude_md.write_text(line + "\n", encoding="utf-8")
+        claude_md.write_text(line + "\n", encoding="utf-8", newline="\n")
         print(f"  written: {claude_md}")
 
 
@@ -336,6 +336,14 @@ def _lint_summary(data: Path) -> tuple[bool, str]:
     return ok, summary
 
 
+AGENT_TOOLS = (("claude", "Claude Code"), ("codex", "Codex"))
+
+
+def _which(tool: str) -> str | None:
+    # Wrapped so tests can control what is "installed".
+    return shutil.which(tool)
+
+
 def cmd_doctor(_args: argparse.Namespace) -> None:
     checks: list[tuple[str, str]] = []
 
@@ -346,6 +354,15 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("OK", f"Python {sys.version.split()[0]}")
     else:
         check("FAIL", f"Python {sys.version.split()[0]} < 3.10")
+
+    # Which agent CLIs can follow AGENTS.md here; Ollama only adds semantic search.
+    found = {tool: _which(tool) for tool, _ in AGENT_TOOLS}
+    for tool, label in AGENT_TOOLS:
+        check("OK" if found[tool] else "INFO", f"{label}: {'found' if found[tool] else 'not found'}")
+    if not any(found.values()):
+        check("WARN", "no supported agent CLI found (claude, codex)")
+    if not _which("ollama"):
+        check("INFO", "ollama CLI not found (keyword-only search unless Ollama runs elsewhere)")
 
     raw_engine = os.environ.get("VAULT_ENGINE")
     if not raw_engine:
