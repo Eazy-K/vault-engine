@@ -469,7 +469,7 @@ class TestOnboardAnswers(unittest.TestCase):
                        (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
 
     def test_guard_refuses_without_echoing_value(self):
-        local_part = "kursad" + ".test"
+        local_part = "jane" + ".doe"
         domain = "example" + "-personal.com"
         email = f"{local_part}@{domain}"
         with self.assertRaises(SystemExit) as ctx, redirect_stdout(StringIO()):
