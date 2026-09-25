@@ -206,6 +206,19 @@ def _set_user_env_var(name: str, value: str) -> None:
     subprocess.run(["setx", name, value], check=True, capture_output=True)
 
 
+def _user_env_var(name: str) -> str | None:
+    """The value persisted for the user on Windows (what setx wrote). Processes
+    started before setx, such as an open terminal or agent, don't see it."""
+    if not _is_windows():
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            return str(winreg.QueryValueEx(key, name)[0])
+    except (ImportError, OSError):
+        return None
+
+
 def _same_path(a: str, b: str) -> bool:
     try:
         return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
@@ -234,7 +247,9 @@ def _setup_env(data: Path, interactive: bool) -> None:
         if do_it:
             for name, value in pending:
                 _set_user_env_var(name, value)
-                print(f"  set (setx): {name}={value}  (takes effect in a new terminal)")
+                print(f"  set (setx): {name}={value}")
+            print("  Restart open terminals and agents (Claude Code, Codex): "
+                  "they only see the new values after a restart.")
         else:
             for name, value in pending:
                 print(f"  export {name}={value}")
@@ -369,7 +384,10 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("INFO", "ollama CLI not found (keyword-only search unless Ollama runs elsewhere)")
 
     raw_engine = os.environ.get("VAULT_ENGINE")
-    if not raw_engine:
+    if not raw_engine and _user_env_var("VAULT_ENGINE"):
+        check("WARN", "VAULT_ENGINE is set for the user but not in this process: "
+                      "restart the terminal and the agent")
+    elif not raw_engine:
         check("WARN", "VAULT_ENGINE not set")
     elif not _same_path(raw_engine, str(g.ENGINE)):
         check("WARN", f"VAULT_ENGINE={raw_engine} != {g.ENGINE}")
