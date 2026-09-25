@@ -237,8 +237,27 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         output = self._run_context()
         self.assertIn("note: projects/example-project/example-project-status", output)
         self.assertIn("note: projects/example-project/example-project-overview", output)
-        self.assertIn("omitted over budget: projects/example-project/example-project-aaa-research",
-                      output)
+        # The whole budget is left for it, so it is truncated rather than omitted.
+        self.assertLess(output.index("example-project-status |"),
+                        output.index("example-project-aaa-research |"))
+        self.assertIn("<!-- truncated -->", output)
+
+    def test_large_status_and_overview_leave_the_budget_to_task_notes(self):
+        folder = self.data / "projects" / "example-project"
+        write(folder / "example-project-overview.md", note("Overview", "what it is\n" * 600))
+        write(folder / "example-project-status.md", note("Status", "where we are\n" * 600))
+        write(folder / "example-project-design.md", note("Design", "how it works"))
+        output = self._run_context()
+        self.assertIn("note: projects/example-project/example-project-design", output)
+        self.assertNotIn("omitted over budget", output)
+
+    def test_large_core_notes_leave_the_budget_to_task_notes(self):
+        write(self.data / "standards" / "big-core.md", note("Core", "rule\n" * 2000, core=True))
+        write(self.data / "projects" / "example-project" / "example-project-design.md",
+              note("Design", "how it works"))
+        output = self._run_context()
+        self.assertIn("note: projects/example-project/example-project-design", output)
+        self.assertNotIn("omitted over budget", output)
 
     def test_status_and_overview_bypass_the_budget(self):
         folder = self.data / "projects" / "example-project"
