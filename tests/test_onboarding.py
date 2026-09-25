@@ -314,6 +314,7 @@ class TestDoctor(unittest.TestCase):
         env = self._env()
         del env["VAULT_ENGINE"]
         with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("onboarding._user_env_var", return_value=None), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
              redirect_stdout(StringIO()) as buf:
@@ -321,6 +322,23 @@ class TestDoctor(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         self.assertIn("WARN", buf.getvalue())
         self.assertIn("VAULT_ENGINE", buf.getvalue())
+
+
+    def test_warn_restart_when_set_for_user_only(self):
+        env = self._env()
+        del env["VAULT_ENGINE"]
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("onboarding._user_env_var", return_value=str(graph.ENGINE)), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        self.assertIn("set for the user but not in this process", buf.getvalue())
+
+    def test_user_env_var_is_none_off_windows(self):
+        with mock.patch("onboarding._is_windows", return_value=False):
+            self.assertIsNone(onboarding._user_env_var("VAULT_ENGINE"))
 
 
 class TestOnboardQuestions(unittest.TestCase):
