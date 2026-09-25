@@ -31,6 +31,9 @@ from datetime import datetime
 from itertools import combinations
 from pathlib import Path
 
+# Single source of the release version (SemVer; see CHANGELOG.md).
+__version__ = "0.1.0"
+
 # This repo is the user-independent engine; notes live in a separate data
 # folder (see resolve_data_dir). ENGINE never changes; DATA is resolved lazily
 # so importing this module needs no environment at all (tests rely on that).
@@ -1059,6 +1062,7 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--version", action="version", version=f"vault-engine {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name, help_text in (("query", "list notes activated by a query"),
