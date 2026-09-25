@@ -19,6 +19,11 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+
+# Never let a test reach the real user's data repo through the environment
+# (a missing patch then fails loudly instead of writing into it).
+for _var in ("VAULT_DATA", "VAULT_HOME"):
+    os.environ.pop(_var, None)
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -163,6 +168,14 @@ class TestSetup(unittest.TestCase):
         with mock.patch("pathlib.Path.home", return_value=self.home), redirect_stdout(StringIO()):
             onboarding.cmd_setup(self._args(no_routing=False))
         self.assertEqual((root / "CLAUDE.md").read_text(encoding="utf-8"), "something else\n")
+
+    def test_relative_routing_import_counts(self):
+        # A hand-written relative import (e.g. `@<data folder name>/AGENTS.md`) routes too.
+        root = self.tmp
+        (root / "CLAUDE.md").write_text(f"@{self.data.name}/AGENTS.md\n", encoding="utf-8")
+        self.assertTrue(onboarding._routes_to(root / "CLAUDE.md", self.data))
+        (root / "CLAUDE.md").write_text("@elsewhere/AGENTS.md\n", encoding="utf-8")
+        self.assertFalse(onboarding._routes_to(root / "CLAUDE.md", self.data))
 
     def test_user_level_append_once(self):
         args = self._args(user_level=True)

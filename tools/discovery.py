@@ -158,16 +158,22 @@ def _cache_path(paths: g.Paths) -> Path:
 def load_cached(paths: g.Paths, refresh: bool = False) -> list[dict]:
     """Reuse the cache when it is fresh (< CACHE_TTL); rebuild otherwise."""
     cache_file = _cache_path(paths)
+    # The roots are part of the key: a cache built for other roots (another engine
+    # checkout, an edited config) must not be reused.
+    roots = [str(r) for r in g.project_roots(paths)]
     if not refresh and cache_file.exists():
         age = time.time() - cache_file.stat().st_mtime
         if age < CACHE_TTL:
             try:
-                return json.loads(cache_file.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("roots") == roots:
+                    return cached["projects"]
+            except (OSError, ValueError, KeyError):
                 pass
     results = discover(paths)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    cache_file.write_text(json.dumps({"roots": roots, "projects": results}, indent=2,
+                                     ensure_ascii=False), encoding="utf-8")
     return results
 
 

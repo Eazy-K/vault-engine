@@ -6,6 +6,7 @@ the real engine or any user's notes. Run with:
 """
 from __future__ import annotations
 
+import os
 import importlib.util
 import json
 import shutil
@@ -18,6 +19,11 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+
+# Never let a test reach the real user's data repo through the environment
+# (a missing patch then fails loudly instead of writing into it).
+for _var in ("VAULT_DATA", "VAULT_HOME"):
+    os.environ.pop(_var, None)
 
 GRAPH_PATH = Path(__file__).resolve().parent.parent / "tools" / "graph.py"
 TOOLS_DIR = str(Path(__file__).resolve().parent.parent / "tools")
@@ -180,13 +186,26 @@ class TestCache(unittest.TestCase):
         cache_file = self.data / ".graph" / "projects.json"
         self.assertTrue(cache_file.exists())
         data = json.loads(cache_file.read_text(encoding="utf-8"))
-        self.assertEqual(data[0]["name"], "alpha")
+        self.assertEqual(data["projects"][0]["name"], "alpha")
+
+    def _poisoned_cache(self, roots: list[str] | None = None) -> str:
+        if roots is None:
+            roots = [str(r) for r in graph.project_roots(self.paths)]
+        return json.dumps({"roots": roots, "projects": [{"name": "stale", "has_notes": False}]})
+
+    def test_cache_for_other_roots_is_ignored(self):
+        discovery.load_cached(self.paths)
+        cache_file = self.data / ".graph" / "projects.json"
+        cache_file.write_text(self._poisoned_cache(["/elsewhere"]), encoding="utf-8")
+        names = {p["name"] for p in discovery.load_cached(self.paths)}
+        self.assertIn("alpha", names)
+        self.assertNotIn("stale", names)
 
     def test_cache_reused_when_fresh(self):
         discovery.load_cached(self.paths)
         cache_file = self.data / ".graph" / "projects.json"
         # Poison the cache directly; a fresh reuse should return this, not rescan.
-        cache_file.write_text(json.dumps([{"name": "stale", "has_notes": False}]),
+        cache_file.write_text(self._poisoned_cache(),
                               encoding="utf-8")
         result = discovery.load_cached(self.paths)
         self.assertEqual(result[0]["name"], "stale")
@@ -194,7 +213,7 @@ class TestCache(unittest.TestCase):
     def test_refresh_ignores_cache(self):
         discovery.load_cached(self.paths)
         cache_file = self.data / ".graph" / "projects.json"
-        cache_file.write_text(json.dumps([{"name": "stale", "has_notes": False}]),
+        cache_file.write_text(self._poisoned_cache(),
                               encoding="utf-8")
         result = discovery.load_cached(self.paths, refresh=True)
         names = {p["name"] for p in result}
@@ -204,7 +223,7 @@ class TestCache(unittest.TestCase):
     def test_cache_stale_after_ttl(self):
         discovery.load_cached(self.paths)
         cache_file = self.data / ".graph" / "projects.json"
-        cache_file.write_text(json.dumps([{"name": "stale", "has_notes": False}]),
+        cache_file.write_text(self._poisoned_cache(),
                               encoding="utf-8")
         old = time.time() - discovery.CACHE_TTL - 10
         import os

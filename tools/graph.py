@@ -924,6 +924,10 @@ def cmd_reinforce(args) -> None:
     # Fewer than two notes strengthens nothing but still closes the task in the
     # usage log: "only one note / no note helped" is a useful signal too.
     log_usage(paths, {"event": "reinforce", "task": args.task, "notes": ids})
+    # A task just ended: the opt-in feedback module may send (throttled, never raises).
+    feedback = sys.modules.get("feedback")
+    if feedback is not None:
+        feedback.maybe_auto_send(paths)
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
         return

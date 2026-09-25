@@ -228,6 +228,19 @@ def _routing_line(data: Path) -> str:
     return f"@{data.as_posix()}/AGENTS.md"
 
 
+def _routes_to(claude_md: Path, data: Path) -> bool:
+    """True if any @import in claude_md resolves to <data>/AGENTS.md; a relative
+    import such as `@vault/AGENTS.md` written by hand counts as well."""
+    target = (data / "AGENTS.md").resolve()
+    for raw in claude_md.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if raw.startswith("@"):
+            ref = Path(raw[1:]).expanduser()
+            if (ref if ref.is_absolute() else claude_md.parent / ref).resolve() == target:
+                return True
+    return False
+
+
 def _setup_routing(data: Path) -> None:
     paths = g.Paths(g.ENGINE, data)
     line = _routing_line(data)
@@ -240,8 +253,7 @@ def _setup_routing(data: Path) -> None:
             continue
         claude_md = root / "CLAUDE.md"
         if claude_md.exists():
-            text = claude_md.read_text(encoding="utf-8")
-            if line in text:
+            if _routes_to(claude_md, data):
                 print(f"  ok: {claude_md} already routes here")
             else:
                 print(f"  skipped (exists, no routing line): {claude_md}")
@@ -348,10 +360,9 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
 
     if data is not None:
         paths = g.Paths(g.ENGINE, data)
-        line = _routing_line(data)
         for root in g.project_roots(paths):
             claude_md = root / "CLAUDE.md"
-            if claude_md.exists() and line in claude_md.read_text(encoding="utf-8"):
+            if claude_md.exists() and _routes_to(claude_md, data):
                 check("OK", f"routing present for {root}")
             else:
                 check("WARN", f"routing missing for {root}")
@@ -361,6 +372,19 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("OK", f"Ollama reachable at {g.OLLAMA_URL}")
     except (urllib.error.URLError, OSError, ValueError) as exc:
         check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback")
+
+    discovery = sys.modules.get("discovery")
+    if data is not None and discovery is not None:
+        # Cache only: doctor should stay fast, `projects --refresh` rescans.
+        try:
+            missing = discovery.missing_projects(g.Paths(g.ENGINE, data))
+        except Exception as exc:  # discovery problems must not hide the other checks
+            check("WARN", f"project discovery failed ({exc})")
+        else:
+            if missing:
+                check("WARN", f"projects without notes: {', '.join(missing)} (see `projects --missing`)")
+            else:
+                check("OK", "every discovered project has notes")
 
     if data is not None:
         ok, summary = _lint_summary(data)

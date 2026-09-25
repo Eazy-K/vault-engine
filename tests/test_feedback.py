@@ -8,6 +8,7 @@ real people's data (see tests/test_guard.py for the same convention).
 """
 from __future__ import annotations
 
+import os
 import importlib.util
 import json
 import subprocess
@@ -16,6 +17,11 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Never let a test reach the real user's data repo through the environment
+# (a missing patch then fails loudly instead of writing into it).
+for _var in ("VAULT_DATA", "VAULT_HOME"):
+    os.environ.pop(_var, None)
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
