@@ -21,6 +21,9 @@ Model bağımsız "ikinci beyin" motoru. Notlar ağırlıklı bir graf olarak y�
 5. Projelerin bulunduğu kök klasöre `CLAUDE.md` koy: `@<veri reposu yolu>/AGENTS.md`
 6. Kontrol: `python "$VAULT_ENGINE/tools/graph.py" lint`
 
+## Proje keşfi
+`tools/discovery.py`, motorun yanındaki (ya da `vault.config.json`'daki `project_roots` altındaki) git repolarını tarar ve hangi projelerin henüz not almadığını bulur. Sadece hafif metadata okunur (README'nin ilk satırı, dosya uzantısı sayımı, son commit tarihi, remote'un sadece host kısmı); kod hiçbir zaman indekslenmez ve hiçbir şey makineden dışarı çıkmaz. `vault.config.json`'daki `exclude` listesi (isim veya glob) ve bir repodaki `.vaultignore` dosyası taramadan hariç tutar. Sonuç `<veri reposu>/.graph/projects.json` içinde 1 saat önbelleğe alınır (bu dosya commit'lenmez). Kullanım: `python tools/graph.py projects` (tablo), `--json`, `--missing` (sadece notu olmayan projeler, sonunda öneri satırıyla) veya `--refresh` (önbelleği yok say).
+
 ## Proje tanıma
 `context` çalıştığı klasörden projeyi bulur ve `projects/<ad>/` notlarını başlangıç noktası yapar. Proje kökleri veri reposundaki `vault.config.json` dosyasından okunur (`{"project_roots": ["..."]}`); dosya yoksa motorun üst klasörü kullanılır. `--project <ad>` ya da `--no-project` ile elle belirlenir.
 
