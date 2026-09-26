@@ -1070,6 +1070,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     else:
         check("OK", "claude-agents up to date")
 
+    claude_hooks = sys.modules.get("claude_hooks")
+    if claude_hooks is not None:
+        check(*claude_hooks.status())
+
     if data is not None:
         paths = g.Paths(g.ENGINE, data)
         for root in g.project_roots(paths):
