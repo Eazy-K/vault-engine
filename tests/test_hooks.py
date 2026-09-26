@@ -40,14 +40,15 @@ class TestFindPython(unittest.TestCase):
 
     def _run(self, bin_names: dict[str, str]) -> subprocess.CompletedProcess:
         """bin_names: {command name: shell body}. Runs the driver script with
-        only these stubs on PATH (plus SH itself, so it can still find `sh`)."""
+        only these stubs on PATH -- nothing else, so a real python/python3 on
+        the host (e.g. next to `sh` itself in /usr/bin) can never leak in and
+        get picked instead of the stub under test."""
         bindir = self.tmp / "bin"
         bindir.mkdir(exist_ok=True)
         for name, body in bin_names.items():
             _write_stub(bindir / name, body)
-        sh_dir = str(Path(SH).parent)
         env = dict(os.environ)
-        env["PATH"] = os.pathsep.join([str(bindir), sh_dir])
+        env["PATH"] = str(bindir)
         return subprocess.run([SH, str(self.driver)], capture_output=True, text=True, env=env)
 
     def _result(self, out: subprocess.CompletedProcess) -> str:
