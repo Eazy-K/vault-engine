@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import tempfile
 import unittest
 from argparse import Namespace
@@ -25,6 +26,15 @@ from unittest import mock
 # (a missing patch then fails loudly instead of writing into it).
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
+
+
+# Nor through the Windows registry, where graph finds the VAULT_DATA that setup
+# saved for the user: every test sees an empty HKCU\Environment instead.
+def _no_registry(*_args):
+    raise OSError("tests never read the real registry")
+
+
+sys.modules["winreg"] = types.SimpleNamespace(HKEY_CURRENT_USER=None, OpenKey=_no_registry)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -397,6 +407,31 @@ class TestCmdMigrate(MigrateRepoCase):
         with mock.patch("sys.stdin.isatty", return_value=False), \
              self.assertRaises(SystemExit) as ctx:
             self._run(yes=False)
+        self.assertIn("--yes", str(ctx.exception))
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+
+    def test_nul_stdin_on_windows_writes_nothing(self):
+        # `migrate < NUL`: isatty() is True for NUL on Windows.
+        self.commit_config({"feedback": {"level": "off"}})
+        before = self.paths.config_file.read_bytes()
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch.object(schema.g, "_is_windows", return_value=True), \
+             mock.patch.object(schema.g, "_is_console", return_value=False), \
+             mock.patch("builtins.input") as prompt, \
+             self.assertRaises(SystemExit) as ctx:
+            self._run(yes=False)
+        self.assertIn("--yes", str(ctx.exception))
+        prompt.assert_not_called()
+        self.assertEqual(self.paths.config_file.read_bytes(), before)
+
+    def test_end_of_input_at_the_prompt_writes_nothing(self):
+        self.commit_config({"feedback": {"level": "off"}})
+        before = self.paths.config_file.read_bytes()
+        with mock.patch.object(schema.g, "stdin_is_interactive", return_value=True), \
+             mock.patch("builtins.input", side_effect=EOFError), \
+             self.assertRaises(SystemExit) as ctx:
+            self._run(yes=False)
+        self.assertIn("nothing written", str(ctx.exception))
         self.assertIn("--yes", str(ctx.exception))
         self.assertEqual(self.paths.config_file.read_bytes(), before)
 

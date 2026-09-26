@@ -40,17 +40,92 @@ __version__ = "0.3.0"
 ENGINE = Path(__file__).resolve().parent.parent
 
 
+def _is_windows() -> bool:
+    # A function, not a bare os.name check, so tests can pretend to be Windows
+    # without patching os.name (which breaks pathlib on other systems).
+    return os.name == "nt"
+
+
+def user_env_var(name: str) -> str | None:
+    """The value saved for the user in HKCU\\Environment (what `setx` wrote), or
+    None; always None off Windows. Read-only. Processes started before `setx`,
+    such as the terminal or agent that ran setup, don't have it in os.environ."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, kind = winreg.QueryValueEx(key, name)
+    except (ImportError, OSError):
+        return None
+    value = str(value)
+    if kind == getattr(winreg, "REG_EXPAND_SZ", 2):  # e.g. %USERPROFILE%\vault
+        value = os.path.expandvars(value)
+    return value or None  # `setx NAME ""` leaves an empty value behind
+
+
+def saved_data_dir() -> str | None:
+    """VAULT_DATA (or the older VAULT_HOME) as saved for the Windows user."""
+    return user_env_var("VAULT_DATA") or user_env_var("VAULT_HOME")
+
+
+_warned_saved_data = False
+
+
 def resolve_data_dir() -> Path:
     """Locate the notes folder. VAULT_DATA is the current name; VAULT_HOME is
-    kept for backward compatibility with setups that predate the split."""
+    kept for backward compatibility with setups that predate the split. On
+    Windows a value that setup saved with `setx` is used (with a note) until the
+    terminal and agent are restarted and see it themselves."""
+    global _warned_saved_data
     raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
     if not raw:
-        sys.exit(
-            "VAULT_DATA is not set. Point it at your notes folder, e.g.\n"
-            "  export VAULT_DATA=/path/to/your/vault-data\n"
-            "(VAULT_HOME also works, for setups from before the engine/data split.)"
-        )
+        raw = saved_data_dir()
+        if raw and not _warned_saved_data:
+            _warned_saved_data = True
+            print(f"note: VAULT_DATA is not set in this process; using the value saved for "
+                  f"your user ({raw}). Restart the terminal and the agent to load it.",
+                  file=sys.stderr)
+    if not raw:
+        sys.exit(_missing_data_message())
     return Path(raw).expanduser().resolve()
+
+
+def _missing_data_message() -> str:
+    if _is_windows():
+        # No `export` here: the agent may be in cmd, PowerShell or Git Bash.
+        return ("VAULT_DATA is not set. Save your notes folder for your user with\n"
+                f"  python \"{ENGINE / 'tools' / 'graph.py'}\" setup --data \"<notes folder>\"\n"
+                "then restart the terminal and the agent. Until then, setup, onboard "
+                "and doctor take --data \"<notes folder>\".")
+    return ("VAULT_DATA is not set. Point it at your notes folder, e.g.\n"
+            "  export VAULT_DATA=/path/to/your/vault-data\n"
+            "(VAULT_HOME also works, for setups from before the engine/data split.)")
+
+
+def stdin_is_interactive() -> bool:
+    """True if a person can answer prompts on stdin. On Windows, isatty() is also
+    True for the NUL device (`< NUL` in cmd, `< /dev/null` in Git Bash), which
+    agents often attach to commands, so a real console is required there too."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):  # no stdin, or it is closed
+        return False
+    return _is_console(sys.stdin) if _is_windows() else True
+
+
+def _is_console(stream) -> bool:
+    """Windows: True if `stream` is a console (GetConsoleMode accepts it); NUL,
+    files and pipes are not. If this can't be checked, trust isatty(): every
+    prompt still stops cleanly on end of input."""
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(ctypes.c_void_p(handle),
+                                                          ctypes.byref(mode)))
+    except (ImportError, AttributeError, OSError, ValueError):
+        return True
 
 
 @dataclass
@@ -1100,8 +1175,8 @@ def cmd_show(args) -> None:
               f"learned {graph.learned.get(key, 0.0):+.3f})")
 
 
-def cmd_lint(_args) -> None:
-    graph = Graph()
+def cmd_lint(_args, paths: Paths | None = None) -> None:
+    graph = Graph(paths)
     errors = list(graph.problems)
     for a, b in graph.learned:
         for nid in (a, b):

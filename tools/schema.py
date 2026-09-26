@@ -389,12 +389,14 @@ def cmd_migrate(args) -> None:
         print("dry run: nothing written")
         return
     if not args.yes:
-        if not sys.stdin.isatty():
+        if not g.stdin_is_interactive():
             sys.exit("rerun with --yes to apply (or --dry-run to preview)")
         try:
             answer = input("proceed? [y/N]: ").strip().lower()
         except EOFError:
-            answer = ""
+            print()
+            sys.exit("no answer (input ended), nothing written; "
+                     "rerun with --yes to apply (or --dry-run to preview)")
         if not answer.startswith("y"):
             print("aborted, nothing written")
             return

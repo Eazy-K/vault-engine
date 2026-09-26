@@ -11,6 +11,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import types
 import tempfile
 import unittest
 from argparse import Namespace
@@ -22,6 +23,15 @@ from pathlib import Path
 # (a missing patch then fails loudly instead of writing into it).
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
+
+
+# Nor through the Windows registry, where graph finds the VAULT_DATA that setup
+# saved for the user: every test sees an empty HKCU\Environment instead.
+def _no_registry(*_args):
+    raise OSError("tests never read the real registry")
+
+
+sys.modules["winreg"] = types.SimpleNamespace(HKEY_CURRENT_USER=None, OpenKey=_no_registry)
 from unittest import mock
 
 GRAPH_PATH = Path(__file__).resolve().parent.parent / "tools" / "graph.py"
@@ -68,6 +78,127 @@ class TestDataDirResolution(unittest.TestCase):
         # The module was already imported above with no env vars guaranteed set;
         # reaching this line at all proves import time did not resolve VAULT_DATA.
         self.assertTrue(hasattr(graph, "ENGINE"))
+
+    def _saved(self, values: dict):
+        return mock.patch.object(graph, "user_env_var", side_effect=lambda name: values.get(name))
+
+    def test_falls_back_to_value_saved_for_the_user_with_a_note(self):
+        # Windows: setx saved VAULT_DATA, but the agent that ran setup started
+        # before that and still has no VAULT_DATA in its environment.
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             self._saved({"VAULT_DATA": "/saved/data"}), \
+             mock.patch.object(graph, "_warned_saved_data", False), \
+             mock.patch("sys.stderr", new_callable=StringIO) as err:
+            self.assertEqual(graph.resolve_data_dir(), Path("/saved/data").expanduser().resolve())
+            graph.resolve_data_dir()
+        self.assertIn("Restart the terminal and the agent", err.getvalue())
+        self.assertEqual(err.getvalue().count("note:"), 1)  # once per process
+
+    def test_saved_vault_home_is_used_too(self):
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             self._saved({"VAULT_HOME": "/saved/home"}), \
+             mock.patch("sys.stderr", new_callable=StringIO):
+            self.assertEqual(graph.resolve_data_dir(), Path("/saved/home").expanduser().resolve())
+
+    def test_environment_wins_over_saved_value(self):
+        with mock.patch.dict("os.environ", {"VAULT_DATA": "/data/a"}, clear=True), \
+             self._saved({"VAULT_DATA": "/saved/data"}), \
+             mock.patch("sys.stderr", new_callable=StringIO) as err:
+            self.assertEqual(graph.resolve_data_dir(), Path("/data/a").expanduser().resolve())
+        self.assertEqual(err.getvalue(), "")
+
+    def test_missing_on_windows_suggests_setup_not_export(self):
+        with mock.patch.dict("os.environ", {}, clear=True), self._saved({}), \
+             mock.patch.object(graph, "_is_windows", return_value=True):
+            with self.assertRaises(SystemExit) as ctx:
+                graph.resolve_data_dir()
+        message = str(ctx.exception.code)
+        self.assertIn("setup --data", message)
+        self.assertIn("restart the terminal and the agent", message)
+        self.assertNotIn("export", message)
+        self.assertNotIn("VAULT_HOME", message)
+
+
+class _FakeKey:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _fake_winreg(values: dict):
+    """A stand-in for winreg holding `values` in HKCU\\Environment."""
+    def query(_key, name):
+        if name not in values:
+            raise FileNotFoundError(name)
+        return values[name], 1
+
+    return types.SimpleNamespace(HKEY_CURRENT_USER=object(),
+                                 OpenKey=lambda *_a: _FakeKey(), QueryValueEx=query)
+
+
+class TestUserEnvVar(unittest.TestCase):
+    def test_reads_hkcu_environment(self):
+        with mock.patch.dict(sys.modules, {"winreg": _fake_winreg({"VAULT_DATA": r"C:\notes"})}):
+            self.assertEqual(graph.user_env_var("VAULT_DATA"), r"C:\notes")
+            self.assertIsNone(graph.user_env_var("VAULT_ENGINE"))
+
+    def test_empty_value_counts_as_unset(self):
+        # `setx VAULT_DATA ""` leaves an empty value instead of deleting it.
+        with mock.patch.dict(sys.modules, {"winreg": _fake_winreg({"VAULT_DATA": ""})}):
+            self.assertIsNone(graph.user_env_var("VAULT_DATA"))
+
+    def test_expandable_value_is_expanded(self):
+        fake = _fake_winreg({})
+        fake.QueryValueEx = lambda _key, _name: ("%EXAMPLE_ROOT%/notes", 2)  # REG_EXPAND_SZ
+        # os.path.expandvars only knows %VAR% on Windows; fake it everywhere.
+        with mock.patch.dict(sys.modules, {"winreg": fake}), \
+             mock.patch("os.path.expandvars",
+                        side_effect=lambda v: v.replace("%EXAMPLE_ROOT%", "/example")):
+            self.assertEqual(graph.user_env_var("VAULT_DATA"), "/example/notes")
+
+    def test_none_without_winreg(self):
+        with mock.patch.dict(sys.modules, {"winreg": None}):  # import raises ImportError
+            self.assertIsNone(graph.user_env_var("VAULT_DATA"))
+
+
+class _Stdin:
+    def __init__(self, tty):
+        self._tty = tty
+
+    def isatty(self):
+        if isinstance(self._tty, Exception):
+            raise self._tty
+        return self._tty
+
+
+class TestStdinIsInteractive(unittest.TestCase):
+    def _check(self, tty, windows=False, console=True) -> bool:
+        with mock.patch("sys.stdin", _Stdin(tty)), \
+             mock.patch.object(graph, "_is_windows", return_value=windows), \
+             mock.patch.object(graph, "_is_console", return_value=console):
+            return graph.stdin_is_interactive()
+
+    def test_not_a_tty(self):
+        self.assertFalse(self._check(False))
+
+    def test_tty_off_windows(self):
+        self.assertTrue(self._check(True))
+
+    def test_closed_stdin(self):
+        self.assertFalse(self._check(ValueError("I/O operation on closed file")))
+
+    def test_windows_needs_a_real_console(self):
+        # NUL claims to be a tty on Windows; only a console handle counts.
+        self.assertFalse(self._check(True, windows=True, console=False))
+        self.assertTrue(self._check(True, windows=True, console=True))
+
+    @unittest.skipUnless(os.name == "nt", "the NUL device quirk is Windows-only")
+    def test_nul_device_is_a_tty_but_not_a_console(self):
+        with open(os.devnull, encoding="utf-8") as nul:
+            self.assertTrue(nul.isatty())  # the quirk this guards against
+            self.assertFalse(graph._is_console(nul))
 
 
 class TestDefaultsOverlay(unittest.TestCase):
