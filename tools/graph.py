@@ -661,12 +661,17 @@ def embed_error(exc: Exception) -> str:
 
 
 def _probe_ollama() -> None:
-    """Fail in seconds when nothing answers at OLLAMA_URL, instead of spending
-    EMBED_TIMEOUT (sized for loading the model) on a dead or hung server."""
+    """Fail in seconds when nothing answers at OLLAMA_URL, or when EMBED_MODEL was
+    never pulled, instead of spending EMBED_TIMEOUT (sized for loading the model)
+    on a dead server, a hung /api/embed, or a model that was never going to load."""
     try:
-        urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=PROBE_TIMEOUT).close()
+        names = ollama_models(timeout=PROBE_TIMEOUT)
     except urllib.error.HTTPError:
-        pass  # it answered; /api/embed tells what is missing
+        return  # it answered, just not with a models list; /api/embed tells what is missing
+    except ValueError:
+        return  # unexpected /api/tags shape; let /api/embed speak for itself
+    if not has_embed_model(names):
+        raise ValueError(f"Ollama has no {EMBED_MODEL} model; {pull_hint()}")
 
 
 def _embed(texts: list[str]) -> list[list[float]]:
@@ -964,9 +969,11 @@ IBAN_LENGTHS = {
 
 
 def _iban_ok(s: str) -> bool:
-    groups = s.upper().split()
     length = IBAN_LENGTHS.get(s[:2].upper(), 0)
-    # A 4-character word after a grouped IBAN joins the match; drop such groups.
+    # Groups may be separated by spaces or hyphens (or not at all); a trailing
+    # group after a grouped IBAN joins the match, so drop groups from the end
+    # until what is left fits the country's IBAN length.
+    groups = re.split(r"[ -]+", s.upper())
     while len(groups) > 1 and len("".join(groups)) > length:
         groups.pop()
     s = "".join(groups)
@@ -997,21 +1004,24 @@ def _luhn_ok(s: str) -> bool:
 
 GUARD_PATTERNS = [
     ("TCKN", re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)"), _tckn_ok),
-    # Any country: printed in groups of four or unbroken; length and mod-97 decide.
-    # Past the country code it is upper case, so lower-case hex strings never qualify.
-    ("IBAN", re.compile(r"\b[A-Za-z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b"), _iban_ok),
+    # Any country: printed in groups of four (space- or hyphen-separated) or
+    # unbroken, upper or lower case; length and mod-97 decide, not the casing.
+    ("IBAN", re.compile(r"\b(?i:[a-z]{2}\d{2}(?:[ -]?[a-z0-9]{4}){2,7}(?:[ -]?[a-z0-9]{1,3})?)\b"),
+     _iban_ok),
     ("card number", re.compile(r"(?<![\d.])\d(?:[ -]?\d){12,18}(?![\d.])"), _luhn_ok),
-    # Turkish national formats: 0NNN NNN NN NN, (0NNN) NNN NN NN, 5NN NNN NN NN.
-    ("phone", re.compile(r"(?<![\d+])(?:\+90|0)[ -]?\(?[2-5]\d{2}\)?[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}(?!\d)"), None),
-    ("phone", re.compile(r"(?<!\d)5\d{2}[ -]\d{3}[ -]\d{2}[ -]\d{2}(?!\d)"), None),
+    # Turkish national formats: 0NNN NNN NN NN, (0NNN) NNN NN NN, 5NN NNN NN NN,
+    # also written with dots as the separator (0NNN.NNN.NN.NN).
+    ("phone", re.compile(r"(?<![\d+])(?:\+90|0)[ .-]?\(?[2-5]\d{2}\)?[ .-]?\d{3}[ .-]?\d{2}[ .-]?\d{2}(?!\d)"), None),
+    ("phone", re.compile(r"(?<!\d)5\d{2}[ .-]\d{3}[ .-]\d{2}[ .-]\d{2}(?!\d)"), None),
     # International (E.164) with a leading +: up to 15 digits, spaces, dashes or
     # parentheses between them. +90 is left to the Turkish patterns above.
     ("phone", re.compile(r"(?<![\w+.])\+(?!90)[1-9](?:[ ()-]{0,2}\d){7,14}(?!\w|[.,]\d)"), _intl_phone_ok),
     # US/Canada: (NNN) NNN-NNNN, NNN-NNN-NNNN, 1-NNN-NNN-NNNN, NNN.NNN.NNNN (separators required).
     ("phone", re.compile(r"(?<![\w.+-])(?:1[ .-])?(?:\([2-9]\d{2}\) ?|[2-9]\d{2}([.-]))"
                          r"[2-9]\d{2}(?(1)\1|[.-])\d{4}(?![\w-]|\.\d)"), None),
-    # UK: 0NN NNNN NNNN, 07NNN NNNNNN (with the spaces, as they are written).
-    ("phone", re.compile(r"(?<![\d+])0(?:\d{2} \d{4} \d{4}|7\d{3} \d{6})(?!\d)"), None),
+    # UK: 0NN NNNN NNNN, 07NNN NNNNNN (with the spaces, as they are written),
+    # and the mobile form also unspaced (07NNNNNNNNN, 11 digits total).
+    ("phone", re.compile(r"(?<![\d+])0(?:\d{2} \d{4} \d{4}|7\d{3} \d{6}|7\d{9})(?!\w)"), None),
     # US Social Security number, dashed form only (a bare 9-digit run is too common).
     ("SSN", re.compile(r"(?<![\w-])\d{3}-\d{2}-\d{4}(?![\w-])"), _ssn_ok),
     # The last label must contain a letter, so `python@3.12` is not an address.

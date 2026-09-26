@@ -55,8 +55,10 @@ def parse_version(tag: str) -> tuple[int, int, int] | None:
 
 def channel(engine: Path) -> tuple[str, str | None]:
     """("stable", tag) if HEAD is detached exactly at a SemVer tag, ("dev",
-    branch) if HEAD is on a branch, ("unknown", None) otherwise (detached at
-    something else, or not a git repo at all). Never raises."""
+    branch) if HEAD is on a branch, ("prerelease", tag) if HEAD is detached
+    exactly at a tag that is not `vX.Y.Z` (a pre-release like `v0.4.0-rc1` or
+    any other non-SemVer tag), ("unknown", None) otherwise (detached with no
+    tag at all, or not a git repo at all). Never raises."""
     try:
         branch = subprocess.run(["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=engine,
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
@@ -73,6 +75,7 @@ def channel(engine: Path) -> tuple[str, str | None]:
         name = tag.stdout.strip()
         if parse_version(name) is not None:
             return "stable", name
+        return "prerelease", name
     return "unknown", None
 
 
@@ -569,11 +572,17 @@ def cmd_update(args) -> None:
               "The engine was not changed.")
         _agents_md_step(engine, args)
         return
+    if status == "prerelease":
+        if args.apply_agents:
+            _agents_md_step(engine, args)
+        sys.exit(f"update: this checkout is detached at {ref}, which is not a release tag "
+                 "(vX.Y.Z); update this manually to a release tag (git checkout <vX.Y.Z>).")
     if status != "stable":
         if args.apply_agents:
             _agents_md_step(engine, args)
-        sys.exit("update: channel is unknown (not a git checkout of the engine); "
-                 "update this manually (git clone / re-download).")
+        sys.exit("update: not at a release tag and not on a branch (not a git checkout of "
+                 "the engine, or detached at an untagged commit); update this manually "
+                 "(git clone / re-download).")
 
     dirty = _dirty_engine(engine)
     if dirty:

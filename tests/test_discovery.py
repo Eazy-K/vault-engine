@@ -207,9 +207,9 @@ class TestCache(unittest.TestCase):
         data = json.loads(cache_file.read_text(encoding="utf-8"))
         self.assertEqual(data["projects"][0]["name"], "alpha")
 
-    def _poisoned_cache(self, roots: list[str] | None = None) -> str:
+    def _poisoned_cache(self, roots: list | None = None) -> str:
         if roots is None:
-            roots = [str(r) for r in graph.project_roots(self.paths)]
+            roots = discovery._root_signature(self.paths)
         return json.dumps({"roots": roots, "projects": [{"name": "stale", "has_notes": False}]})
 
     def test_cache_for_other_roots_is_ignored(self):
@@ -251,6 +251,14 @@ class TestCache(unittest.TestCase):
         names = {p["name"] for p in result}
         self.assertIn("alpha", names)
         self.assertNotIn("stale", names)
+
+    def test_new_project_folder_invalidates_cache_even_when_fresh(self):
+        discovery.load_cached(self.paths)
+        # A brand-new project folder under the root, added after the cache was
+        # written; still well within CACHE_TTL.
+        init_repo(self.root / "brandnew")
+        names = {p["name"] for p in discovery.load_cached(self.paths)}
+        self.assertIn("brandnew", names)
 
     def test_missing_projects_uses_cache(self):
         write(self.data / "projects" / "alpha" / "alpha-overview.md", "# Alpha\n")

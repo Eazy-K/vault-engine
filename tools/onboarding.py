@@ -972,8 +972,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("OK", f"channel: stable ({ref})")
         elif status == "dev":
             check("INFO", f"channel: dev ({ref}): update with git pull, then migrate")
+        elif status == "prerelease":
+            check("INFO", f"channel: prerelease ({ref}): not a release tag; "
+                          "update manually to a vX.Y.Z tag")
         else:
-            check("INFO", "channel: unknown (not a git checkout)")
+            check("INFO", "channel: unknown (not at a release tag and not on a branch)")
         if status == "stable":
             settings = (update.load_settings(g.Paths(g.ENGINE, data))
                         if data is not None else dict(update.DEFAULT_SETTINGS))
