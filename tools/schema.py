@@ -13,6 +13,12 @@ the same vault; the rules that keep that safe:
     applies the steps in MIGRATIONS one schema at a time and commits the result
     in the data repo.
 
+migrate() also applies config fixups that older engines still read correctly,
+so they never bump the schema and are checked on every run: recording a
+missing "schema" field, and moving per-computer `project_roots` out of the
+shared vault.config.json (older `init` wrote an absolute path there) into this
+computer's gitignored .graph/machine.json.
+
 This module is loaded by tools/graph.py (see EXTENSIONS) if present.
 Standard library only, matching the engine's own constraint.
 """
@@ -23,6 +29,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import graph as g
@@ -31,22 +38,42 @@ import graph as g
 # step in MIGRATIONS and an "Upgrade notes" entry in CHANGELOG.md.
 SCHEMA_VERSION = 1
 
-# MIGRATIONS[n] upgrades a data repo from schema n to n + 1, in place. Each step
-# must be idempotent enough to rerun after a crash (the schema field is written
-# only after the step returns).
-MIGRATIONS: dict[int, Callable[["g.Paths"], None]] = {}
+# MIGRATIONS[n] upgrades a data repo from schema n to n + 1, in place, and
+# returns the files it changed (committed together with vault.config.json).
+# Each step must be idempotent enough to rerun after a crash (the schema field
+# is written only after the step returns).
+MIGRATIONS: dict[int, Callable[["g.Paths"], "list[Path] | None"]] = {}
+
+CONFIG_NAME = "vault.config.json"
 
 _SCHEMA_RE = re.compile(r"^SCHEMA_VERSION\s*=\s*(\d+)\s*$", re.M)
 
 
+def _schema_field(raw: dict) -> int | None:
+    """The explicit, valid "schema" value of a config dict, else None."""
+    value = raw.get("schema")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def read_schema(paths: "g.Paths") -> int:
     """The data repo's schema; 1 when vault.config.json or the field is missing."""
-    try:
-        raw = json.loads(paths.config_file.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
-        return 1
-    value = raw.get("schema", 1) if isinstance(raw, dict) else 1
-    return value if isinstance(value, int) and value >= 1 else 1
+    return _schema_field(_load_config(paths)) or 1
+
+
+def has_schema_field(paths: "g.Paths") -> bool:
+    """False when vault.config.json leaves the schema implicit (older vaults)."""
+    return _schema_field(_load_config(paths)) is not None
+
+
+def shared_project_roots(paths: "g.Paths") -> list[str]:
+    """project_roots still set in the shared vault.config.json (older `init`
+    wrote this computer's absolute path there); [] when absent."""
+    raw = _load_config(paths)
+    if "project_roots" not in raw:
+        return []
+    return [r for r in g._as_list(raw["project_roots"]) if isinstance(r, str) and r.strip()]
 
 
 def require_writable(paths: "g.Paths") -> None:
@@ -80,121 +107,309 @@ def schema_of_engine_ref(engine: Path, ref: str) -> int | None:
 
 
 # --- migration ---------------------------------------------------------------
+# migrate() plans first (plan_migration), so --dry-run, the confirmation prompt
+# and the actual run all describe the same work, then writes and commits only
+# vault.config.json plus the files the schema steps report.
+
+@dataclass
+class Plan:
+    """What migrate() would change in the data repo, computed without writing."""
+
+    current: int
+    steps: list[int] = field(default_factory=list)  # schemas reached via MIGRATIONS
+    record_field: bool = False  # "schema" missing (implicit): write it
+    roots_action: str = ""  # "", "move", "drop" or "keep" (see _plan_roots)
+    roots: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.steps or self.record_field or self.roots_action in ("move", "drop"))
+
+    def commit_message(self) -> str:
+        parts = []
+        if self.steps:
+            parts.append(f"migrate vault schema {self.current} -> {self.steps[-1]}")
+        elif self.record_field:
+            parts.append(f"record vault schema {SCHEMA_VERSION}")
+        if self.roots_action == "move":
+            parts.append("move project_roots to machine.json")
+        elif self.roots_action == "drop":
+            parts.append("remove project_roots from the shared config")
+        return "chore: " + ", ".join(parts)
+
+
+@dataclass
+class MigrationResult:
+    plan: Plan
+    # The committed state of vault.config.json still needed the plan below; the
+    # working copy already has it (an earlier migrate that was never committed).
+    leftover: Plan | None = None
+    written: bool = False
+    committed: str | None = None  # commit subject, if a commit was made
+    uncommitted_reason: str = ""
+
 
 def _load_config(paths: "g.Paths") -> dict:
     """Raw vault.config.json as a dict, preserving key order; {} if missing or
     unreadable (json.loads keeps insertion order, so round-tripping this dict
     never reorders the file's other keys)."""
+    return _load_json(paths.config_file)
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8", newline="\n")
+
+
+def _write_config(paths: "g.Paths", data: dict) -> None:
+    _write_json(paths.config_file, data)
+
+
+def _machine_file(paths: "g.Paths") -> Path:
+    return paths.data / ".graph" / "machine.json"
+
+
+def _resolve(raw: str) -> Path | None:
     try:
-        raw = json.loads(paths.config_file.read_text(encoding="utf-8") or "{}")
+        return Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _plan_roots(paths: "g.Paths", raw: dict, plan: Plan) -> None:
+    """project_roots in the shared config is a per-computer path. It moves to
+    this computer's machine.json only when every root exists here; paths that
+    are missing here probably belong to another computer, so they stay (this
+    computer ignores them, see graph.project_roots) until migrate runs there."""
+    if "project_roots" not in raw:
+        return
+    roots = [r for r in g._as_list(raw["project_roots"]) if isinstance(r, str) and r.strip()]
+    plan.roots = roots
+    resolved = [_resolve(r) for r in roots]
+    default = paths.engine.resolve().parent
+    machine = _load_json(_machine_file(paths))
+    if not roots:
+        plan.roots_action = "drop"
+        plan.actions.append(f"remove the empty project_roots from {CONFIG_NAME}")
+    elif all(p == default for p in resolved):
+        plan.roots_action = "drop"
+        plan.actions.append(f"remove project_roots from {CONFIG_NAME} (it names the engine's "
+                            "parent folder, which is already the default)")
+    elif not all(p is not None and p.is_dir() for p in resolved):
+        plan.roots_action = "keep"
+        plan.notes.append(f"project_roots in {CONFIG_NAME} names folders that do not exist on "
+                          "this computer (probably another computer's); left in place and "
+                          "ignored here. Run migrate on the computer it belongs to.")
+    elif machine.get("project_roots"):
+        plan.roots_action = "drop"
+        plan.actions.append(f"remove project_roots from {CONFIG_NAME} (this computer's "
+                            ".graph/machine.json already sets its own)")
+    else:
+        plan.roots_action = "move"
+        plan.actions.append(f"move project_roots from the shared {CONFIG_NAME} to this "
+                            "computer's .graph/machine.json (gitignored)")
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8") or "{}")
     except (OSError, ValueError):
         return {}
     return raw if isinstance(raw, dict) else {}
 
 
-def _write_config(paths: "g.Paths", data: dict) -> None:
-    paths.config_file.parent.mkdir(parents=True, exist_ok=True)
-    paths.config_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                                  encoding="utf-8", newline="\n")
+def plan_migration(paths: "g.Paths", raw: dict | None = None) -> Plan:
+    """The work migrate() would do for `raw` (default: the vault.config.json on
+    disk). Raises SystemExit if a needed schema step is not registered."""
+    if raw is None:
+        raw = _load_config(paths)
+    explicit = _schema_field(raw)
+    plan = Plan(explicit or 1)
+    plan.steps = list(range(plan.current + 1, SCHEMA_VERSION + 1))
+    for n in plan.steps:
+        if n - 1 not in MIGRATIONS:
+            raise SystemExit(f"no migration step registered for schema {n - 1} -> {n}; "
+                             "cannot migrate (this engine release is missing it)")
+    if plan.steps:
+        plan.actions.append(f"migrate the data layout: schema {plan.current} -> {SCHEMA_VERSION}")
+    elif explicit is None:
+        plan.record_field = True
+        plan.actions.append(f'record "schema": {SCHEMA_VERSION} in {CONFIG_NAME} '
+                            "(missing, so far implicit)")
+    _plan_roots(paths, raw, plan)
+    return plan
+
+
+def _final_config(raw: dict, plan: Plan) -> dict:
+    """vault.config.json after `plan` (schema steps may change other files too)."""
+    out = dict(raw)
+    if plan.steps or plan.record_field:
+        out["schema"] = plan.steps[-1] if plan.steps else SCHEMA_VERSION
+    if plan.roots_action in ("move", "drop"):
+        out.pop("project_roots", None)
+    return out
+
+
+def _git(data: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=data, capture_output=True, text=True,
+                          encoding="utf-8")
 
 
 def _is_git_repo(data: Path) -> bool:
     try:
-        out = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=data,
-                              capture_output=True, text=True, encoding="utf-8")
+        return _git(data, "rev-parse", "--git-dir").returncode == 0
     except OSError:
         return False
-    return out.returncode == 0
 
 
-def _commit_migration(paths: "g.Paths", touched: set[Path], from_schema: int, to_schema: int) -> None:
-    """Stage exactly vault.config.json plus whatever the migration steps report
-    as changed, and commit -- never `git add -A`, so unrelated pending work in
-    the data repo is left alone. If something is already staged, this backs
-    off entirely and lets the user commit by hand."""
-    data = paths.data
-    if not _is_git_repo(data):
-        return
-    staged = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=data,
-                            capture_output=True, text=True, encoding="utf-8")
-    if staged.returncode == 0 and staged.stdout.strip():
-        print("data repo already has staged changes; commit them yourself, then rerun "
-              "`migrate` (vault.config.json and any migrated files are left uncommitted)")
-        return
-    to_add = [str(paths.config_file)] + [str(p) for p in sorted(touched)]
-    add = subprocess.run(["git", "add"] + to_add, cwd=data, capture_output=True, text=True)
-    if add.returncode != 0:
-        print(f"git add failed: {add.stderr.strip()}")
-        return
-    message = (f"chore: migrate vault schema {from_schema} -> {to_schema}"
-               if to_schema != from_schema else f"chore: record vault schema {to_schema}")
-    commit = subprocess.run(["git", "commit", "-q", "-m", message], cwd=data,
-                            capture_output=True, text=True)
-    if commit.returncode != 0:
-        print(f"git commit failed: {commit.stderr.strip()}")
+def _has_head(data: Path) -> bool:
+    return _git(data, "rev-parse", "--verify", "-q", "HEAD").returncode == 0
 
 
-def migrate(paths: "g.Paths", *, commit: bool = True) -> list[int]:
-    """Upgrade the data repo to SCHEMA_VERSION, one step at a time. Returns the
-    list of schemas reached (empty if the vault was already current and its
-    config already named its schema explicitly)."""
+def _config_pending(data: Path) -> bool:
+    """vault.config.json differs from HEAD (staged, unstaged or untracked)."""
+    out = _git(data, "status", "--porcelain", "--untracked-files=all", "--", CONFIG_NAME)
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
+def _head_config(data: Path) -> dict:
+    out = _git(data, "show", f"HEAD:{CONFIG_NAME}")
+    if out.returncode != 0:
+        return {}
+    try:
+        raw = json.loads(out.stdout or "{}")
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> MigrationResult:
+    """Bring the data repo up to this engine: schema steps plus config fixups.
+
+    Commits exactly vault.config.json and the files the steps report, with
+    `git commit --only`, so anything else already staged stays staged and out
+    of the commit. If vault.config.json holds uncommitted edits that migrate
+    itself would not make, nothing is written (SystemExit). Uncommitted edits
+    that are exactly an earlier migrate's result are committed now, so a rerun
+    after `--no-commit` or a failed commit converges on one migration commit."""
     require_writable(paths)
-    current = read_schema(paths)
+    data = paths.data
     raw = _load_config(paths)
-    had_field = "schema" in raw
-    reached: list[int] = []
-    touched: set[Path] = set()
+    plan = plan_migration(paths, raw)
+    result = MigrationResult(plan)
 
-    n = current
-    while n < SCHEMA_VERSION:
-        step = MIGRATIONS.get(n)
-        if step is None:
-            raise SystemExit(f"no migration step registered for schema {n} -> {n + 1}; "
-                             "cannot migrate (this engine release is missing it)")
-        changed = step(paths)
+    can_commit = commit and _is_git_repo(data) and _has_head(data)
+    if commit and not can_commit:
+        result.uncommitted_reason = ("the data folder is not a git repo" if not _is_git_repo(data)
+                                     else "the data repo has no commits yet")
+    elif not commit:
+        result.uncommitted_reason = "--no-commit"
+    if can_commit and _config_pending(data):
+        head_raw = _head_config(data)
+        head_plan = plan_migration(paths, head_raw)
+        if _final_config(head_raw, head_plan) != _final_config(raw, plan):
+            if plan.empty:
+                return result  # up to date; the pending edits are the user's own
+            raise SystemExit(f"migrate: {CONFIG_NAME} has uncommitted changes that migrate "
+                             "would not make; commit or discard them, then rerun migrate "
+                             "(nothing was written)")
+        if not head_plan.empty:
+            result.leftover = head_plan
+
+    if dry_run or (plan.empty and result.leftover is None):
+        return result
+
+    touched: set[Path] = set()
+    for n in plan.steps:
+        changed = MIGRATIONS[n - 1](paths)
         if changed:
             touched.update(Path(p) for p in changed)
-        n += 1
         raw["schema"] = n
         _write_config(paths, raw)
-        reached.append(n)
-
-    if not reached and not had_field:
-        # Schema 1, already current, just never written explicitly.
+    if plan.roots_action == "move":
+        # machine.json first: a crash in between must not lose the value.
+        machine = _load_json(_machine_file(paths))
+        machine["project_roots"] = plan.roots
+        _write_json(_machine_file(paths), machine)
+    fixups = plan.roots_action in ("move", "drop")
+    if fixups:
+        raw.pop("project_roots", None)
+    if plan.record_field:
         raw["schema"] = SCHEMA_VERSION
+    if fixups or plan.record_field:
         _write_config(paths, raw)
-        reached.append(SCHEMA_VERSION)
+    result.written = not plan.empty
 
-    if reached and commit:
-        _commit_migration(paths, touched, current, reached[-1])
-    return reached
+    if not can_commit:
+        return result
+    files = [CONFIG_NAME] + [str(p) for p in sorted(touched)]
+    add = _git(data, "add", "--", *files)
+    if add.returncode != 0:
+        raise SystemExit(f"migrate: git add failed: {add.stderr.strip()}\n"
+                         "the changes are written; rerun migrate to commit them")
+    message = (result.leftover or plan).commit_message()
+    done = _git(data, "commit", "-q", "--only", "-m", message, "--", *files)
+    if done.returncode != 0:
+        raise SystemExit(f"migrate: git commit failed: {(done.stderr or done.stdout).strip()}\n"
+                         "the changes are written; rerun migrate to commit them")
+    result.committed = message
+    return result
 
 
 def cmd_migrate(args) -> None:
     paths = g.default_paths()
-    require_writable(paths)
-    current = read_schema(paths)
-    if current < SCHEMA_VERSION:
-        print(f"vault schema {current} -> {SCHEMA_VERSION}")
-        if not args.yes:
-            if sys.stdin.isatty():
-                answer = input("proceed? [y/N]: ").strip().lower()
-                if not answer.startswith("y"):
-                    print("aborted")
-                    return
-            else:
-                sys.exit("rerun with --yes")
-    else:
-        print(f"vault schema is up to date ({SCHEMA_VERSION})")
+    commit = not args.no_commit
+    dry_run = args.dry_run
+    preview = migrate(paths, commit=commit, dry_run=True)  # exits if migrate would refuse
+    plan = preview.plan
+    implicit = " (implicit)" if plan.record_field else ""
+    print(f"vault schema {plan.current}{implicit}; this engine writes schema {SCHEMA_VERSION}")
+    for note in plan.notes:
+        print(f"note: {note}")
 
-    reached = migrate(paths, commit=not args.no_commit)
-    if reached:
-        print(f"now at schema {reached[-1]}")
+    if plan.empty:
+        if preview.leftover is None:
+            print("nothing to migrate")
+            return
+        print(f"{CONFIG_NAME} holds an earlier migration that was never committed")
+        if dry_run:
+            print(f"dry run: would commit it ({preview.leftover.commit_message()})")
+            return
+        result = migrate(paths, commit=commit)
+        print(f"committed: {result.committed}")
+        return
+
+    print("migrate will:")
+    for action in plan.actions:
+        print(f"  - {action}")
+    if dry_run:
+        print("dry run: nothing written")
+        return
+    if not args.yes:
+        if not sys.stdin.isatty():
+            sys.exit("rerun with --yes to apply (or --dry-run to preview)")
+        try:
+            answer = input("proceed? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        if not answer.startswith("y"):
+            print("aborted, nothing written")
+            return
+
+    result = migrate(paths, commit=commit)
+    if result.committed:
+        print(f"committed: {result.committed}")
+    else:
+        print(f"written, not committed ({result.uncommitted_reason})")
 
 
 def register(sub) -> None:
     """Called by graph.py's extension mechanism (see EXTENSIONS)."""
-    p = sub.add_parser("migrate", help="upgrade the data repo to this engine's schema version")
+    p = sub.add_parser("migrate", help="upgrade the data repo to this engine's schema and config")
     p.add_argument("--yes", action="store_true", help="never prompt, proceed automatically")
     p.add_argument("--no-commit", action="store_true", help="leave changes uncommitted")
+    p.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     p.set_defaults(func=cmd_migrate)

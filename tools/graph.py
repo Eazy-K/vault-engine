@@ -610,25 +610,34 @@ def project_roots(paths: Paths) -> list[Path]:
     per-computer override in <data>/.graph/machine.json (each computer using a
     shared vault has its own paths), then vault.config.json in the data folder
     (kept for backward compatibility -- older vaults set it there), then the
-    engine's own parent folder (the common "sibling projects" layout)."""
-    machine_file = paths.data / ".graph" / "machine.json"
-    roots = None
-    try:
-        raw = json.loads(machine_file.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            roots = raw.get("project_roots")
-    except (OSError, ValueError):
-        roots = None
-    if not roots:
+    engine's own parent folder (the common "sibling projects" layout).
+
+    Roots that do not exist on this computer are skipped: an older vault may
+    carry another computer's absolute path in the shared config, and that must
+    not hide this computer's projects. A source whose roots are all missing
+    falls through to the next one."""
+    for source in (paths.data / ".graph" / "machine.json", paths.config_file):
         try:
-            raw = json.loads(paths.config_file.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                roots = raw.get("project_roots")
+            raw = json.loads(source.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            roots = None
-    if roots:
-        return [Path(r).expanduser().resolve() for r in roots]
+            continue
+        roots = raw.get("project_roots") if isinstance(raw, dict) else None
+        existing = [p for p in (_as_root(r) for r in _as_list(roots)) if p is not None]
+        if existing:
+            return existing
     return [paths.engine.resolve().parent]
+
+
+def _as_root(value) -> Path | None:
+    """A configured project root as a resolved path, or None if it is not a
+    usable folder on this computer."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        path = Path(value).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path if path.is_dir() else None
 
 
 def has_project_notes(paths: Paths, name: str) -> bool:

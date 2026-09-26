@@ -26,6 +26,27 @@ jobs:
           git config --global user.email ci@example.com
       - run: python -m unittest discover -s tests -v
 
+  # Users run the engine detached at a release tag (the stable channel), not on
+  # a branch; run the suite that way too so no test assumes a branch checkout.
+  test-at-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Git identity for test repos
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+      - name: Check out a release-style tag (local only)
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' tools/graph.py)
+          git tag -f "v$version"
+          git checkout -q --detach "v$version"
+          git describe --tags --exact-match
+      - run: python -m unittest discover -s tests -v
+
   leakcheck:
     runs-on: ubuntu-latest
     steps:

@@ -107,9 +107,13 @@ class TestInit(unittest.TestCase):
 
     def test_ci_workflow_names_the_engine_repo(self):
         import feedback
+        import update
         target = self.tmp / "example-data6"
         workflow = target / ".github" / "workflows" / "vault.yml"
+        # The ref half depends on how this checkout is run (a branch in CI, a
+        # release tag for users); pin it so only the repo half is under test.
         with mock.patch.object(feedback, "_derive_repo", return_value="example/vault-engine"), \
+                mock.patch.object(update, "channel", return_value=("dev", "main")), \
                 redirect_stdout(StringIO()):
             onboarding.cmd_init(self._args(target))
         text = workflow.read_text(encoding="utf-8")
@@ -236,6 +240,37 @@ class TestInit(unittest.TestCase):
         # discovery.py must see the same precedence (it goes through g.project_roots).
         found = {p["name"] for p in discovery.discover(paths)}
         self.assertIn("some-project", found)
+
+    def test_project_roots_skip_folders_missing_on_this_computer(self):
+        # A v0.2.0 vault carries the first computer's absolute path in the
+        # shared config; on a second computer that path does not exist and must
+        # not hide the default (the engine's parent folder).
+        target = self.tmp / "example-data-missing-roots"
+        target.mkdir()
+        paths = graph.Paths(graph.ENGINE, target)
+        other_pc = str(self.tmp / "other-computer" / "Dev")
+        (target / "vault.config.json").write_text(
+            json.dumps({"project_roots": [other_pc]}), encoding="utf-8", newline="\n")
+        self.assertEqual(graph.project_roots(paths), [graph.ENGINE.resolve().parent])
+
+        # Only the missing ones are dropped from a list.
+        here = self.tmp / "here"
+        here.mkdir()
+        (target / "vault.config.json").write_text(
+            json.dumps({"project_roots": [other_pc, str(here)]}), encoding="utf-8", newline="\n")
+        self.assertEqual(graph.project_roots(paths), [here.resolve()])
+
+        # machine.json whose roots are all missing falls through to the config.
+        (target / ".graph").mkdir()
+        (target / ".graph" / "machine.json").write_text(
+            json.dumps({"project_roots": [other_pc]}), encoding="utf-8", newline="\n")
+        self.assertEqual(graph.project_roots(paths), [here.resolve()])
+
+        # A project under the default root is still recognized.
+        project = graph.ENGINE.resolve().parent / "some-project" / "src"
+        (target / "vault.config.json").write_text(
+            json.dumps({"project_roots": [other_pc]}), encoding="utf-8", newline="\n")
+        self.assertEqual(graph.detect_project(project, paths), "some-project")
 
     def test_initial_commit_made_with_identity(self):
         target = self.tmp / "example-data-commit"

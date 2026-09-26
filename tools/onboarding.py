@@ -11,6 +11,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -594,6 +595,39 @@ def _which(tool: str) -> str | None:
     return shutil.which(tool)
 
 
+_CI_PIN_RE = re.compile(r"uses:\s*[\w.\-]+/vault-engine@(\S+)")
+_CI_PUSH_BRANCHES_RE = re.compile(r"^\s*push:[ \t]*\n\s*branches:\s*\[([^\]]*)\]", re.M)
+
+
+def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[tuple[str, str]]:
+    """Problems an older vault's CI workflow carries over: the engine pin lags
+    behind a stable install, or the data repo is on a branch the workflow never
+    runs on (v0.2.0 vaults were often created on `master`)."""
+    text = _read_text(data / ".github" / "workflows" / "vault.yml")
+    if not text:
+        return []
+    found: list[tuple[str, str]] = []
+    pin = _CI_PIN_RE.search(text)
+    if channel == "stable" and engine_ref and pin and pin.group(1) != engine_ref:
+        found.append(("WARN", f"vault CI runs the engine at @{pin.group(1)}, this engine is "
+                              f"{engine_ref}: run update (re-pins it), then commit and push "
+                              ".github/workflows/vault.yml"))
+    push = _CI_PUSH_BRANCHES_RE.search(text)
+    branches = [b.strip().strip("'\"") for b in push.group(1).split(",")] if push else []
+    try:
+        out = subprocess.run(["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=data,
+                              capture_output=True, text=True, encoding="utf-8")
+        branch = out.stdout.strip() if out.returncode == 0 else ""
+    except OSError:
+        branch = ""
+    if branch and branches and branch not in branches:
+        target = "main" if "main" in branches else branches[0]
+        found.append(("WARN", f"vault CI runs on pushes to {', '.join(branches)}, but the data "
+                              f"repo is on {branch}, so CI never runs: git branch -m {branch} "
+                              f"{target} && git push -u origin {target}"))
+    return found
+
+
 def cmd_doctor(_args: argparse.Namespace) -> None:
     checks: list[tuple[str, str]] = []
 
@@ -603,6 +637,7 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
     check("OK", f"vault-engine {g.__version__}")
 
     update = sys.modules.get("update")
+    status, ref = "unknown", None
     if update is not None:
         status, ref = update.channel(g.ENGINE)
         if status == "stable":
@@ -737,8 +772,12 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
 
     schema = sys.modules.get("schema")
     if data is not None and schema is not None:
-        data_schema = schema.read_schema(g.Paths(g.ENGINE, data))
-        if data_schema == schema.SCHEMA_VERSION:
+        schema_paths = g.Paths(g.ENGINE, data)
+        data_schema = schema.read_schema(schema_paths)
+        if data_schema == schema.SCHEMA_VERSION and not schema.has_schema_field(schema_paths):
+            check("WARN", f"vault schema {data_schema} (implicit, not recorded in "
+                          "vault.config.json): run migrate")
+        elif data_schema == schema.SCHEMA_VERSION:
             check("OK", f"vault schema {data_schema}")
         elif data_schema > schema.SCHEMA_VERSION:
             check("FAIL", f"vault schema {data_schema} is newer than this engine "
@@ -746,6 +785,17 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         else:
             check("WARN", f"vault schema {data_schema} is older than this engine "
                           f"({schema.SCHEMA_VERSION}): run migrate")
+        shared_roots = schema.shared_project_roots(schema_paths)
+        if shared_roots and all(Path(r).expanduser().is_dir() for r in shared_roots):
+            check("WARN", "vault.config.json sets project_roots, a per-computer path, in the "
+                          "shared config: run migrate (moves it to .graph/machine.json)")
+        elif shared_roots:
+            check("WARN", "vault.config.json sets project_roots that do not exist on this "
+                          "computer (ignored here): run migrate on the computer they belong to")
+
+    if data is not None:
+        for ci_status, msg in _vault_ci_checks(data, status, ref):
+            check(ci_status, msg)
 
     for status, msg in checks:
         print(f"{status:<4} {msg}")

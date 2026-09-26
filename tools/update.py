@@ -470,6 +470,12 @@ def cmd_update(args) -> None:
 
     if target == ref or target_v == current_v:
         print(f"already up to date (v{g.__version__})")
+        # A vault upgraded by hand (before `update` existed) still pins its CI
+        # to an old ref; bring it in line here too, as doctor suggests.
+        try:
+            _rewrite_ci_pin(g.default_paths().data, ref or target)
+        except SystemExit:
+            pass
         return
 
     is_upgrade = current_v is not None and target_v > current_v
