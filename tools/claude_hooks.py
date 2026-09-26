@@ -1,6 +1,10 @@
-"""Install the engine's Claude Code hooks (currently: the agent-guard PreToolUse
-hook that stops the orchestrator from starting expensive subagents) into a
-Claude Code settings.json.
+"""Install the engine's Claude Code hooks into a Claude Code settings.json:
+- agent-guard: a PreToolUse hook that stops the orchestrator from starting
+  expensive subagents.
+- context-warn: a UserPromptSubmit hook that warns the model when the
+  session's context usage crosses a threshold.
+- statusLine: a command that shows context usage in the status line (only
+  set if settings has no statusLine yet -- an existing one is left alone).
 
 Optional extension module: graph.py imports this if present (see EXTENSIONS
 in graph.py) and calls register(sub) with its argparse subparsers object.
@@ -22,9 +26,22 @@ GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "agent-guard.py"
 GUARD_MATCHER = "Agent"
 GUARD_MARKER = "agent-guard.py"  # substring identifying our hook's command, for idempotent merges
 
+CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
+CONTEXT_WARN_MARKER = "context-warn.py"
+
+STATUSLINE_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "statusline.py"
+
 
 def _guard_command() -> str:
     return f"{shlex.quote(sys.executable)} {shlex.quote(str(GUARD_SCRIPT))}"
+
+
+def _context_warn_command() -> str:
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(CONTEXT_WARN_SCRIPT))}"
+
+
+def _statusline_command() -> str:
+    return f"{shlex.quote(sys.executable)} {shlex.quote(str(STATUSLINE_SCRIPT))}"
 
 
 def _load(path: Path) -> dict:
@@ -53,26 +70,75 @@ def _find_guard_hook(settings: dict) -> dict | None:
     return None
 
 
-def merge(settings: dict) -> tuple[dict, bool]:
-    """Merge in one PreToolUse hook for the Agent matcher, without touching any other
-    existing hook. Returns (new_settings, changed)."""
+def _find_context_warn_hook(settings: dict) -> dict | None:
+    """Same idea as _find_guard_hook, but for the UserPromptSubmit hook list."""
+    entries = settings.get("hooks", {}).get("UserPromptSubmit", [])
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
+            if isinstance(hook, dict) and CONTEXT_WARN_MARKER in str(hook.get("command", "")):
+                return hook
+    return None
+
+
+def _merge_guard(settings: dict) -> bool:
+    """Merge in the agent-guard PreToolUse hook. Returns True if it changed anything."""
     command = _guard_command()
     existing = _find_guard_hook(settings)
     if existing is not None:
         if existing.get("command") == command and existing.get("type") == "command":
-            return settings, False
+            return False
         existing["type"] = "command"
         existing["command"] = command
-        return settings, True
+        return True
 
     hooks = settings.setdefault("hooks", {})
     pre = hooks.setdefault("PreToolUse", [])
     pre.append({"matcher": GUARD_MATCHER, "hooks": [{"type": "command", "command": command}]})
-    return settings, True
+    return True
+
+
+def _merge_context_warn(settings: dict) -> bool:
+    """Merge in the context-warn UserPromptSubmit hook. Returns True if changed."""
+    command = _context_warn_command()
+    existing = _find_context_warn_hook(settings)
+    if existing is not None:
+        if existing.get("command") == command and existing.get("type") == "command":
+            return False
+        existing["type"] = "command"
+        existing["command"] = command
+        return True
+
+    hooks = settings.setdefault("hooks", {})
+    entries = hooks.setdefault("UserPromptSubmit", [])
+    entries.append({"hooks": [{"type": "command", "command": command}]})
+    return True
+
+
+def _merge_statusline(settings: dict) -> bool:
+    """Set statusLine to our command, but only if none is configured yet. Returns
+    True if changed; leaves an existing statusLine of any kind untouched."""
+    if settings.get("statusLine"):
+        return False
+    settings["statusLine"] = {"type": "command", "command": _statusline_command()}
+    return True
+
+
+def merge(settings: dict) -> tuple[dict, bool]:
+    """Merge in the agent-guard and context-warn hooks, and (if none is configured)
+    the statusLine command, without touching any other existing hook or an existing
+    statusLine. Returns (new_settings, changed)."""
+    changed = _merge_guard(settings)
+    changed = _merge_context_warn(settings) or changed
+    changed = _merge_statusline(settings) or changed
+    return settings, changed
 
 
 def status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
-    """("OK"|"WARN", message) for `doctor`."""
+    """("OK"|"WARN", message) for `doctor`: whether the agent-guard hook is installed."""
     settings = _load(settings_path)
     hook = _find_guard_hook(settings)
     if hook is not None and hook.get("command") == _guard_command():
@@ -81,9 +147,20 @@ def status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
                      "`graph.py claude-hooks --install` to stop expensive subagents")
 
 
+def context_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the context-warn hook is installed."""
+    settings = _load(settings_path)
+    hook = _find_context_warn_hook(settings)
+    if hook is not None and hook.get("command") == _context_warn_command():
+        return "OK", f"context-warn hook installed ({settings_path})"
+    return "WARN", (f"context-warn hook not installed in {settings_path}: run "
+                     "`graph.py claude-hooks --install` to warn before context runs out")
+
+
 def cmd_claude_hooks(args: argparse.Namespace) -> None:
     settings_path = Path(args.settings).expanduser() if args.settings else DEFAULT_SETTINGS
     settings = _load(settings_path)
+    had_statusline = bool(settings.get("statusLine"))
     merged, changed = merge(settings)
 
     if not args.install:
@@ -91,13 +168,19 @@ def cmd_claude_hooks(args: argparse.Namespace) -> None:
             print(f"up to date: {settings_path}")
         else:
             print(f"would update: {settings_path}")
-            print(f"  matcher: {GUARD_MATCHER}")
-            print(f"  command: {_guard_command()}")
+            print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
+            print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
+            if not had_statusline:
+                print(f"  statusLine: {_statusline_command()}")
             print("(dry run: pass --install to write it)")
+        if had_statusline:
+            print(f"note: statusLine already set in {settings_path}, leaving it alone")
         return
 
     if not changed:
         print(f"up to date: {settings_path}")
+        if had_statusline:
+            print(f"note: statusLine already set in {settings_path}, leaving it alone")
         return
 
     if settings_path.exists():
@@ -115,13 +198,17 @@ def cmd_claude_hooks(args: argparse.Namespace) -> None:
     settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n",
                               encoding="utf-8", newline="\n")
     print(f"  installed: {settings_path}")
-    print(f"  matcher: {GUARD_MATCHER}")
-    print(f"  command: {_guard_command()}")
+    print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
+    print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
+    if not had_statusline:
+        print(f"  statusLine: {_statusline_command()}")
+    else:
+        print(f"note: statusLine already set in {settings_path}, leaving it alone")
 
 
 def register(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("claude-hooks", help="install the agent-guard PreToolUse hook "
-                                             "(blocks expensive subagents) into Claude "
+    p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn "
+                                             "hooks and a statusLine into Claude "
                                              "Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")

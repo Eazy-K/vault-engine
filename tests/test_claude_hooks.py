@@ -56,6 +56,36 @@ class TestMerge(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(len(settings2["hooks"]["PreToolUse"]), 1)
 
+    def test_merge_adds_context_warn_hook(self):
+        settings, changed = claude_hooks.merge({})
+        self.assertTrue(changed)
+        entries = settings["hooks"]["UserPromptSubmit"]
+        self.assertEqual(len(entries), 1)
+        self.assertIn("context-warn.py", entries[0]["hooks"][0]["command"])
+
+    def test_merge_context_warn_hook_is_idempotent(self):
+        settings, _ = claude_hooks.merge({})
+        settings2, changed = claude_hooks.merge(settings)
+        self.assertFalse(changed)
+        self.assertEqual(len(settings2["hooks"]["UserPromptSubmit"]), 1)
+
+    def test_merge_sets_statusline_when_absent(self):
+        settings, changed = claude_hooks.merge({})
+        self.assertTrue(changed)
+        self.assertEqual(settings["statusLine"]["type"], "command")
+        self.assertIn("statusline.py", settings["statusLine"]["command"])
+
+    def test_merge_leaves_existing_statusline_untouched(self):
+        existing = {"statusLine": {"type": "command", "command": "echo custom"}}
+        settings, changed = claude_hooks.merge(existing)
+        self.assertEqual(settings["statusLine"], {"type": "command", "command": "echo custom"})
+        # guard + context-warn hooks still get added, so changed is True
+        self.assertTrue(changed)
+        # re-merging now (both hooks present, statusLine still untouched) is a no-op
+        settings2, changed2 = claude_hooks.merge(settings)
+        self.assertFalse(changed2)
+        self.assertEqual(settings2["statusLine"], {"type": "command", "command": "echo custom"})
+
     def test_merge_keeps_existing_unrelated_hooks(self):
         existing = {
             "hooks": {
@@ -172,6 +202,19 @@ class TestStatus(unittest.TestCase):
             claude_hooks.cmd_claude_hooks(
                 Namespace(install=True, settings=str(self.settings_path)))
         level, msg = claude_hooks.status(self.settings_path)
+        self.assertEqual(level, "OK")
+
+    def test_context_warn_status_warn_when_missing(self):
+        level, msg = claude_hooks.context_warn_status(self.settings_path)
+        self.assertEqual(level, "WARN")
+        self.assertIn("not installed", msg)
+
+    def test_context_warn_status_ok_after_install(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            claude_hooks.cmd_claude_hooks(
+                Namespace(install=True, settings=str(self.settings_path)))
+        level, msg = claude_hooks.context_warn_status(self.settings_path)
         self.assertEqual(level, "OK")
 
 
