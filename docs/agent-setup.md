@@ -313,8 +313,12 @@ available, want me to check what changed?"). If they agree:
 2. Only after the user agrees to proceed, run `update --yes` to actually switch versions.
    It then runs the new version's `migrate`, `setup` (never environment variables or
    shell startup files) and `doctor`, and lists every change.
-3. If the update shows a diff for `AGENTS.md`, explain in plain language what changed
-   and ask before re-running with `--apply-agents`.
+3. If the update shows a diff for `AGENTS.md` (or `doctor` warns that it is behind the
+   template), explain in plain language what changed and ask before running
+   `update --apply-agents`, which replaces the file with the template (it works even when
+   the engine is already up to date). If the user's `AGENTS.md` is translated or edited,
+   offer to carry the changes into their version instead, keeping the template's last
+   line (`vault-engine AGENTS.md template: N`) so later updates know it is current.
 4. If a command refuses to run because the vault's data schema is newer than this
    computer's engine, run `update` on this computer too.
 
@@ -360,9 +364,11 @@ after step 2.
    date" and re-pins the CI. If `doctor` has no such line but
    `<projects folder>/vault/.github/workflows/vault.yml` still says `vault-engine@main`,
    change that to `vault-engine@<new tag>` by hand.
-7. Apply the rest of the Upgrade notes you read in step 3 (for example lines to copy
-   from `templates/AGENTS.md` into the data repo's `AGENTS.md`). Commit what changed in
-   the data repo, and push it if it has a backup (`git -C "<projects folder>/vault" push`).
+7. Apply the rest of the Upgrade notes you read in step 3. If `doctor` says `AGENTS.md`
+   is behind the template, run `python "<projects folder>/vault-engine/tools/graph.py" update`
+   to see the diff and, after the user agrees, `update --apply-agents` (see "Updating"
+   above, step 3). Commit what changed in the data repo, and push it if it has a backup
+   (`git -C "<projects folder>/vault" push`).
 8. Do the same on every other computer that uses this data repo. Engines before 0.3.0
    don't know the vault's data schema, so they never refuse to write to a vault that a
    newer engine has upgraded. Until every computer is on 0.3.0 or later, don't install a

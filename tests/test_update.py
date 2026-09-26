@@ -548,7 +548,9 @@ class TestUpdateAgentsMd(UpdateTestCase):
              redirect_stdout(StringIO()) as buf:
             update.cmd_update(Args(to="v0.2.0", yes=True))
         out = buf.getvalue()
-        self.assertIn("differs from the new template", out)
+        self.assertIn("AGENTS.md is behind this engine's template", out)
+        self.assertIn("-content-a", out)
+        self.assertIn("+content-b", out)
         self.assertIn("rerun with --apply-agents", out)
         self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v1\ncontent-a\n")
 
@@ -560,9 +562,117 @@ class TestUpdateAgentsMd(UpdateTestCase):
             update.cmd_update(Args(to="v0.2.0", yes=True, apply_agents=True))
         self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v2\ncontent-b\n")
 
-    def test_no_diff_when_template_did_not_change_between_releases(self):
-        self.assertFalse(update._template_changed(self.engine, "v0.2.0", "v0.2.0"))
-        self.assertTrue(update._template_changed(self.engine, "v0.1.0", "v0.2.0"))
+    def test_nothing_shown_when_vault_already_matches_the_new_template(self):
+        (self.data / "AGENTS.md").write_text("AGENTS v2\ncontent-b\n", encoding="utf-8")
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        self.assertNotIn("AGENTS.md", buf.getvalue())
+
+    def _hand_upgraded(self) -> None:
+        # The engine was moved to the newest tag with a plain `git checkout`; the
+        # vault still has the AGENTS.md of the release it was created with.
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        (self.data / "AGENTS.md").write_text("AGENTS v1\ncontent-a\n", encoding="utf-8")
+
+    def test_hand_upgraded_vault_gets_the_diff_when_already_up_to_date(self):
+        self._hand_upgraded()
+        with redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(yes=True))
+        out = buf.getvalue()
+        self.assertIn("already up to date", out)
+        self.assertIn("+content-c", out)
+        self.assertIn("rerun with --apply-agents", out)
+        self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v1\ncontent-a\n")
+
+    def test_apply_agents_works_when_already_up_to_date(self):
+        self._hand_upgraded()
+        with redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(apply_agents=True))
+        self.assertIn("+content-c", buf.getvalue())
+        self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v3\ncontent-c\n")
+        self.assertEqual(self.head_tag(), "v0.10.0")
+
+    def test_apply_agents_works_on_the_dev_channel(self):
+        self.checkout(self.origin["branch"])
+        (self.data / "AGENTS.md").write_text("AGENTS v1\ncontent-a\n", encoding="utf-8")
+        with redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(apply_agents=True))
+        self.assertIn("development checkout", buf.getvalue())
+        self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v3\ncontent-c\n")
+
+
+def _marked(body: str, revision: int) -> str:
+    return f"{body}\n<!-- vault-engine AGENTS.md template: {revision}. Keep this line. -->\n"
+
+
+class TestAgentsMdStatus(unittest.TestCase):
+    """Vault AGENTS.md against the engine's template, with the revision line."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.engine = self.tmp / "engine"
+        self.data = self.tmp / "data"
+        self.data.mkdir()
+        _write(self.engine / "templates" / "AGENTS.md", _marked("Run context first.", 3))
+
+    def vault(self, text: str) -> None:
+        _write(self.data / "AGENTS.md", text)
+
+    def state(self) -> str:
+        return update.agents_md_status(self.engine, self.data)[0]
+
+    def handle(self, **kw) -> str:
+        with mock.patch.object(graph, "stdin_is_interactive", return_value=False), \
+             redirect_stdout(StringIO()) as buf:
+            update._handle_agents_md(self.engine, self.data, Args(**kw))
+        return buf.getvalue()
+
+    def test_same_text_is_current(self):
+        self.vault(_marked("Run context first.", 3))
+        self.assertEqual(self.state(), "current")
+
+    def test_translation_keeping_the_current_line_is_customized_and_quiet(self):
+        self.vault(_marked("Önce context çalıştır.", 3))
+        self.assertEqual(self.state(), "customized")
+        self.assertEqual(self.handle(yes=True), "")
+
+    def test_older_revision_is_stale(self):
+        self.vault(_marked("Önce context çalıştır.", 2))
+        self.assertEqual(self.state(), "stale")
+        out = self.handle(yes=True)
+        self.assertIn("template 3, yours: 2", out)
+        self.assertIn("rerun with --apply-agents", out)
+
+    def test_no_line_is_stale(self):
+        self.vault("An AGENTS.md from before the template line\n")
+        self.assertEqual(self.state(), "stale")
+
+    def test_newer_revision_is_never_replaced(self):
+        self.vault(_marked("From a newer engine.", 4))
+        self.assertEqual(self.state(), "newer")
+        out = self.handle(apply_agents=True)
+        self.assertIn("not replaced", out)
+        self.assertIn("From a newer engine.", (self.data / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_missing_and_unknown(self):
+        self.assertEqual(self.state(), "missing")
+        (self.engine / "templates" / "AGENTS.md").unlink()
+        self.assertEqual(self.state(), "unknown")
+
+    def test_apply_agents_replaces_a_customized_copy_after_the_diff(self):
+        self.vault(_marked("Önce context çalıştır.", 3))
+        out = self.handle(apply_agents=True)
+        self.assertIn("+Run context first.", out)
+        self.assertEqual(self.state(), "current")
+
+    def test_crlf_checkout_still_counts_as_current(self):
+        (self.data / "AGENTS.md").write_bytes(_marked("Run context first.", 3).replace("\n", "\r\n")
+                                              .encode("utf-8"))
+        self.assertEqual(self.state(), "current")
 
 
 if __name__ == "__main__":

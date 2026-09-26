@@ -16,7 +16,7 @@ A task written in one session or on one device (e.g. a phone) gets done by an ag
 - No personal data in a task (see [[data-policy]]).
 
 ## The agent doing the task
-1. `git pull --rebase`, then `python tools/graph.py tasks --status open`.
+1. `git pull --rebase`, then `python "$VAULT_ENGINE/tools/graph.py" tasks --status open`.
 2. Set the task's status to `in-progress`, commit and push it. That way other machines see the task has been picked up.
 3. Do the work. Follow the project repo's own rules: branch, PR, tests.
 4. Fill in the task's `## Log` section (date, what was done, PR link, test result, issues). Set the status to `done` or `blocked`.

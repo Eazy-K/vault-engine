@@ -944,6 +944,15 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("OK", f"data dir has AGENTS.md ({data})")
         else:
             check("FAIL", f"data dir has no AGENTS.md ({data})")
+        if update is not None:
+            agents_state, agents_msg = update.agents_md_status(g.ENGINE, data)
+            if agents_state in ("current", "customized"):
+                check("OK", agents_msg)
+            elif agents_state == "stale":
+                check("WARN", f"{agents_msg}: run update to see the diff; "
+                              "update --apply-agents replaces the file")
+            elif agents_state == "newer":
+                check("INFO", agents_msg)
 
         try:
             out = subprocess.run(["git", "config", "core.hooksPath"], cwd=data,
@@ -1195,7 +1204,7 @@ def _run_onboard(data: Path, raw: dict, force: bool) -> None:
     if findings:
         kinds = ", ".join(sorted(set(findings)))
         sys.exit(f"refused: an answer looks like personal data / a secret ({kinds}). "
-                 "Rephrase it (see standards/data-policy.md) and try again.")
+                 f"Rephrase it (see {g.data_policy_hint()}) and try again.")
 
     lang_rules, style_rules = _build_rules(answers)
     status_lang = _write_profile_note(

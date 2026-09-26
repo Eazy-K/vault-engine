@@ -736,6 +736,27 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         self.assertIn("WARN vault CI runs on pushes to main, but the data repo is on master, "
                       "so CI never runs: git branch -m master main && git push -u origin main", out)
 
+    def test_agents_md_behind_the_template(self):
+        # setUp's "root\n" stands for an AGENTS.md from before the template line.
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("WARN AGENTS.md is behind this engine's template", out)
+        self.assertIn("update --apply-agents replaces the file", out)
+
+    def test_agents_md_from_the_template(self):
+        template = (graph.ENGINE / "templates" / "AGENTS.md").read_text(encoding="utf-8")
+        (self.data / "AGENTS.md").write_text(template, encoding="utf-8", newline="\n")
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("OK   AGENTS.md matches this engine's template", out)
+
+    def test_agents_md_translated_with_the_current_template_line(self):
+        template = (graph.ENGINE / "templates" / "AGENTS.md").read_text(encoding="utf-8")
+        last_line = template.rstrip("\n").splitlines()[-1]
+        (self.data / "AGENTS.md").write_text(f"# AGENTS.md\n\nÇeviri.\n\n{last_line}\n",
+                                             encoding="utf-8", newline="\n")
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("OK   AGENTS.md is edited or translated", out)
+        self.assertNotIn("behind", out)
+
 
 if __name__ == "__main__":
     unittest.main()
