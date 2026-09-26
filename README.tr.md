@@ -17,7 +17,7 @@ Code](https://claude.com/claude-code) ya da [Codex](https://openai.com/codex). S
 asistana şunu yapıştırın (İngilizce bırakabilirsiniz, asistan sizinle Türkçe konuşmaya
 devam edecektir):
 
-> Install vault-engine for me: clone https://github.com/Eazy-K/vault-engine and follow docs/agent-setup.md step by step, asking me before each change, and talk to me in Turkish.
+> Install vault-engine for me: read docs/agent-setup.md in https://github.com/Eazy-K/vault-engine and follow it step by step, asking me before each change, and talk to me in Turkish.
 
 Asistan şunları yapacak:
 - Bilgisayarınızda neyin kurulu olduğunu kontrol eder, eksik bir şeyi kurmadan önce
@@ -33,9 +33,9 @@ Her adımdan önce ne yapacağını tek cümleyle açıklar ve onayınızı bekl
 sormadan kurmaz veya değiştirmez.
 
 Kurulumdan sonra normal şekilde asistanınızla çalışmaya devam edersiniz — notlarınızı
-otomatik olarak arka planda kullanacaktır. Notlarınızı görmek veya elle düzenlemek
-isterseniz, oluşturulan veri klasöründeki `profile/` ve `projects/` altındaki dosyalara
-bakabilirsiniz.
+otomatik olarak arka planda kullanacaktır. Asistan öğrendiklerini zamanla not olarak
+yazar (ör. bir proje için `projects/<proje>/` klasörü gerektiğinde oluşur). Tercihlerinizi
+elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara bakabilirsiniz.
 
 Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar içerir):
 [docs/agent-setup.md](docs/agent-setup.md)

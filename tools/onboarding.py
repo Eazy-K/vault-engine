@@ -8,10 +8,12 @@ Stdlib only, like graph.py itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -74,6 +76,26 @@ def _is_git_repo(path: Path) -> bool:
     except OSError:
         return False
     return out.returncode == 0
+
+
+def _enclosing_repo(path: Path) -> Path | None:
+    """Top level of the git work tree that holds `path`, or would hold it once
+    created (its nearest existing parent is checked then); None outside git.
+    Unlike _is_git_repo, this tells a repo's own folder apart from a subfolder."""
+    probe = path
+    while not probe.exists():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    if not probe.is_dir():
+        return None
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=probe,
+                              capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        return None
+    top = out.stdout.strip()
+    return Path(top) if out.returncode == 0 and top else None
 
 
 def _append_if_missing(path: Path, line: str) -> None:
@@ -235,6 +257,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     target = Path(args.dir).expanduser().resolve()
     if target == g.ENGINE.resolve() or g.ENGINE.resolve() in target.parents:
         sys.exit(f"refusing to create a data repo inside the engine ({g.ENGINE})")
+    enclosing = _enclosing_repo(target)
+    if enclosing is not None and not (target.is_dir() and _same_path(str(enclosing), str(target))):
+        # Its hooks setting and commits would land in that other repo (e.g. turning off husky).
+        sys.exit(f"refusing to create a data repo inside another git repo ({enclosing}): "
+                 "init would change that repo's settings. Pick a folder outside it, "
+                 "for example next to it (or run `git init` in the folder first to make it "
+                 "a repo of its own).")
 
     config_path = target / "vault.config.json"
     existing = _load_existing_config(config_path)
@@ -249,8 +278,12 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"  created: {rel}")
     for rel in skipped:
         print(f"  skipped (already exists): {rel}")
+    if existing and copied:
+        print("  note: this data repo already existed; the files marked created came back from "
+              "the templates. Delete them again if you had removed them on purpose. To set only "
+              "this computer's settings, use `machine` instead of `init`.")
 
-    repo_existed = _is_git_repo(target)
+    repo_existed = enclosing is not None
     if not repo_existed:
         subprocess.run(["git", "init"], cwd=target, check=True, capture_output=True)
         # CI only runs on main; `git init` alone may default to master depending
@@ -262,9 +295,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     # Never touch a repo that already had commits before this run.
     had_commits = _has_commits(target) if repo_existed else False
     hooks_path = (g.ENGINE / "tools" / "hooks").as_posix()
+    previous_hooks = subprocess.run(["git", "config", "--local", "core.hooksPath"], cwd=target,
+                                    capture_output=True, text=True, encoding="utf-8").stdout.strip()
     subprocess.run(["git", "config", "core.hooksPath", hooks_path], cwd=target,
                     check=True, capture_output=True)
-    print(f"  core.hooksPath = {hooks_path}")
+    was = (f" (was {previous_hooks})"
+           if previous_hooks and not _same_path(previous_hooks, hooks_path) else "")
+    print(f"  core.hooksPath = {hooks_path}{was}")
 
     interactive = _is_interactive(args)
     existing_feedback = existing.get("feedback") if isinstance(existing.get("feedback"), dict) else {}
@@ -290,6 +327,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         machine_path = _write_machine_json(target, {"project_roots": machine_roots})
         print(f"  wrote: {machine_path.relative_to(target).as_posix()} "
               "(project roots are per computer, not shared via git)")
+        if existing:
+            print("  hint: `machine --project-root <path>` changes only this file")
 
     feedback_level = args.feedback
     if not feedback_level:
@@ -505,7 +544,41 @@ def _setup_env(data: Path, interactive: bool, assume_yes: bool = False) -> None:
                 print(f"    export {name}={value}")
 
 
-def _setup_agents() -> None:
+def _blob_id(content: bytes) -> str:
+    """The id git gives a file with this content (LF line endings, as stored)."""
+    content = content.replace(b"\r\n", b"\n")
+    return hashlib.sha1(b"blob %d\0" % len(content) + content).hexdigest()
+
+
+def _shipped_blob_ids(rel: str) -> set[str]:
+    """Ids of every version of the engine file `rel` in this checkout's history.
+    Empty when the engine is not a git checkout (then nothing counts as ours)."""
+    try:
+        out = subprocess.run(["git", "log", "--root", "--format=", "--raw", "--no-abbrev", "--", rel],
+                              cwd=g.ENGINE, capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        return set()
+    ids = set()
+    for line in out.stdout.splitlines() if out.returncode == 0 else []:
+        fields = line.split()
+        if line.startswith(":") and len(fields) >= 4:
+            ids.update(f for f in fields[2:4] if f.strip("0"))
+    return ids
+
+
+def _backup_path(path: Path) -> Path:
+    backup = path.with_name(path.name + ".bak")
+    n = 1
+    while backup.exists():
+        n += 1
+        backup = path.with_name(f"{path.name}.bak{n}")
+    return backup
+
+
+def _setup_agents(interactive: bool = False) -> None:
+    """Copy the engine's subagent files into ~/.claude/agents. A file there that
+    is neither the engine's current version nor an earlier one is the user's own
+    (or edited): it is only replaced after a yes in a terminal, with a backup."""
     src_dir = g.ENGINE / "tools" / "claude-agents"
     dest_dir = Path.home() / ".claude" / "agents"
     if not src_dir.is_dir():
@@ -514,11 +587,95 @@ def _setup_agents() -> None:
     for src in sorted(src_dir.glob("*.md")):
         dest = dest_dir / src.name
         content = src.read_text(encoding="utf-8")
-        if dest.exists() and dest.read_text(encoding="utf-8") == content:
+        if not dest.exists():
+            dest.write_text(content, encoding="utf-8", newline="\n")
+            print(f"  copied: {dest}")
+            continue
+        current = dest.read_bytes()
+        if current.replace(b"\r\n", b"\n") == content.encode("utf-8"):
             print(f"  unchanged: {dest}")
             continue
-        dest.write_text(content, encoding="utf-8", newline="\n")
-        print(f"  copied: {dest}")
+        if _blob_id(current) in _shipped_blob_ids(f"tools/claude-agents/{src.name}"):
+            dest.write_text(content, encoding="utf-8", newline="\n")
+            print(f"  updated: {dest}")
+            continue
+        if interactive and _ask_yn(f"{dest} differs from the engine's version (your own or "
+                                   "edited). Replace it? A copy is kept", False):
+            backup = _backup_path(dest)
+            shutil.copy2(dest, backup)
+            dest.write_text(content, encoding="utf-8", newline="\n")
+            print(f"  replaced: {dest} (your version: {backup})")
+            continue
+        print(f"  skipped (your own or edited version, kept): {dest}")
+        print("    to install the engine's version, run setup in a terminal (it asks and keeps "
+              "a copy), or rename that file and rerun setup")
+
+
+MACHINE_NAME_EXPLAIN = ("Learned links are saved per computer in .graph/learned/<name>.json, "
+                        "which is committed and pushed with your notes. Pick a neutral name "
+                        "(not your name or employer), e.g. laptop or pc-2.")
+
+
+def _neutral_machine_name() -> str:
+    return "pc-" + secrets.token_hex(2)
+
+
+def _is_data_repo(data: Path) -> bool:
+    return (data / "vault.config.json").exists() or (data / "AGENTS.md").exists()
+
+
+def _machine_json(data: Path) -> dict:
+    return _load_existing_config(data / ".graph" / "machine.json")
+
+
+def _learned_file(data: Path, name: str) -> Path:
+    return g.Paths(g.ENGINE, data).learned_dir / f"{name}.json"
+
+
+def _rename_hint(data: Path, old: str, new: str) -> None:
+    """Existing learned files are never renamed automatically (another computer
+    may push to the same name); say how to carry one over."""
+    if old != new and _learned_file(data, old).exists():
+        print(f"  note: .graph/learned/{old}.json keeps its name and still counts. To keep "
+              f"adding to it, rename it: git -C \"{data}\" mv .graph/learned/{old}.json "
+              f".graph/learned/{new}.json (then commit)")
+
+
+def _setup_machine(data: Path, interactive: bool) -> None:
+    """Give this computer a name for its learned-links file, stored in the
+    gitignored .graph/machine.json, so the hostname stays out of the vault. A
+    computer that already has a learned file under its hostname keeps it."""
+    if not _is_data_repo(data):
+        print(f"  skipped (not a data repo): {data}")
+        return
+    env_name = g.sanitize_machine_name(os.environ.get("VAULT_MACHINE", ""))
+    if env_name:
+        print(f"  ok: {env_name} (from VAULT_MACHINE)")
+        return
+    saved = _machine_json(data).get("machine")
+    if isinstance(saved, str) and g.sanitize_machine_name(saved):
+        print(f"  ok: {g.sanitize_machine_name(saved)} (.graph/machine.json)")
+        return
+    host = g.machine_name()  # no VAULT_MACHINE, no saved name: the hostname
+    host_used = _learned_file(data, host).exists()
+    default = host if host_used else _neutral_machine_name()
+    name = default
+    if interactive:
+        print(f"  {MACHINE_NAME_EXPLAIN}")
+        raw = _ask("Name for this computer", default)
+        answer = g.sanitize_machine_name(raw)
+        if answer and not g.scan_line(raw):
+            name = answer
+        else:
+            print(f"  using {default}: the answer was empty or looked like personal data")
+    if name == host and host_used:
+        print(f"  kept: .graph/learned/{host}.json (named after this computer's hostname). "
+              "For a neutral name: machine --name <name>")
+        return
+    _write_machine_json(data, {"machine": name})
+    print(f"  wrote: .graph/machine.json (machine name {name}, "
+          f"learned links go to .graph/learned/{name}.json)")
+    _rename_hint(data, host, name)
 
 
 def _routing_line(data: Path) -> str:
@@ -573,15 +730,62 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if not args.no_env:
         print("Environment variables:")
         _setup_env(data, interactive, args.yes)
+    if not getattr(args, "no_machine", False):
+        print("Machine name:")
+        _setup_machine(data, interactive)
     if not args.no_agents:
         print("Claude Code subagents:")
-        _setup_agents()
+        _setup_agents(interactive)
     if not args.no_routing:
         print("Project root routing:")
         _setup_routing(data)
     if args.user_level:
         print("User-level routing:")
         _setup_user_level(data)
+
+
+# --- machine -----------------------------------------------------------------------
+# This computer's own settings for a shared data repo, e.g. on a second computer
+# after cloning it: writes only the gitignored .graph/machine.json.
+
+def cmd_machine(args: argparse.Namespace) -> None:
+    data = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
+    if not _is_data_repo(data):
+        sys.exit(f"machine: {data} is not a data repo (no vault.config.json or AGENTS.md)")
+    paths = g.Paths(g.ENGINE, data)
+    before = g.machine_name(paths)
+
+    updates: dict = {}
+    if args.project_root:
+        roots = []
+        for raw in args.project_root:
+            root = Path(raw).expanduser().resolve()
+            if not root.is_dir():
+                print(f"  note: {root} is not a folder on this computer; it is ignored until it is")
+            roots.append(str(root))
+        updates["project_roots"] = roots
+    if args.name is not None:
+        name = g.sanitize_machine_name(args.name)
+        if not name:
+            sys.exit("machine: --name needs letters or digits")
+        if g.scan_line(args.name):
+            sys.exit("machine: that name looks like personal data; pick a neutral one "
+                     "such as laptop or pc-2")
+        updates["machine"] = name
+
+    if updates:
+        _write_machine_json(data, updates)
+        print(f"  wrote: .graph/machine.json ({', '.join(updates)}); nothing else was changed")
+        if "machine" in updates and g.sanitize_machine_name(os.environ.get("VAULT_MACHINE", "")):
+            print("  note: VAULT_MACHINE is set and wins over this name")
+        _rename_hint(data, before, g.machine_name(paths))
+
+    saved = _machine_json(data)
+    source = ("VAULT_MACHINE" if g.sanitize_machine_name(os.environ.get("VAULT_MACHINE", ""))
+              else ".graph/machine.json" if isinstance(saved.get("machine"), str)
+              and g.sanitize_machine_name(saved["machine"]) else "hostname")
+    print(f"machine name: {g.machine_name(paths)} ({source})")
+    print("project roots: " + ", ".join(str(r) for r in g.project_roots(paths)))
 
 
 # --- doctor ------------------------------------------------------------------------
@@ -1103,8 +1307,17 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--no-env", action="store_true")
     p.add_argument("--no-agents", action="store_true")
     p.add_argument("--no-routing", action="store_true")
+    p.add_argument("--no-machine", action="store_true", help="don't name this computer")
     p.add_argument("--yes", action="store_true", help="never prompt, use defaults")
     p.set_defaults(func=cmd_setup)
+
+    p = sub.add_parser("machine", help="show or set this computer's own settings "
+                                       "(.graph/machine.json only)")
+    p.add_argument("--data", help="data dir (default: resolve_data_dir())")
+    p.add_argument("--project-root", action="append",
+                   help="this computer's project folder (repeatable, replaces the saved list)")
+    p.add_argument("--name", help="this computer's name for .graph/learned/<name>.json")
+    p.set_defaults(func=cmd_machine)
 
     p = sub.add_parser("doctor", help="check the onboarding setup, one line per check")
     p.add_argument("--data", help="data dir (default: resolve_data_dir())")

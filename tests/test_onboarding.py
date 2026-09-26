@@ -332,6 +332,178 @@ class TestInit(unittest.TestCase):
         self.assertEqual(second_log, first_log)  # no new commit
         self.assertNotIn("initial commit created", buf.getvalue())
 
+    def _outer_repo(self) -> Path:
+        outer = self.tmp / "some-project"
+        outer.mkdir()
+        git(["init", "-q"], outer)
+        git(["config", "core.hooksPath", ".husky"], outer)
+        return outer
+
+    def test_refuses_new_folder_inside_another_repo(self):
+        outer = self._outer_repo()
+        target = outer / "notes" / "vault"
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as ctx:
+            onboarding.cmd_init(self._args(target))
+        self.assertIn("inside another git repo", str(ctx.exception.code))
+        self.assertFalse((outer / "notes").exists())
+        self.assertEqual(git(["config", "core.hooksPath"], outer).stdout.strip(), ".husky")
+
+    def test_refuses_existing_subfolder_of_another_repo(self):
+        outer = self._outer_repo()
+        target = outer / "docs"
+        target.mkdir()
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit):
+            onboarding.cmd_init(self._args(target))
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertEqual(git(["config", "core.hooksPath"], outer).stdout.strip(), ".husky")
+        self.assertEqual(git(["status", "--porcelain"], outer).stdout.strip(), "")
+
+    def test_existing_repo_root_is_used_and_old_hooks_path_named(self):
+        target = self._outer_repo()
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_init(self._args(target))
+        self.assertTrue((target / "AGENTS.md").exists())
+        self.assertIn("(was .husky)", buf.getvalue())
+        self.assertEqual(git(["config", "core.hooksPath"], target).stdout.strip(),
+                         (graph.ENGINE / "tools" / "hooks").as_posix())
+
+    def test_rerun_on_existing_vault_says_which_templates_came_back(self):
+        target = self.tmp / "example-data-deleted-template"
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        (target / "decisions" / "_template.md").unlink()
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_init(self._args(target))
+        out = buf.getvalue()
+        self.assertIn("created: decisions/_template.md", out.replace("\\", "/"))
+        self.assertIn("use `machine` instead of `init`", out)
+
+
+class TestMachine(unittest.TestCase):
+    """`machine` writes only this computer's .graph/machine.json."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        env = _isolated_git_env(self.tmp, name="Test Runner", email="tester@example.com")
+        env_patch = mock.patch.dict(os.environ, env, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("VAULT_MACHINE", None)
+        self.data = self.tmp / "example-vault"
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(Namespace(dir=str(self.data), feedback=None, feedback_mode=None,
+                                          project_root=None, yes=True))
+        # A second computer's clone: the user deleted a template on the first one.
+        git(["rm", "-q", "decisions/_template.md"], self.data)
+        git(["commit", "-q", "-m", "chore: drop template"], self.data)
+
+    def _run(self, **kw):
+        args = dict(data=str(self.data), project_root=None, name=None)
+        args.update(kw)
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_machine(Namespace(**args))
+        return buf.getvalue()
+
+    def _machine(self) -> dict:
+        return json.loads((self.data / ".graph" / "machine.json").read_text(encoding="utf-8"))
+
+    def test_project_root_changes_nothing_but_machine_json(self):
+        config_before = (self.data / "vault.config.json").read_bytes()
+        root = self.tmp / "code"
+        root.mkdir()
+        out = self._run(project_root=[str(root)])
+        self.assertEqual(self._machine(), {"project_roots": [str(root)]})
+        self.assertEqual((self.data / "vault.config.json").read_bytes(), config_before)
+        self.assertFalse((self.data / "decisions" / "_template.md").exists())
+        self.assertEqual(git(["status", "--porcelain"], self.data).stdout.strip(), "")
+        self.assertIn(f"project roots: {root}", out)
+        paths = graph.Paths(graph.ENGINE, self.data)
+        self.assertEqual(graph.project_roots(paths), [root])
+
+    def test_keeps_other_machine_settings(self):
+        (self.data / ".graph").mkdir(exist_ok=True)
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"updates": {"check": False}}), encoding="utf-8")
+        self._run(name="Laptop 2")
+        self.assertEqual(self._machine(), {"updates": {"check": False}, "machine": "laptop-2"})
+
+    def test_missing_root_is_saved_with_a_note(self):
+        out = self._run(project_root=[str(self.tmp / "not-there")])
+        self.assertIn("is not a folder on this computer", out)
+        self.assertEqual(self._machine()["project_roots"], [str(self.tmp / "not-there")])
+
+    def test_name_that_looks_like_personal_data_is_refused(self):
+        email = "jane" + ".doe@" + "example" + "-personal.com"
+        with self.assertRaises(SystemExit):
+            self._run(name=email)
+        with self.assertRaises(SystemExit):
+            self._run(name="!!!")
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_rename_hint_keeps_the_old_learned_file(self):
+        paths = graph.Paths(graph.ENGINE, self.data)
+        old = graph.machine_name(paths)
+        paths.learned_dir.mkdir(parents=True, exist_ok=True)
+        (paths.learned_dir / f"{old}.json").write_text("{}\n", encoding="utf-8")
+        out = self._run(name="pc-new")
+        self.assertIn(f"mv .graph/learned/{old}.json .graph/learned/pc-new.json", out)
+        self.assertTrue((paths.learned_dir / f"{old}.json").exists())
+        self.assertEqual(graph.machine_name(paths), "pc-new")
+
+    def test_refuses_a_folder_that_is_not_a_data_repo(self):
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        with self.assertRaises(SystemExit):
+            self._run(data=str(empty), name="pc-1")
+        self.assertFalse((empty / ".graph").exists())
+
+    def test_without_options_only_shows(self):
+        out = self._run()
+        self.assertIn("machine name:", out)
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+
+class TestMachineName(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.paths = graph.Paths(graph.ENGINE, self.tmp)
+        env_patch = mock.patch.dict(os.environ, {}, clear=False)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("VAULT_MACHINE", None)
+
+    def _save(self, name: str) -> None:
+        (self.tmp / ".graph").mkdir(exist_ok=True)
+        (self.tmp / ".graph" / "machine.json").write_text(json.dumps({"machine": name}),
+                                                          encoding="utf-8")
+
+    def test_hostname_without_a_chosen_name(self):
+        with mock.patch("socket.gethostname", return_value="Work-PC.corp"):
+            self.assertEqual(graph.machine_name(self.paths), "work-pc-corp")
+
+    def test_machine_json_wins_over_hostname(self):
+        self._save("pc-1a2b")
+        with mock.patch("socket.gethostname", return_value="Work-PC"):
+            self.assertEqual(graph.machine_name(self.paths), "pc-1a2b")
+            self.assertEqual(graph.machine_name(), "work-pc")  # no data folder given
+
+    def test_vault_machine_wins_over_machine_json(self):
+        self._save("pc-1a2b")
+        with mock.patch.dict(os.environ, {"VAULT_MACHINE": "Desk"}):
+            self.assertEqual(graph.machine_name(self.paths), "desk")
+
+    def test_learned_file_uses_the_chosen_name(self):
+        self._save("pc-1a2b")
+        (self.tmp / "a.md").write_text("---\nkeywords: [a]\nlinks: [\"[[b]]\"]\n---\n# A\n",
+                                       encoding="utf-8")
+        (self.tmp / "b.md").write_text("---\nkeywords: [b]\n---\n# B\n", encoding="utf-8")
+        g = graph.Graph(self.paths)
+        g.add_learned(("a", "b"), 0.1)
+        g.save_learned()
+        self.assertEqual([p.name for p in self.paths.learned_dir.iterdir()], ["pc-1a2b.json"])
+
 
 class TestSetup(unittest.TestCase):
     def setUp(self):
@@ -344,10 +516,112 @@ class TestSetup(unittest.TestCase):
         (self.data / "AGENTS.md").write_text("root\n", encoding="utf-8")
 
     def _args(self, **kw):
-        base = dict(data=str(self.data), user_level=False, no_env=True,
+        base = dict(data=str(self.data), user_level=False, no_env=True, no_machine=True,
                     no_agents=True, no_routing=True, yes=True)
         base.update(kw)
         return Namespace(**base)
+
+    def _setup(self, interactive: bool = False, answers: list[str] | None = None, **kw) -> str:
+        env = {k: v for k, v in os.environ.items() if k != "VAULT_MACHINE"}
+        with mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=interactive), \
+             mock.patch("builtins.input", side_effect=list(answers or [])), \
+             redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_setup(self._args(yes=not interactive, **kw))
+        return buf.getvalue()
+
+    def _agent(self, name: str = "worker-low.md") -> Path:
+        return self.home / ".claude" / "agents" / name
+
+    def _engine_agent(self, name: str = "worker-low.md") -> str:
+        return (graph.ENGINE / "tools" / "claude-agents" / name).read_text(encoding="utf-8")
+
+    def test_own_agent_file_is_kept_without_a_terminal(self):
+        self._agent().parent.mkdir(parents=True)
+        self._agent().write_text("my own worker\n", encoding="utf-8")
+        out = self._setup(no_agents=False)
+        self.assertEqual(self._agent().read_text(encoding="utf-8"), "my own worker\n")
+        self.assertIn("skipped (your own or edited version, kept)", out)
+        self.assertEqual(self._agent("worker-medium.md").read_text(encoding="utf-8"),
+                         self._engine_agent("worker-medium.md"))
+
+    def test_own_agent_file_replaced_after_yes_with_a_backup(self):
+        self._agent().parent.mkdir(parents=True)
+        self._agent().write_text("my own worker\n", encoding="utf-8")
+        out = self._setup(interactive=True, answers=["y"], no_agents=False)
+        self.assertEqual(self._agent().read_text(encoding="utf-8"), self._engine_agent())
+        backup = self._agent("worker-low.md.bak")
+        self.assertEqual(backup.read_text(encoding="utf-8"), "my own worker\n")
+        self.assertIn("replaced", out)
+
+    def test_own_agent_file_kept_after_no(self):
+        self._agent().parent.mkdir(parents=True)
+        self._agent().write_text("my own worker\n", encoding="utf-8")
+        self._setup(interactive=True, answers=["n"], no_agents=False)
+        self.assertEqual(self._agent().read_text(encoding="utf-8"), "my own worker\n")
+        self.assertFalse(self._agent("worker-low.md.bak").exists())
+
+    def test_earlier_engine_version_is_updated_silently(self):
+        old = "an earlier version shipped by the engine\n"
+        self._agent().parent.mkdir(parents=True)
+        self._agent().write_text(old, encoding="utf-8")
+        with mock.patch("onboarding._shipped_blob_ids",
+                        return_value={onboarding._blob_id(old.encode("utf-8"))}):
+            out = self._setup(no_agents=False)
+        self.assertEqual(self._agent().read_text(encoding="utf-8"), self._engine_agent())
+        self.assertIn("updated", out)
+        self.assertFalse(self._agent("worker-low.md.bak").exists())
+
+    def test_blob_id_matches_git(self):
+        src = graph.ENGINE / "tools" / "claude-agents" / "worker-low.md"
+        out = git(["hash-object", "--no-filters", str(src)], graph.ENGINE)
+        if out.returncode != 0:
+            self.skipTest("git hash-object unavailable")
+        self.assertEqual(onboarding._blob_id(src.read_bytes()), out.stdout.strip())
+
+    def test_agents_do_not_carry_the_maintainers_language(self):
+        for src in (graph.ENGINE / "tools" / "claude-agents").glob("*.md"):
+            text = src.read_text(encoding="utf-8")
+            self.assertNotIn("Turkish", text, src.name)
+            self.assertIn("language profile", text, src.name)
+
+    def _machine_json(self) -> dict:
+        path = self.data / ".graph" / "machine.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def test_machine_gets_a_neutral_name_with_yes(self):
+        out = self._setup(no_machine=False)
+        name = self._machine_json()["machine"]
+        self.assertRegex(name, r"^pc-[0-9a-f]{4}$")
+        self.assertIn(f".graph/learned/{name}.json", out)
+        again = self._setup(no_machine=False)  # rerun keeps it
+        self.assertEqual(self._machine_json()["machine"], name)
+        self.assertIn(f"ok: {name}", again)
+
+    def test_machine_keeps_an_existing_hostname_file(self):
+        learned = self.data / ".graph" / "learned"
+        learned.mkdir(parents=True)
+        with mock.patch("socket.gethostname", return_value="Home-PC"):
+            (learned / "home-pc.json").write_text("{}\n", encoding="utf-8")
+            out = self._setup(no_machine=False)
+        self.assertEqual(self._machine_json(), {})
+        self.assertIn("kept: .graph/learned/home-pc.json", out)
+
+    def test_machine_name_asked_in_a_terminal(self):
+        out = self._setup(interactive=True, answers=["Laptop"], no_machine=False)
+        self.assertEqual(self._machine_json()["machine"], "laptop")
+        self.assertIn("neutral name", out)
+
+    def test_machine_name_left_alone_with_vault_machine(self):
+        env = {k: v for k, v in os.environ.items()}
+        env["VAULT_MACHINE"] = "desk"
+        with mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch.dict(os.environ, env, clear=True), \
+             redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_setup(self._args(no_machine=False))
+        self.assertEqual(self._machine_json(), {})
+        self.assertIn("ok: desk (from VAULT_MACHINE)", buf.getvalue())
 
     def test_agents_copied_and_idempotent(self):
         with mock.patch("pathlib.Path.home", return_value=self.home), redirect_stdout(StringIO()):
