@@ -211,6 +211,9 @@ def _plan_roots(paths: "g.Paths", raw: dict, plan: Plan) -> None:
         plan.roots_action = "move"
         plan.actions.append(f"move project_roots from the shared {CONFIG_NAME} to this "
                             "computer's .graph/machine.json (gitignored)")
+        plan.notes.append("on other computers that use the same project root(s): after they "
+                          "pull this commit, run `machine --project-root <path>` there too "
+                          "(machine.json is per computer and is never shared by git)")
 
 
 def _load_json(path: Path) -> dict:
@@ -356,8 +359,14 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
     return result
 
 
+def _paths(args) -> "g.Paths":
+    if getattr(args, "data", None):
+        return g.Paths(g.ENGINE, Path(args.data).expanduser().resolve())
+    return g.default_paths()
+
+
 def cmd_migrate(args) -> None:
-    paths = g.default_paths()
+    paths = _paths(args)
     commit = not args.no_commit
     dry_run = args.dry_run
     preview = migrate(paths, commit=commit, dry_run=True)  # exits if migrate would refuse
@@ -408,6 +417,7 @@ def cmd_migrate(args) -> None:
 def register(sub) -> None:
     """Called by graph.py's extension mechanism (see EXTENSIONS)."""
     p = sub.add_parser("migrate", help="upgrade the data repo to this engine's schema and config")
+    p.add_argument("--data", help="data dir (default: resolve_data_dir())")
     p.add_argument("--yes", action="store_true", help="never prompt, proceed automatically")
     p.add_argument("--no-commit", action="store_true", help="leave changes uncommitted")
     p.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")

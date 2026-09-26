@@ -208,6 +208,46 @@ class TestInit(unittest.TestCase):
             onboarding.cmd_init(self._args(target))  # must not fail on an existing repo
         self.assertTrue((target / ".git").is_dir())
 
+    def test_refuses_existing_code_repo_with_commits(self):
+        # A repo that already has commits and is not a data repo of its own
+        # (e.g. a coding project with husky hooks): init must not silently
+        # turn it into a vault and override core.hooksPath.
+        target = self.tmp / "code-repo"
+        target.mkdir()
+        git(["init", "-q"], target)
+        with mock.patch.dict(os.environ, self._identity_env(), clear=False):
+            (target / "README.md").write_text("hi\n", encoding="utf-8")
+            git(["add", "-A"], target)
+            git(["commit", "-q", "-m", "initial"], target)
+        with self.assertRaises(SystemExit) as ctx, redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        self.assertIn("--force", str(ctx.exception.code))
+        self.assertFalse((target / "AGENTS.md").exists())
+        hooks_path = git(["config", "core.hooksPath"], target).stdout.strip()
+        self.assertEqual(hooks_path, "")
+
+    def test_force_allows_writing_into_existing_code_repo(self):
+        target = self.tmp / "code-repo-force"
+        target.mkdir()
+        git(["init", "-q"], target)
+        with mock.patch.dict(os.environ, self._identity_env(), clear=False):
+            (target / "README.md").write_text("hi\n", encoding="utf-8")
+            git(["add", "-A"], target)
+            git(["commit", "-q", "-m", "initial"], target)
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target, force=True))
+        self.assertTrue((target / "AGENTS.md").exists())
+
+    def test_commitless_existing_repo_does_not_need_force(self):
+        # `git init` with nothing committed yet: the docs suggest this exact
+        # flow ("run git init in the folder first"), so it must keep working.
+        target = self.tmp / "empty-repo"
+        target.mkdir()
+        git(["init", "-q"], target)
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_init(self._args(target))
+        self.assertTrue((target / "AGENTS.md").exists())
+
     def test_project_root_flag_goes_to_machine_json_not_config(self):
         target = self.tmp / "example-data-proot"
         root = self.tmp / "custom-root"
@@ -420,6 +460,13 @@ class TestMachine(unittest.TestCase):
         self.assertIn(f"project roots: {root}", out)
         paths = graph.Paths(graph.ENGINE, self.data)
         self.assertEqual(graph.project_roots(paths), [root])
+
+    def test_project_root_note_mentions_replace_and_setup(self):
+        root = self.tmp / "code"
+        root.mkdir()
+        out = self._run(project_root=[str(root)])
+        self.assertIn("replaces the saved project root list", out)
+        self.assertIn("setup --data", out)
 
     def test_keeps_other_machine_settings(self):
         (self.data / ".graph").mkdir(exist_ok=True)
@@ -888,6 +935,22 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("FAIL VAULT_DATA (or VAULT_HOME) not set", out)
         self.assertIn("--data", out)
         self.assertNotIn("data dir has", out)
+
+    def test_routing_missing_warn_names_the_fix(self):
+        root = self.tmp / "proj-root"
+        root.mkdir()
+        (self.data / ".graph").mkdir(exist_ok=True)
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"project_roots": [str(root)]}), encoding="utf-8")
+        with mock.patch.dict(os.environ, self._env(), clear=True), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        out = buf.getvalue()
+        self.assertIn(f"WARN routing missing for {root}", out)
+        self.assertIn(f'setup --data "{self.data}"', out)
 
     def test_rc_block_without_data_flag_gives_restart_hint(self):
         rc = self.home / ".bashrc"

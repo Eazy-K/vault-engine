@@ -517,6 +517,38 @@ class TestRewriteCiPin(UpdateTestCase):
         changed = update._rewrite_ci_pin(self.data, "v0.2.0")
         self.assertFalse(changed)
 
+    def test_commits_a_correct_but_uncommitted_pin(self):
+        # An older engine's own updater already wrote the right pin (content
+        # matches what we'd write) but never committed it -- e.g. because that
+        # updater's _rewrite_ci_pin only committed on a text change (task
+        # 0014, finding 7). A rerun of update must still commit it.
+        _init_repo(self.data)
+        _run(["git", "config", "commit.gpgsign", "false"], self.data)
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.1.0\n")
+        _commit(self.data, "initial")
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.2.0\n")  # left uncommitted
+
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+
+        self.assertTrue(changed)
+        status = _run(["git", "status", "--porcelain"], self.data).stdout.strip()
+        self.assertEqual(status, "")
+        log = _run(["git", "log", "--format=%s"], self.data).stdout.splitlines()
+        self.assertEqual(log[0], "ci: run the vault-engine guard at v0.2.0")
+
+    def test_noop_when_matching_pin_is_clean(self):
+        # Same content, but nothing uncommitted: must not create an empty commit.
+        _init_repo(self.data)
+        _run(["git", "config", "commit.gpgsign", "false"], self.data)
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, "steps:\n  - uses: example/vault-engine@v0.2.0\n")
+        _commit(self.data, "initial")
+        before = _run(["git", "rev-parse", "HEAD"], self.data).stdout
+        changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertFalse(changed)
+        self.assertEqual(_run(["git", "rev-parse", "HEAD"], self.data).stdout, before)
+
     def test_pin_rewritten_during_cmd_update(self):
         workflow = self.data / ".github" / "workflows" / "vault.yml"
         _write(workflow, "steps:\n  - uses: example/vault-engine@v0.1.0\n")
@@ -574,6 +606,28 @@ class TestUpdateCommitsVaultFiles(UpdateTestCase):
         with redirect_stdout(StringIO()):
             update._write_agents(self.engine, self.data)
         self.assertEqual(self._log()[0], "docs: update AGENTS.md to the engine's template (9)")
+
+
+class TestUpdateDataFlag(UpdateTestCase):
+    """--data lets `update` act on a data repo without VAULT_DATA/resolve_data_dir
+    (task 0014, finding 8)."""
+
+    def test_data_flag_overrides_the_default_paths(self):
+        other = self.tmp / "other-data"
+        _init_repo(other)
+        _run(["git", "config", "commit.gpgsign", "false"], other)
+        _write(other / ".github" / "workflows" / "vault.yml",
+               "steps:\n  - uses: example/vault-engine@v0.1.0\n")
+        _commit(other, "initial")
+
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), redirect_stdout(StringIO()):
+            update.cmd_update(Args(to="v0.2.0", yes=True, data=str(other)))
+
+        text = (other / ".github" / "workflows" / "vault.yml").read_text(encoding="utf-8")
+        self.assertIn("uses: example/vault-engine@v0.2.0", text)
+        # self.data (the mocked default) was never touched.
+        self.assertFalse((self.data / ".github").exists())
 
 
 class TestUpdateDowngradeGuard(UpdateTestCase):

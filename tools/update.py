@@ -366,6 +366,18 @@ _NEW_CI_COMMENT = ("# PR, so commits made from the cloud or a phone are checked 
                    "# repositories of the same owner.\n")
 
 
+def _pin_is_dirty(data: Path) -> bool:
+    """True if CI_WORKFLOW has uncommitted changes (staged, unstaged or
+    untracked) in the data repo."""
+    try:
+        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "--",
+                              CI_WORKFLOW], cwd=data, capture_output=True, text=True,
+                             encoding="utf-8")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
 def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     """Move the data repo's CI pin (`uses: <owner>/vault-engine@<ref>` in
     <data>/.github/workflows/vault.yml) to the newly installed engine ref, so the
@@ -382,6 +394,13 @@ def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     if repin:
         new_text = new_text[:m.start(2)] + new_ref + new_text[m.end(2):]
     if new_text == text:
+        # The file's content is already what we'd write (e.g. an older engine's
+        # updater wrote the correct pin without committing it). Commit it now
+        # if it's still uncommitted, so a rerun of `update` doesn't leave the
+        # working tree dirty forever.
+        if m and not repin and _pin_is_dirty(data):
+            _commit_in_vault(data, [CI_WORKFLOW], f"ci: run the vault-engine guard at {new_ref}")
+            return True
         return False
     path.write_text(new_text, encoding="utf-8", newline="\n")
     if repin:
@@ -511,12 +530,18 @@ def _handle_agents_md(engine: Path, data: Path, args) -> None:
           "(a translated copy should keep the template line at the end)")
 
 
+def _data_paths(args) -> "g.Paths":
+    if getattr(args, "data", None):
+        return g.Paths(g.ENGINE, Path(args.data).expanduser().resolve())
+    return g.default_paths()
+
+
 def _agents_md_step(engine: Path, args) -> None:
     """The AGENTS.md check on paths where the engine did not move (already up to
     date, dev or unknown channel): a hand-upgraded vault still gets the diff, and
     --apply-agents works there too."""
     try:
-        data = g.default_paths().data
+        data = _data_paths(args).data
     except SystemExit:
         if args.apply_agents:
             raise
@@ -574,7 +599,7 @@ def cmd_update(args) -> None:
         # A vault upgraded by hand (before `update` existed) still pins its CI
         # to an old ref; bring it in line here too, as doctor suggests.
         try:
-            _rewrite_ci_pin(g.default_paths().data, ref or target)
+            _rewrite_ci_pin(_data_paths(args).data, ref or target)
         except SystemExit:
             pass
         _agents_md_step(engine, args)
@@ -593,7 +618,7 @@ def cmd_update(args) -> None:
     else:
         print("this is a downgrade.")
 
-    paths = g.default_paths()
+    paths = _data_paths(args)
     if not is_upgrade:
         target_schema = sch.schema_of_engine_ref(engine, target)
         vault_schema = sch.read_schema(paths)
@@ -638,6 +663,7 @@ def register(sub) -> None:
     p = sub.add_parser("update", help="update the engine checkout to a newer (or older) release tag")
     p.add_argument("--check", action="store_true", help="print current/channel/latest and exit")
     p.add_argument("--to", help="target tag (default: highest local tag after fetch)")
+    p.add_argument("--data", help="data dir (default: resolve_data_dir())")
     p.add_argument("--yes", action="store_true", help="apply without an interactive confirmation")
     p.add_argument("--apply-agents", action="store_true",
                    help="replace the data repo's AGENTS.md with the engine's template after "
