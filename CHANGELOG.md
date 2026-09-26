@@ -2,6 +2,31 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.4.0] - 2026-09-26
+
+### Added
+- `machine --project-root` registers this computer's project root in `.graph/machine.json`, replacing the earlier `init --project-root` on a second computer; `init` now refuses to run inside another git repository.
+- `init` and `setup` scopes are split: `update` no longer touches shell/env files (equivalent to `setup --yes --no-env`), and `setup` preserves the user's own `worker-*.md` files.
+- Guard also catches foreign (non-Turkish) IBAN, phone and SSN-like formats; the keyword fallback used without Ollama loads fewer notes, and an Ollama model hint plus an embedding timeout were added.
+- `update.channel()` gains a `"prerelease"` value, backward compatible with the existing stable/dev channels.
+- `templates/AGENTS.md` now points at real `defaults/` paths, adds a working note per folder, a `template: N` revision line, and (revision 2) `pull --autostash` plus an end-of-task push step; `update --apply-agents` diffs and applies template changes while keeping the last line of translated/customized copies.
+- Windows installation hardening: a learned `VAULT_DATA` fallback with a restart notice, and NUL-stdin handling for `onboard`/`update`/`migrate`.
+- Engine commands (`onboard`, `reinforce`, `migrate`, etc.) commit the files they write themselves instead of leaving them staged; a `.gitattributes` (`* text=auto eol=lf`) is added to new and existing vaults to avoid CRLF diffs.
+
+### Fixed
+- `migrate` and project-root detection hardened (root detection edge cases, hook Python selection actually finds a working interpreter, `init --force` for a previously initialized folder, the master→main doctor suggestion adapts to the current branch, `update`/`migrate --data`).
+- Embedding hang, PowerShell quoting note, additional guard format coverage, and a projects-list cache fix from the Windows installation retest.
+- NUL-stdin exit codes for `onboard`/`update`/`migrate` corrected; an existing vault's `AGENTS.md` env-var line can be moved by hand.
+
+### Upgrade notes
+- First update from 0.1.0 or 0.2.0 is still manual (see "Updating from 0.1.0 or 0.2.0" in the README); it runs the old updater's one-time `setup --yes`, then `python tools/graph.py migrate --yes`, which records `"schema": 1` and commits once in the data repo, then `doctor`. Push the data repo afterwards. From 0.3.0 on, use `update`.
+- If `vault.config.json` still has a computer-specific `project_roots` entry, move it to `.graph/machine.json` on that computer with `machine --project-root <path>` (not `init --project-root`, which no longer exists) and remove it from the shared file. Also make sure every computer sharing the vault, and the data repo's CI pin (`@v0.3.0` or later), are on 0.3.0+ before continuing.
+- `update` no longer touches shell/env files; if you relied on it re-running `setup`'s environment step, run `setup --yes` yourself once.
+- `setup` now leaves your own `worker-*.md` files alone; the learned machine file name is a neutral `pc-xxxx` instead of the hostname, and existing `pc-<hostname>.json` files can be renamed or left in place.
+- If guard now flags previously-accepted foreign IBAN/phone/SSN-like text in existing notes, mask it or add `guard:ignore`.
+- `templates/AGENTS.md` in an existing data repo is not updated automatically; run `update --apply-agents` (or diff manually) to pick up the real `defaults/` paths, the `template: N` line, and the `pull --autostash` / end-of-task push steps, keeping the last line of any translated or customized copy.
+- No vault data schema change in this release (schema stays as introduced in 0.3.0).
+
 ## [0.3.0] - 2026-09-25
 
 ### Added
