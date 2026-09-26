@@ -57,7 +57,7 @@ Levels (in `vault.config.json` under `"feedback": {"level": ..., "mode": ..., "r
 
 The target repo is taken from the `feedback.repo` field, or otherwise from the engine's `origin` remote; if neither is set, sending is disabled (no error).
 
-Free text (summary/details/command) is filtered twice, once when queued and once right before sending: it's scanned against the same guard patterns used for notes (national ID numbers, IBAN, card numbers, phone, email, tokens, passwords), the home directory path, the git identity, terms from `.git/info/vault-denylist`, and project names in the data repo. If anything matches, the text is **never** sent or printed; only the match type (e.g. "national ID") is reported, and the content is moved to `.graph/feedback/quarantine/`.
+Free text (summary/details/command) is filtered twice, once when queued and once right before sending: it's scanned against the same guard patterns used for notes (Turkish national ID numbers, IBANs of any country, card numbers, phone numbers in Turkish, US, UK and international `+<country code>` formats, dashed US Social Security numbers, email, tokens, passwords), the home directory path, the git identity, terms from `.git/info/vault-denylist`, and project names in the data repo. If anything matches, the text is **never** sent or printed; only the match type (e.g. "IBAN") is reported, and the content is moved to `.graph/feedback/quarantine/`.
 
 Commands:
 - `feedback status` -- active settings, target repo, queue/quarantine counts, last send time.

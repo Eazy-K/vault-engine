@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 # Never let a test reach the real user's data repo through the environment
@@ -722,14 +722,20 @@ class TestSetup(unittest.TestCase):
         self.assertIn("VAULT_DATA already saved for your user", buf.getvalue())
 
 
+def _ollama_tags(*models: str):
+    """An urlopen stand-in answering /api/tags with these pulled models."""
+    body = json.dumps({"models": [{"name": m} for m in models]}).encode("utf-8")
+    return lambda *_a, **_k: BytesIO(body)
+
+
 class TestDoctorTools(unittest.TestCase):
-    def _run(self, installed: set[str]) -> str:
+    def _run(self, installed: set[str], urlopen=_ollama_tags("bge-m3:latest")) -> str:
         home = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         with mock.patch("onboarding._which", side_effect=lambda t: f"/bin/{t}" if t in installed else None), \
              mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True), \
              mock.patch("pathlib.Path.home", return_value=home), \
-             mock.patch("onboarding.urllib.request.urlopen"), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=urlopen), \
              redirect_stdout(StringIO()) as buf:
             with self.assertRaises(SystemExit):
                 onboarding.cmd_doctor(Namespace())
@@ -746,6 +752,20 @@ class TestDoctorTools(unittest.TestCase):
         out = self._run(set())
         self.assertIn("WARN no supported agent CLI found", out)
         self.assertIn("INFO ollama CLI not found", out)
+
+    def test_ollama_with_model(self):
+        out = self._run({"claude", "ollama"})
+        self.assertIn("OK   Ollama reachable", out)
+        self.assertNotIn("ollama pull", out)
+
+    def test_ollama_without_model_warns_with_pull_command(self):
+        out = self._run({"claude", "ollama"}, _ollama_tags("llama3:latest", "bge-m3:567m"))
+        self.assertIn(f"WARN Ollama reachable at {graph.OLLAMA_URL} but bge-m3 is not pulled", out)
+        self.assertIn("ollama pull bge-m3", out)
+
+    def test_ollama_unreachable_warns(self):
+        out = self._run({"claude"}, OSError("no ollama"))
+        self.assertIn("WARN Ollama unreachable", out)
 
 
 class TestDoctor(unittest.TestCase):
@@ -772,7 +792,7 @@ class TestDoctor(unittest.TestCase):
                                            no_agents=False, no_routing=True, yes=True))
         with mock.patch.dict(os.environ, self._env(), clear=True), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
-             mock.patch("onboarding.urllib.request.urlopen"), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=_ollama_tags("bge-m3:latest")), \
              redirect_stdout(StringIO()) as buf:
             with self.assertRaises(SystemExit) as ctx:
                 onboarding.cmd_doctor(Namespace())

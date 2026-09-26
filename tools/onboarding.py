@@ -1024,10 +1024,15 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 check("WARN", f"routing missing for {root}")
 
     try:
-        urllib.request.urlopen(urllib.request.Request(f"{g.OLLAMA_URL}/api/tags"), timeout=2)
-        check("OK", f"Ollama reachable at {g.OLLAMA_URL}")
+        models = g.ollama_models()
     except (urllib.error.URLError, OSError, ValueError) as exc:
         check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback")
+    else:
+        if g.has_embed_model(models):
+            check("OK", f"Ollama reachable at {g.OLLAMA_URL}, {g.EMBED_MODEL} pulled")
+        else:
+            check("WARN", f"Ollama reachable at {g.OLLAMA_URL} but {g.EMBED_MODEL} is not pulled; "
+                          f"keyword-only fallback until you {g.pull_hint()}")
 
     discovery = sys.modules.get("discovery")
     if data is not None and discovery is not None:
