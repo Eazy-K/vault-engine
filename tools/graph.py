@@ -166,6 +166,8 @@ OLLAMA_URL = os.environ.get("VAULT_OLLAMA_URL", "http://127.0.0.1:11434")
 EMBED_MODEL = os.environ.get("VAULT_EMBED_MODEL", "bge-m3")
 KEEP_ALIVE = "30m"
 EMBED_TIMEOUT = 120  # first call may load the model from disk
+PROBE_TIMEOUT = 3  # "is anything answering at OLLAMA_URL" before that long wait (Windows
+# takes ~2 s to report a refused localhost connection)
 SKIP_DIRS = {".git", ".obsidian", ".graph", "tools", "__pycache__"}
 SKIP_ROOT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md"}
 
@@ -178,6 +180,12 @@ DEFAULT_DEPTH = 3
 SEED_RATIO = 0.3  # notes scoring below this share of the best match are not seeds
 PROJECT_SEED = 0.8  # base score of project notes besides <project>-status/-overview (those get 1.0)
 SEMANTIC_WEIGHT = 0.5  # share of the seed score from embeddings; rest is curated keywords
+KEYWORD_WEIGHT = 3.0  # a query word among a note's curated keywords
+# Without embeddings, body words are the only recall for text outside keywords,
+# but common words ("add", "fix", "new") are in most bodies. At half weight, and
+# scored against at least one keyword match, a note needs four body hits (and no
+# keyword hit) to reach the threshold instead of one.
+FALLBACK_BODY_WEIGHT = 0.5
 # Raw cosine scores sit close together, so they are sharpened relative to the
 # best match: exp((cos - best) / T). A gap of T drops a note to ~0.37.
 SEMANTIC_TEMPERATURE = 0.03
@@ -604,10 +612,10 @@ def _matches(q: str, t: str) -> bool:
     return min(len(q), len(t)) >= 4 and (t.startswith(q) or q.startswith(t))
 
 
-def score(note: Note, query_tokens: list[str], include_body: bool = True) -> float:
-    fields = [(3.0, note.keywords), (2.0, note.id_tokens)]
-    if include_body:
-        fields.append((1.0, note.body_tokens))
+def score(note: Note, query_tokens: list[str], body_weight: float = 1.0) -> float:
+    fields = [(KEYWORD_WEIGHT, note.keywords), (2.0, note.id_tokens)]
+    if body_weight:
+        fields.append((body_weight, note.body_tokens))
     total = 0.0
     for q in query_tokens:
         total += max(
@@ -616,7 +624,53 @@ def score(note: Note, query_tokens: list[str], include_body: bool = True) -> flo
     return total
 
 
+def ollama_models(timeout: float = PROBE_TIMEOUT) -> list[str]:
+    """Names of the models pulled into Ollama. Raises OSError (URLError included)
+    or ValueError when nothing usable answers at OLLAMA_URL."""
+    with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=timeout) as resp:
+        data = json.load(resp)
+    if not isinstance(data, dict) or not isinstance(data.get("models", []), list):
+        raise ValueError("unexpected /api/tags response")
+    return [m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)]
+
+
+def has_embed_model(names: list[str]) -> bool:
+    # `ollama pull bge-m3` lists as bge-m3:latest; a tagged EMBED_MODEL must match exactly.
+    wanted = {EMBED_MODEL} if ":" in EMBED_MODEL else {EMBED_MODEL, f"{EMBED_MODEL}:latest"}
+    return any(name in wanted for name in names)
+
+
+def pull_hint() -> str:
+    return f"run: ollama pull {EMBED_MODEL}"
+
+
+def embed_error(exc: Exception) -> str:
+    """What went wrong with an embedding call, with the fix when it is known."""
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except (OSError, ValueError):
+            detail = ""
+        if "model" in detail.lower() or not detail:
+            return f"Ollama has no {EMBED_MODEL} model; {pull_hint()}"
+        # An Ollama without /api/embed (before 0.3) answers 404 for the route itself.
+        return f"{exc}; is Ollama up to date and {EMBED_MODEL} pulled? {pull_hint()}"
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc):
+        return f"no answer from Ollama at {OLLAMA_URL} ({exc})"
+    return str(exc)
+
+
+def _probe_ollama() -> None:
+    """Fail in seconds when nothing answers at OLLAMA_URL, instead of spending
+    EMBED_TIMEOUT (sized for loading the model) on a dead or hung server."""
+    try:
+        urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=PROBE_TIMEOUT).close()
+    except urllib.error.HTTPError:
+        pass  # it answered; /api/embed tells what is missing
+
+
 def _embed(texts: list[str]) -> list[list[float]]:
+    _probe_ollama()
     body = json.dumps({"model": EMBED_MODEL, "input": texts, "keep_alive": KEEP_ALIVE})
     req = urllib.request.Request(f"{OLLAMA_URL}/api/embed", data=body.encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
@@ -699,7 +753,7 @@ def semantic_scores(graph: Graph, text: str) -> dict[str, float] | None:
     try:
         cache, qvec = refresh_embeddings(graph, text)
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
-        print(f"warning: semantic search unavailable ({exc}); keyword match only",
+        print(f"warning: semantic search unavailable ({embed_error(exc)}); keyword match only",
               file=sys.stderr)
         return None
     cosines = {nid: max(sum(a * b for a, b in zip(qvec, v))
@@ -725,9 +779,13 @@ def seed(graph: Graph, text: str, explicit: list[str], semantic: bool = True,
     if query:
         # Embeddings already cover note bodies; body keyword hits (e.g. "git" in
         # "git reposu") only add noise then, so they are a fallback-only signal.
-        scores = {nid: score(n, query, include_body=sem is None)
-                  for nid, n in graph.notes.items()}
+        body_weight = 0.0 if sem is not None else FALLBACK_BODY_WEIGHT
+        scores = {nid: score(n, query, body_weight) for nid, n in graph.notes.items()}
         best = max(scores.values(), default=0.0)
+        if sem is None:
+            # Relative to the best match alone, a lone body hit would score 1.0
+            # whenever nothing better exists, as in a new vault.
+            best = max(best, KEYWORD_WEIGHT)
         if best > 0:
             lexical = {nid: s / best for nid, s in scores.items()}
     if sem:
@@ -865,6 +923,8 @@ def detect_project(cwd: Path, paths: Paths) -> str | None:
 # --- personal data guard -----------------------------------------------------
 # KVKK personal data and secrets must never reach a vault repository.
 # Checksums (TCKN, IBAN, Luhn) keep random digit runs from raising false alarms.
+# Phone numbers and SSNs have no checksum: only the formats listed next to their
+# patterns are caught, with the separators people write them with.
 # Real people's names cannot be caught reliably by pattern; that part relies on
 # masking by the agent (defaults/standards/data-policy.md, the data-policy note).
 
@@ -887,9 +947,45 @@ def _tckn_ok(s: str) -> bool:
             and d[10] == sum(d[:10]) % 10)
 
 
+# IBAN length per country (SWIFT IBAN registry); an unknown country code or a
+# wrong length is not an IBAN, whatever the checksum says.
+IBAN_LENGTHS = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16, "BG": 22, "BH": 22,
+    "BI": 27, "BR": 29, "BY": 28, "CH": 21, "CR": 22, "CY": 28, "CZ": 24, "DE": 22, "DJ": 27,
+    "DK": 18, "DO": 28, "EE": 20, "EG": 29, "ES": 24, "FI": 18, "FK": 18, "FO": 18, "FR": 27,
+    "GB": 22, "GE": 22, "GI": 23, "GL": 18, "GR": 27, "GT": 28, "HR": 21, "HU": 28, "IE": 22,
+    "IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20, "LB": 28, "LC": 32,
+    "LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25, "MC": 27, "MD": 24, "ME": 22, "MK": 19,
+    "MN": 20, "MR": 27, "MT": 31, "MU": 30, "NI": 28, "NL": 18, "NO": 15, "OM": 23, "PK": 24,
+    "PL": 28, "PS": 29, "PT": 25, "QA": 29, "RO": 24, "RS": 22, "RU": 33, "SA": 24, "SC": 31,
+    "SD": 18, "SE": 24, "SI": 19, "SK": 24, "SM": 27, "SO": 23, "ST": 25, "SV": 28, "TL": 23,
+    "TN": 24, "TR": 26, "UA": 29, "VA": 22, "VG": 24, "XK": 20, "YE": 30,
+}
+
+
 def _iban_ok(s: str) -> bool:
-    s = re.sub(r"\s", "", s).upper()
+    groups = s.upper().split()
+    length = IBAN_LENGTHS.get(s[:2].upper(), 0)
+    # A 4-character word after a grouped IBAN joins the match; drop such groups.
+    while len(groups) > 1 and len("".join(groups)) > length:
+        groups.pop()
+    s = "".join(groups)
+    if not length or len(s) != length:
+        return False
     return int("".join(str(int(c, 36)) for c in s[4:] + s[:4])) % 97 == 1
+
+
+def _intl_phone_ok(s: str) -> bool:
+    # Unbroken +digits is also how signed numbers are written, so it needs the
+    # 10+ digits of a real E.164 number; with separators 8 are enough.
+    digits = sum(c.isdigit() for c in s)
+    return digits >= (8 if re.search(r"[ ()-]", s) else 10)
+
+
+def _ssn_ok(s: str) -> bool:
+    # Never issued: area 000, 666 or 900-999, group 00, serial 0000.
+    area, group, serial = s.split("-")
+    return area not in ("000", "666") and area[0] != "9" and group != "00" and serial != "0000"
 
 
 def _luhn_ok(s: str) -> bool:
@@ -901,10 +997,23 @@ def _luhn_ok(s: str) -> bool:
 
 GUARD_PATTERNS = [
     ("TCKN", re.compile(r"(?<!\d)[1-9]\d{10}(?!\d)"), _tckn_ok),
-    ("IBAN", re.compile(r"\bTR\d{2}(?: ?\d{4}){5} ?\d{2}\b", re.I), _iban_ok),
+    # Any country: printed in groups of four or unbroken; length and mod-97 decide.
+    # Past the country code it is upper case, so lower-case hex strings never qualify.
+    ("IBAN", re.compile(r"\b[A-Za-z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b"), _iban_ok),
     ("card number", re.compile(r"(?<![\d.])\d(?:[ -]?\d){12,18}(?![\d.])"), _luhn_ok),
+    # Turkish national formats: 0NNN NNN NN NN, (0NNN) NNN NN NN, 5NN NNN NN NN.
     ("phone", re.compile(r"(?<![\d+])(?:\+90|0)[ -]?\(?[2-5]\d{2}\)?[ -]?\d{3}[ -]?\d{2}[ -]?\d{2}(?!\d)"), None),
     ("phone", re.compile(r"(?<!\d)5\d{2}[ -]\d{3}[ -]\d{2}[ -]\d{2}(?!\d)"), None),
+    # International (E.164) with a leading +: up to 15 digits, spaces, dashes or
+    # parentheses between them. +90 is left to the Turkish patterns above.
+    ("phone", re.compile(r"(?<![\w+.])\+(?!90)[1-9](?:[ ()-]{0,2}\d){7,14}(?!\w|[.,]\d)"), _intl_phone_ok),
+    # US/Canada: (NNN) NNN-NNNN, NNN-NNN-NNNN, 1-NNN-NNN-NNNN, NNN.NNN.NNNN (separators required).
+    ("phone", re.compile(r"(?<![\w.+-])(?:1[ .-])?(?:\([2-9]\d{2}\) ?|[2-9]\d{2}([.-]))"
+                         r"[2-9]\d{2}(?(1)\1|[.-])\d{4}(?![\w-]|\.\d)"), None),
+    # UK: 0NN NNNN NNNN, 07NNN NNNNNN (with the spaces, as they are written).
+    ("phone", re.compile(r"(?<![\d+])0(?:\d{2} \d{4} \d{4}|7\d{3} \d{6})(?!\d)"), None),
+    # US Social Security number, dashed form only (a bare 9-digit run is too common).
+    ("SSN", re.compile(r"(?<![\w-])\d{3}-\d{2}-\d{4}(?![\w-])"), _ssn_ok),
     # The last label must contain a letter, so `python@3.12` is not an address.
     ("email", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z][\w-]*"), lambda m: not EMAIL_ALLOW.search(m)),
     ("private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----"), None),
@@ -918,11 +1027,11 @@ GUARD_PATTERNS = [
 def scan_line(line: str) -> list[str]:
     if GUARD_IGNORE in line:
         return []
-    found = []
+    found = []  # one entry per kind: several phone patterns may match the same number
     for label, pattern, valid in GUARD_PATTERNS:
-        for m in pattern.finditer(line):
-            if valid is None or valid(m.group(0)):
-                found.append(label)
+        if label not in found and any(valid is None or valid(m.group(0))
+                                      for m in pattern.finditer(line)):
+            found.append(label)
     return found
 
 
@@ -1202,7 +1311,7 @@ def cmd_index(_args) -> None:
     try:
         cache, _ = refresh_embeddings(graph)
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
-        sys.exit(f"embedding failed: {exc}")
+        sys.exit(f"embedding failed: {embed_error(exc)}")
     count = sum(len(n["vectors"]) for n in cache["notes"].values())
     print(f"{len(cache['notes'])} notes, {count} chunks embedded with {EMBED_MODEL}")
 

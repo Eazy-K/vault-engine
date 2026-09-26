@@ -112,6 +112,84 @@ class TestGuardPatterns(unittest.TestCase):
         line = f"kimlik no: {_valid_tckn()} guard:ignore"
         self.assertEqual(graph.scan_line(line), [])
 
+    def test_one_label_per_kind_per_line(self):
+        # Both the international and the US pattern match this number.
+        self.assertEqual(graph.scan_line("call +1 (212) 555-0123"), ["phone"])  # guard:ignore
+
+
+def _iban(country: str, bban: str) -> str:
+    """A structurally valid IBAN for any country (mod-97 checksum), not a real account."""
+    num = int("".join(str(int(c, 36)) for c in bban + country + "00"))
+    return f"{country}{98 - num % 97:02d}{bban}"
+
+
+def _grouped(s: str) -> str:
+    return " ".join(s[i:i + 4] for i in range(0, len(s), 4))
+
+
+class TestGuardForeignFormats(unittest.TestCase):
+    """IBANs of other countries, international/US/UK phone numbers, US SSNs."""
+
+    DE = _iban("DE", "370400440532013000")
+    GB = _iban("GB", "NWBK60161331926819")
+
+    def assertFlags(self, label, *lines):
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertIn(label, graph.scan_line(line))
+
+    def assertClean(self, label, *lines):
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertNotIn(label, graph.scan_line(line))
+
+    def test_foreign_iban_flagged(self):
+        self.assertFlags("IBAN", self.DE, _grouped(self.DE), self.GB, _grouped(self.GB),
+                         f"iban {_grouped(self.DE)} today", f"{_grouped(self.GB)} ABCD",
+                         self.DE.lower()[:2] + self.DE[2:])
+
+    def test_iban_checksum_country_and_length_checked(self):
+        bad_check = self.DE[:-1] + str((int(self.DE[-1]) + 1) % 10)
+        self.assertClean("IBAN", bad_check,
+                         _iban("XX", "370400440532013000"),  # no such country
+                         _iban("DE", "3704004405320130"),  # too short for DE
+                         _iban("DE", "37040044053201300000"))  # too long for DE
+
+    def test_lower_case_hex_is_not_an_iban(self):
+        # Hash-like tokens: right country, length and checksum, but lower case.
+        token = _iban("EE", "ABCDEF0123456789")
+        self.assertEqual(len(token), graph.IBAN_LENGTHS["EE"])
+        self.assertClean("IBAN", token.lower())
+
+    def test_international_phone_flagged(self):
+        self.assertFlags("phone", "+44 20 7946 0958", "+1 (212) 555-0123",  # guard:ignore
+                         "+14155552671", "+49 30 1234567", "+31-6-41044153")  # guard:ignore
+
+    def test_signed_numbers_are_not_international_phones(self):
+        self.assertClean("phone", "x = +1.2345678901", "+6418488827E79", "+123456789",
+                         "offset +12345", "3+12345678901", "+1234567890123456")
+
+    def test_us_phone_flagged(self):
+        self.assertFlags("phone", "(212) 555-0123", "212-555-0123",  # guard:ignore
+                         "212.555.0123", "1-800-555-0199")  # guard:ignore
+
+    def test_us_phone_lookalikes_not_flagged(self):
+        self.assertClean("phone", "2026-09-26", "212-555.0123", "v1.212.555.0123",
+                         "ISBN 978-3-16-148410-0", "123-555-0123", "212 555 0123")
+
+    def test_uk_phone_flagged(self):
+        self.assertFlags("phone", "020 7946 0958", "07700 900123")  # guard:ignore
+
+    def test_uk_phone_lookalikes_not_flagged(self):
+        self.assertClean("phone", "020 7946", "07700900123x", "10 7946 0958 0")
+
+    def test_ssn_flagged(self):
+        self.assertFlags("SSN", "ssn 123-45-6789")  # guard:ignore
+
+    def test_ssn_never_issued_or_embedded_not_flagged(self):
+        self.assertClean("SSN", "000-12-3456", "666-12-3456", "912-34-5678", "123-00-4567",
+                         "123-45-0000", "123-45-67890", "a123-45-6789", "2026-09-2026")
+
 
 class _TempRepo:
     """A throwaway git repo with a local (non-global) identity."""
