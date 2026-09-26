@@ -75,7 +75,9 @@ Default locations, inside that folder:
 - Engine: `<projects folder>/vault-engine`
 - Data (their notes): `<projects folder>/vault`
 
-Confirm both paths with the user before creating anything.
+Confirm both paths with the user before creating anything. The data folder must not be
+inside another git repository (for example inside one of their projects): `init` refuses
+that, so pick a folder next to it instead.
 
 Also ask: "Have you used vault-engine on another computer, with your notes backed up
 on GitHub?" If yes, ask for that backup's address and follow **Step 3b** instead of
@@ -86,6 +88,10 @@ Step 3 and Step 5.
 ## Step 2 — Clone the engine
 
 Tell the user this downloads the vault-engine program itself (no personal data in it).
+
+If you already cloned vault-engine somewhere to read this guide: when that copy is exactly
+at `<projects folder>/vault-engine`, skip the `git clone` line and run the rest. Otherwise
+clone it again to the confirmed path and, after asking the user, delete the first copy.
 
 ```
 git clone https://github.com/Eazy-K/vault-engine.git "<projects folder>/vault-engine"
@@ -128,10 +134,15 @@ downloads their own notes from their private backup.
    Use forward slashes in the `core.hooksPath` value, also on Windows.
 
 Do **not** run `init` on it: it would recreate template files the user deleted on
-purpose. `vault.config.json` is shared by every computer using this data repo; per-computer
-project roots instead live in `<data repo>/.graph/machine.json`, written by `init
---project-root` — without it, each computer uses the folder that holds its engine, which
-is why Step 1 puts the engine inside the projects folder.
+purpose and rewrite `vault.config.json`, which every computer using this data repo shares.
+
+Each computer uses the folder that holds its engine as its projects folder, which is why
+Step 1 puts the engine there. Only if this computer keeps its projects somewhere else, save
+that folder for this computer alone (it changes only the gitignored
+`<data repo>/.graph/machine.json`):
+```
+python "<projects folder>/vault-engine/tools/graph.py" machine --data "<projects folder>/vault" --project-root "<their projects folder>"
+```
 
 Then do Step 4 (git identity is per computer), skip Step 5 (the backup already exists),
 do Step 6, and skip Step 7 unless `doctor` says the profile is still the unfilled
@@ -200,10 +211,17 @@ python "<projects folder>/vault-engine/tools/graph.py" setup --data "<projects f
 the git root of the repo it's running in — this adds a pointer in `~/.codex/AGENTS.md`
 so it's picked up everywhere.)
 
-On Windows this uses `setx`, which only takes effect in a **new terminal window** — mention
-this to the user. On macOS/Linux, it asks first, then writes `VAULT_ENGINE`/`VAULT_DATA`
-into the shell startup file it detects (`~/.zshrc`, `~/.bashrc`/`~/.bash_profile` on macOS,
-the fish config, or `~/.profile`), inside a clearly marked `# >>> vault-engine >>>` block.
+`--yes` means `setup` asks nothing itself, so ask the user before this step (it changes
+environment variables). On Windows it saves them with `setx`, which only takes effect in a
+**new terminal window** — mention this to the user. On macOS/Linux it writes
+`VAULT_ENGINE`/`VAULT_DATA` into the shell startup file it detects (`~/.zshrc`,
+`~/.bashrc`/`~/.bash_profile` on macOS, the fish config, or `~/.profile`), inside a clearly
+marked `# >>> vault-engine >>>` block.
+
+It also gives this computer a neutral name such as `pc-3f9a` for its file of learned links
+(`.graph/learned/<name>.json`, committed with the notes), instead of the computer's own
+name. Existing files in `~/.claude/agents/` with the user's own content are kept and
+listed as `skipped`; tell the user if that happens.
 Either way, tell the user to restart their open terminal(s) and any coding agent
 (Claude Code, Codex) after the install — they only see the new values after that restart.
 
@@ -263,11 +281,24 @@ End with a short, plain-language summary covering:
 - Whether a private GitHub backup was set up, and its name.
 - How to use it: "Just keep working with your coding agent as usual — it will
   automatically load your relevant notes for each task."
-- How to add notes: edit files under `<data folder>/profile/` and `<data folder>/projects/`.
-- How to undo: delete the engine and data folders; remove `VAULT_ENGINE` and
-  `VAULT_DATA` from environment variables (Windows: System Properties → Environment
-  Variables, or `setx VAULT_ENGINE ""`); optionally delete the GitHub backup repo with
-  `gh repo delete <name>`.
+- How to add notes: the agent writes notes as it learns (for example under
+  `<data folder>/projects/<project>/` once there is something to keep); the user can edit
+  `<data folder>/profile/` by hand anytime.
+- How to undo, if they ever want to (give them these steps, don't run them now):
+  1. Delete the engine folder and the data folder.
+  2. Remove the environment variables. Windows:
+     `reg delete HKCU\Environment /v VAULT_ENGINE /f` and the same with `VAULT_DATA`
+     (in Git Bash: `MSYS_NO_PATHCONV=1 reg delete 'HKCU\Environment' /v VAULT_ENGINE /f`);
+     `setx VAULT_ENGINE ""` does not remove it. macOS/Linux: delete the
+     `# >>> vault-engine >>>` … `# <<< vault-engine <<<` block from the shell startup file
+     Step 6 named.
+  3. Delete `~/.claude/agents/worker-low.md` and `worker-medium.md` (and rename a
+     `worker-*.md.bak` back if `setup` in a terminal made one).
+  4. Delete `<projects folder>/CLAUDE.md` if it only has the `@…/AGENTS.md` line Step 6
+     wrote; otherwise remove just that line.
+  5. With `--user-level`: remove the vault line from `~/.claude/CLAUDE.md` and from
+     `~/.codex/AGENTS.md`.
+  6. Optionally delete the GitHub backup with `gh repo delete <name>`.
 
 ---
 
@@ -280,6 +311,8 @@ available, want me to check what changed?"). If they agree:
 1. Run `python "<projects folder>/vault-engine/tools/graph.py" update --check` to see
    what's new, and summarize the changelog for the user in their own language.
 2. Only after the user agrees to proceed, run `update --yes` to actually switch versions.
+   It then runs the new version's `migrate`, `setup` (never environment variables or
+   shell startup files) and `doctor`, and lists every change.
 3. If the update shows a diff for `AGENTS.md`, explain in plain language what changed
    and ask before re-running with `--apply-agents`.
 4. If a command refuses to run because the vault's data schema is newer than this

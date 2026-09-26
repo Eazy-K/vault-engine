@@ -192,11 +192,28 @@ TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update")  # optional modules in tools/
 
 
-def machine_name() -> str:
-    # A hostname can reveal an employer or a person and learned files are committed,
-    # so an explicitly chosen name wins over the hostname.
-    raw = os.environ.get("VAULT_MACHINE") or socket.gethostname()
-    return re.sub(r"[^a-z0-9-]+", "-", raw.lower()).strip("-") or "unknown"
+def sanitize_machine_name(raw: str) -> str:
+    """The form a machine name takes in .graph/learned/<name>.json ("" if nothing is left)."""
+    return re.sub(r"[^a-z0-9-]+", "-", str(raw).lower()).strip("-")
+
+
+def machine_name(paths: Paths | None = None) -> str:
+    """This computer's name in the committed .graph/learned/<name>.json. A hostname
+    can reveal an employer or a person, so an explicitly chosen name wins: the
+    VAULT_MACHINE environment variable, then "machine" in this computer's
+    gitignored <data>/.graph/machine.json (written by `setup` or `machine --name`),
+    then the hostname."""
+    raw = os.environ.get("VAULT_MACHINE") or ""
+    if not sanitize_machine_name(raw) and paths is not None:
+        try:
+            saved = json.loads((paths.data / ".graph" / "machine.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+        name = saved.get("machine") if isinstance(saved, dict) else None
+        raw = name if isinstance(name, str) else ""
+    if not sanitize_machine_name(raw):
+        raw = socket.gethostname()
+    return sanitize_machine_name(raw) or "unknown"
 
 
 def detect_agent() -> tuple[str, str | None]:
@@ -408,7 +425,7 @@ class Graph:
                 key = pair(note.id, resolved)
                 self.base[key] = max(self.base.get(key, 0.0), _clamp(weight))
 
-        self.machine = machine_name()
+        self.machine = machine_name(self.paths)
         self.own_learned: dict[tuple[str, str], float] = {}  # this machine's file only
         learned_dir = self.paths.learned_dir
         for path in sorted(learned_dir.glob("*.json")) if learned_dir.exists() else []:
@@ -970,7 +987,7 @@ def log_usage(paths: Paths, event: dict) -> None:
     # Telemetry must never break retrieval, so write errors are ignored.
     agent, session = detect_agent()
     event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": agent,
-             "session": session, "machine": machine_name(), **event}
+             "session": session, "machine": machine_name(paths), **event}
     try:
         usage_log = paths.usage_log
         usage_log.parent.mkdir(exist_ok=True)

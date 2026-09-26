@@ -332,8 +332,10 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
             print(f"update: migrate failed ({_rollback_hint(previous_ref)})")
             return False
 
-    print("running: setup --yes")
-    result = run_step(engine, data, ["setup", "--yes", "--data", str(data)])
+    # --no-env: the engine and data folders did not move, and shell startup files
+    # or setx are never changed without the user running setup themselves.
+    print("running: setup --yes --no-env")
+    result = run_step(engine, data, ["setup", "--yes", "--no-env", "--data", str(data)])
     _print_step_output(result)
     if result.returncode != 0:
         print(f"update: setup failed ({_rollback_hint(previous_ref)})")
@@ -352,6 +354,16 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
 
 _CI_PIN_RE = re.compile(r"(uses:\s*[\w.\-]+/vault-engine)@([^\s]+)")
 
+# The header comment that 0.1.0 and 0.2.0 shipped in vault.yml; the engine has
+# been public since, so it is replaced along with the pin.
+_OLD_CI_COMMENT = ("# PR, so commits made from the cloud or a phone are checked too. The engine is a\n"
+                   "# private action: in the engine repo, Settings > Actions > Access must allow\n"
+                   "# repositories of the same owner.\n")
+_NEW_CI_COMMENT = ("# PR, so commits made from the cloud or a phone are checked too. The engine is\n"
+                   "# public, so this works as-is. If you instead use a private fork of the engine,\n"
+                   "# do this once: in that repo, Settings > Actions > General > Access must allow\n"
+                   "# repositories of the same owner.\n")
+
 
 def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     """Move the data repo's CI pin (`uses: <owner>/vault-engine@<ref>` in
@@ -363,13 +375,20 @@ def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
-    m = _CI_PIN_RE.search(text)
-    if not m or m.group(2) == new_ref:
+    new_text = text.replace(_OLD_CI_COMMENT, _NEW_CI_COMMENT)
+    m = _CI_PIN_RE.search(new_text)
+    repin = bool(m) and m.group(2) != new_ref
+    if repin:
+        new_text = new_text[:m.start(2)] + new_ref + new_text[m.end(2):]
+    if new_text == text:
         return False
-    new_text = text[:m.start(2)] + new_ref + text[m.end(2):]
     path.write_text(new_text, encoding="utf-8", newline="\n")
-    print(f"updated CI pin in {path}: @{m.group(2)} -> @{new_ref} "
-          "(commit and push this change in the data repo)")
+    if repin:
+        print(f"updated CI pin in {path}: @{m.group(2)} -> @{new_ref} "
+              "(commit and push this change in the data repo)")
+    else:
+        print(f"updated the outdated comment in {path} "
+              "(commit and push this change in the data repo)")
     return True
 
 
@@ -500,6 +519,9 @@ def cmd_update(args) -> None:
                      f"but {target} only supports schema {target_schema}; downgrading would "
                      "corrupt it. Update the engine on this computer instead.")
 
+    print("after switching: migrate (one commit in the data repo), setup (only the engine's "
+          "own subagent files in ~/.claude/agents and missing routing files, never shell "
+          "startup files or environment variables) and doctor; each change is listed.")
     if not args.yes:
         if g.stdin_is_interactive():
             try:

@@ -454,6 +454,18 @@ class TestUpdateApply(UpdateTestCase):
         self.assertIn(["doctor"], calls)
         self.assertIn("checked out v0.2.0", buf.getvalue())
 
+    def test_setup_never_touches_environment_variables(self):
+        # The engine and data folders don't move in an update; shell startup files
+        # and setx are only changed when the user runs setup themselves.
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok) as m, \
+             redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        setup = [c.args[2] for c in m.call_args_list if c.args[2][0] == "setup"]
+        self.assertEqual(len(setup), 1)
+        self.assertIn("--no-env", setup[0])
+        self.assertIn("never shell startup files or environment variables", buf.getvalue())
+
     def test_step_failure_reports_rollback_hint(self):
         fake_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
         with mock.patch("update.run_step", return_value=fake_fail), \
@@ -482,6 +494,22 @@ class TestRewriteCiPin(UpdateTestCase):
         changed = update._rewrite_ci_pin(self.data, "v0.2.0")
         self.assertFalse(changed)
         self.assertIn("actions/checkout@v4", workflow.read_text(encoding="utf-8"))
+
+    def test_outdated_private_action_comment_is_replaced(self):
+        # vault.yml from 0.1.0/0.2.0 still says the engine is a private action.
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        head = "# Guard (personal data / secrets), commit messages and note lint on every push and\n"
+        _write(workflow, head + update._OLD_CI_COMMENT + "steps:\n  - uses: example/vault-engine@v0.2.0\n")
+        with redirect_stdout(StringIO()) as buf:
+            changed = update._rewrite_ci_pin(self.data, "v0.2.0")
+        self.assertTrue(changed)
+        text = workflow.read_text(encoding="utf-8")
+        self.assertNotIn("private action", text)
+        self.assertIn(update._NEW_CI_COMMENT, text)
+        self.assertIn("uses: example/vault-engine@v0.2.0", text)
+        self.assertIn("outdated comment", buf.getvalue())
+        template = (REPO_ROOT / "templates" / ".github" / "workflows" / "vault.yml").read_text(encoding="utf-8")
+        self.assertIn(update._NEW_CI_COMMENT, template)  # same words a new vault gets
 
     def test_noop_when_already_pinned(self):
         workflow = self.data / ".github" / "workflows" / "vault.yml"
