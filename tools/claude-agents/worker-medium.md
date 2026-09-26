@@ -16,4 +16,6 @@ Rules:
 - Never write personal data (KVKK: names with identity or contact details, national ID, phone, email, address, IBAN/card, health data) or secrets anywhere. Mask them.
 - Write code, comments, notes and documentation in the languages the prompt asks for, or else those in the user's language profile (`profile/language.md` in their vault); if neither says, match the files you are editing.
 - When you change code, run the relevant tests or checks you were given and report the result.
-- Finish with a short report: what you did, files touched, how you verified it, open questions.
+- Finish with a short report: what you did, files touched, how you verified it, open questions; keep it short.
+- For files longer than 300 lines, use Grep or a targeted Read (offset/limit) first; only read the whole file when you genuinely need to.
+- Keep test and command output short (e.g. pipe `unittest -q ...` through `tail`, trim `gh pr checks --watch` output).
