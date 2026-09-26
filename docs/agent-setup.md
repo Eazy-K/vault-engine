@@ -256,6 +256,56 @@ available, want me to check what changed?"). If they agree:
 4. If a command refuses to run because the vault's data schema is newer than this
    computer's engine, run `update` on this computer too.
 
+Only 0.3.0 and later check for new versions and have `update`. On 0.1.0 and 0.2.0 you
+get no update line, and `update` fails with `invalid choice: 'update'`; use the next
+section instead.
+
+### Updating from 0.1.0 or 0.2.0 (no `update` command)
+
+Check the version first: `python "<projects folder>/vault-engine/tools/graph.py" --version`.
+If it says 0.1.0 or 0.2.0, update by hand once; from then on `update` works. These steps
+do what `update` does. Ask the user before step 4, like for any update. The copy of this
+guide inside an 0.1.0/0.2.0 engine folder doesn't have this section yet; read it on
+GitHub, or with `git -C "<projects folder>/vault-engine" show origin/main:docs/agent-setup.md`
+after step 2.
+
+1. Make sure the engine folder has no local changes: `git -C "<projects folder>/vault-engine" status --porcelain`
+   must print nothing. If it does, show the user and stop.
+2. Download the release list and find the newest release:
+   ```
+   git -C "<projects folder>/vault-engine" fetch --tags origin
+   git -C "<projects folder>/vault-engine" tag --list "v*" --sort=-v:refname
+   ```
+   The first line is the newest release (for example `v0.4.0`).
+3. Read what changed: `git -C "<projects folder>/vault-engine" show <new tag>:CHANGELOG.md`.
+   Summarize every section newer than the current version for the user, above all the
+   **Upgrade notes**, and ask whether to proceed.
+4. Switch to it: `git -C "<projects folder>/vault-engine" checkout <new tag>`
+   (a "detached HEAD" message is expected).
+5. Run the new version's upgrade steps, in this order:
+   ```
+   python "<projects folder>/vault-engine/tools/graph.py" migrate --yes
+   python "<projects folder>/vault-engine/tools/graph.py" setup --data "<projects folder>/vault" --yes
+   python "<projects folder>/vault-engine/tools/graph.py" doctor
+   ```
+   `migrate` updates the data repo's settings and makes one commit there with only its
+   own changes (it never pushes). `setup` is the same as in Step 6 (add `--user-level` if
+   the user works with Codex). On macOS/Linux it now also writes the environment
+   variables into the shell startup file.
+6. Go through the `WARN` lines `doctor` prints; each one names its fix. For example, if
+   it says the vault CI runs the engine at `@main` or an older tag, run
+   `python "<projects folder>/vault-engine/tools/graph.py" update`: it says "already up to
+   date" and re-pins the CI. If `doctor` has no such line but
+   `<projects folder>/vault/.github/workflows/vault.yml` still says `vault-engine@main`,
+   change that to `vault-engine@<new tag>` by hand.
+7. Apply the rest of the Upgrade notes you read in step 3 (for example lines to copy
+   from `templates/AGENTS.md` into the data repo's `AGENTS.md`). Commit what changed in
+   the data repo, and push it if it has a backup (`git -C "<projects folder>/vault" push`).
+8. Do the same on every other computer that uses this data repo. Engines before 0.3.0
+   don't know the vault's data schema, so they never refuse to write to a vault that a
+   newer engine has upgraded. Until every computer is on 0.3.0 or later, don't install a
+   release whose Upgrade notes say it raises the data schema.
+
 ---
 
 ## Troubleshooting
@@ -274,4 +324,7 @@ available, want me to check what changed?"). If they agree:
   engine falls back to keyword-only search; tell the user it's optional and they can
   start Ollama (or install it) anytime later.
 - **`git pull` says you are not on a branch**: stable installs are checked out at a
-  release tag (detached HEAD) on purpose; use `update` instead of `git pull`.
+  release tag (detached HEAD) on purpose; use `update` instead of `git pull` (on 0.1.0
+  or 0.2.0, see "Updating from 0.1.0 or 0.2.0").
+- **`invalid choice: 'update'` (or `'migrate'`)**: the engine is 0.1.0 or 0.2.0, which
+  have neither command. Follow "Updating from 0.1.0 or 0.2.0" above.

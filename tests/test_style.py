@@ -27,6 +27,16 @@ def _text_writes_without_newline(tree: ast.AST) -> list[int]:
     return bad
 
 
+def _schemas_missing_upgrade_note(changelog: str, schema_version: int) -> list[int]:
+    """Schemas above 1 whose raise no CHANGELOG "Upgrade notes" section covers.
+    Engines 0.1.0/0.2.0 have no schema check and would keep writing to a
+    migrated vault, so the release that raises the schema must name it
+    (`schema N`) and ask to bring every computer to 0.3.0 or later first."""
+    notes = re.findall(r"^### Upgrade notes\n(.*?)(?=^##|\Z)", changelog, re.M | re.S)
+    return [n for n in range(2, schema_version + 1)
+            if not any(f"schema {n}" in body and "0.3.0" in body for body in notes)]
+
+
 class TestTextWrites(unittest.TestCase):
     def test_every_text_write_sets_newline(self):
         for path in sorted(TOOLS.glob("*.py")):
@@ -44,6 +54,23 @@ class TestVersion(unittest.TestCase):
         changelog = (TOOLS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
         top = re.search(r"^## \[([^\]]+)\]", changelog, re.M).group(1)
         self.assertEqual(top, version)
+
+    def test_schema_raise_has_upgrade_note(self):
+        source = (TOOLS / "schema.py").read_text(encoding="utf-8")
+        schema_version = int(re.search(r"^SCHEMA_VERSION = (\d+)", source, re.M).group(1))
+        changelog = (TOOLS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertEqual(_schemas_missing_upgrade_note(changelog, schema_version), [],
+                         "a release raising SCHEMA_VERSION needs an Upgrade note naming "
+                         "`schema N` that asks for 0.3.0 or later on every computer first")
+
+    def test_schema_upgrade_note_check(self):
+        entry = ("## [0.9.0] - 2026-01-01\n\n### Added\n- schema 2 mentioned outside notes, 0.3.0\n\n"
+                 "### Upgrade notes\n- {}\n\n## [0.8.0] - 2025-12-01\n")
+        good = entry.format("Raises the vault to schema 2: first update every computer to 0.3.0 or later.")
+        self.assertEqual(_schemas_missing_upgrade_note(good, 2), [])
+        self.assertEqual(_schemas_missing_upgrade_note(good, 3), [3])
+        self.assertEqual(_schemas_missing_upgrade_note(entry.format("Raises the vault to schema 2."), 2), [2])
+        self.assertEqual(_schemas_missing_upgrade_note("# Changelog\n", 1), [])
 
     def test_tag_at_head_matches_version(self):
         # On a stable install HEAD is a release tag; it must match --version.
