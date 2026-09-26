@@ -1368,7 +1368,14 @@ def cmd_reinforce(args) -> None:
     graph.commit_learned("chore: update learned links")
 
 
-def cmd_stats(_args) -> None:
+def cmd_stats(args) -> None:
+    if getattr(args, "tokens", False):
+        import token_stats
+        from datetime import date
+        projects_dir = Path(args.projects_dir).expanduser()
+        since = date.fromisoformat(args.since) if args.since else None
+        print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json))
+        return
     events = read_usage(default_paths())
     contexts = [e for e in events if e.get("event") == "context"]
     reinforces = [e for e in events if e.get("event") == "reinforce"]
@@ -1508,7 +1515,14 @@ def main() -> None:
 
     sub.add_parser("lint", help="check broken links, orphans and learned state")
     sub.add_parser("index", help="embed changed notes ahead of time")
-    sub.add_parser("stats", help="how often context calls are closed by reinforce")
+    p = sub.add_parser("stats", help="how often context calls are closed by reinforce")
+    p.add_argument("--tokens", action="store_true",
+                   help="read-only token usage report over local Claude Code transcripts")
+    p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
+                   help="transcripts root (default: ~/.claude/projects)")
+    p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
+    p.add_argument("--top", type=int, default=5, help="how many top sessions to list")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
 
     p = sub.add_parser("tasks", help="list inbox tasks")
     p.add_argument("--status", choices=TASK_STATUSES)
