@@ -32,7 +32,7 @@ from itertools import combinations
 from pathlib import Path
 
 # Single source of the release version (SemVer; see CHANGELOG.md).
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # This repo is the user-independent engine; notes live in a separate data
 # folder (see resolve_data_dir). ENGINE never changes; DATA is resolved lazily
