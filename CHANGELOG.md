@@ -4,9 +4,6 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 
 ## [0.4.0] - 2026-09-26
 
-### Changed
-- `tools/claude-agents/worker-low.md` and `worker-medium.md` gain two token-saving rules (read large files with Grep/targeted Read first; keep test/command output and reports short) so they ship with the template instead of only living in hand-edited local copies.
-
 ### Added
 - `machine --project-root` registers this computer's project root in `.graph/machine.json`, replacing the earlier `init --project-root` on a second computer; `init` now refuses to run inside another git repository.
 - `init` and `setup` scopes are split: `update` no longer touches shell/env files (equivalent to `setup --yes --no-env`), and `setup` preserves the user's own `worker-*.md` files.
