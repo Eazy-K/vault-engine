@@ -827,8 +827,8 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
     pin = _CI_PIN_RE.search(text)
     if channel == "stable" and engine_ref and pin and pin.group(1) != engine_ref:
         found.append(("WARN", f"vault CI runs the engine at @{pin.group(1)}, this engine is "
-                              f"{engine_ref}: run update (re-pins it), then commit and push "
-                              ".github/workflows/vault.yml"))
+                              f"{engine_ref}: run update (re-pins it and commits "
+                              ".github/workflows/vault.yml), then push"))
     push = _CI_PUSH_BRANCHES_RE.search(text)
     branches = [b.strip().strip("'\"") for b in push.group(1).split(",")] if push else []
     try:
@@ -842,6 +842,35 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
         found.append(("WARN", f"vault CI runs on pushes to {', '.join(branches)}, but the data "
                               f"repo is on {branch}, so CI never runs: git branch -m {branch} "
                               f"{target} && git push -u origin {target}"))
+    return found
+
+
+def _uncommitted_checks(data: Path) -> list[tuple[str, str]]:
+    """Files engine commands write (g.ENGINE_FILES) that are not committed, and
+    how many other changes are pending. Each engine command commits its own
+    files; what is left here came from an older engine, a failed commit (no git
+    identity, the guard) or a hand edit."""
+    changed = g.git_status(data)
+    if changed is None:
+        return []  # not a git repo: the core.hooksPath check already fails
+    if not changed:
+        return [("OK", "data repo: nothing uncommitted")]
+    has_head = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=data,
+                              capture_output=True, text=True, encoding="utf-8").returncode == 0
+    if not has_head:
+        return [("WARN", f"data repo has no commits yet: git -C \"{data}\" add -A && "
+                         f"git -C \"{data}\" commit -m \"chore: initialize vault\"")]
+    owned = g.git_status(data, g.ENGINE_FILES) or []
+    found: list[tuple[str, str]] = []
+    if owned:
+        names = " ".join(owned)
+        found.append(("WARN", f"uncommitted vault-engine files in the data repo: {', '.join(owned)}: "
+                              f"git -C \"{data}\" add -- {names} && git -C \"{data}\" commit "
+                              f"-m \"chore: save vault-engine files\" -- {names}, then push"))
+    others = len(changed) - len(owned)
+    if others:
+        found.append(("INFO", f"{others} other uncommitted change(s) in the data repo "
+                              f"(git -C \"{data}\" status)"))
     return found
 
 
@@ -1043,6 +1072,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if data is not None:
         for ci_status, msg in _vault_ci_checks(data, status, ref):
             check(ci_status, msg)
+        for git_status, msg in _uncommitted_checks(data):
+            check(git_status, msg)
 
     for status, msg in checks:
         print(f"{status:<4} {msg}")
@@ -1218,6 +1249,13 @@ def _run_onboard(data: Path, raw: dict, force: bool) -> None:
     print(f"  profile/working-style.md: {status_style}")
     if any(status != "written" for status in (status_lang, status_style)):
         print("  Filled notes were kept; rerun with --force to replace them with these answers.")
+    written = [f"profile/{name}" for name, status in (("language.md", status_lang),
+                                                      ("working-style.md", status_style))
+               if status == "written"]
+    if written:
+        # Committed at once, so the next task's `git pull --rebase` has a clean tree.
+        g.report_commit(data, written, g.commit_own_files(data, written, "chore: fill in profile"),
+                        indent="  ")
 
 
 def _default_for(qid: str, raw: dict) -> object:

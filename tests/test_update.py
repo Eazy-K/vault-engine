@@ -528,6 +528,54 @@ class TestRewriteCiPin(UpdateTestCase):
         self.assertIn("updated CI pin", buf.getvalue())
 
 
+class TestUpdateCommitsVaultFiles(UpdateTestCase):
+    """What update writes into a data repo is committed there, file by file,
+    and nothing else the user had staged goes into those commits."""
+
+    def setUp(self):
+        super().setUp()
+        _init_repo(self.data)
+        _run(["git", "config", "commit.gpgsign", "false"], self.data)
+        _write(self.data / ".github" / "workflows" / "vault.yml",
+               "steps:\n  - uses: example/vault-engine@v0.1.0\n")
+        _write(self.data / "AGENTS.md", "AGENTS v1\ncontent-a\n")
+        _commit(self.data, "initial")
+        _write(self.data / "notes" / "mine.md", "# mine\n")
+        _run(["git", "add", "notes/mine.md"], self.data)
+
+    def _log(self) -> list[str]:
+        return _run(["git", "log", "--format=%s"], self.data).stdout.splitlines()
+
+    def _status(self) -> list[str]:
+        return _run(["git", "status", "--porcelain"], self.data).stdout.splitlines()
+
+    def test_upgrade_commits_ci_pin_and_applied_agents_md(self):
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             redirect_stdout(StringIO()) as buf:
+            update.cmd_update(Args(to="v0.2.0", yes=True, apply_agents=True))
+        self.assertEqual(self._log(), ["docs: update AGENTS.md to the engine's template",
+                                       "ci: run the vault-engine guard at v0.2.0", "initial"])
+        self.assertEqual(self._status(), ["A  notes/mine.md"])
+        self.assertIn("committed in the data repo: ci: run the vault-engine guard at v0.2.0",
+                      buf.getvalue())
+
+    def test_already_up_to_date_repin_is_committed(self):
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        with redirect_stdout(StringIO()):
+            update.cmd_update(Args(yes=True))
+        self.assertEqual(self._log()[0], "ci: run the vault-engine guard at v0.10.0")
+        self.assertEqual(self._status(), ["A  notes/mine.md"])
+
+    def test_agents_commit_names_the_template_revision(self):
+        _write(self.engine / "templates" / "AGENTS.md",
+               "AGENTS v9\n<!-- vault-engine AGENTS.md template: 9. Keep this line. -->\n")
+        with redirect_stdout(StringIO()):
+            update._write_agents(self.engine, self.data)
+        self.assertEqual(self._log()[0], "docs: update AGENTS.md to the engine's template (9)")
+
+
 class TestUpdateDowngradeGuard(UpdateTestCase):
     def test_refused_when_target_schema_below_vault_schema(self):
         self.checkout("v0.10.0")

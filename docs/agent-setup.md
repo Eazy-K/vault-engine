@@ -255,6 +255,13 @@ just say "that's fine."
    python "<projects folder>/vault-engine/tools/graph.py" onboard --answers "<temp file path>" --data "<projects folder>/vault"
    ```
 5. Delete the temporary file afterward.
+6. `onboard` commits the profile notes it wrote (`chore: fill in profile`). If it printed
+   `not committed`, run the commit line it shows. If Step 5 set up a backup, push it:
+   ```
+   git -C "<projects folder>/vault" push
+   ```
+   `git -C "<projects folder>/vault" status` should now print `nothing to commit, working
+   tree clean`.
 
 Don't run `onboard` without `--questions` or `--answers`: it only asks its questions in a
 terminal where a person types the answers, and otherwise stops without writing anything.
@@ -319,6 +326,10 @@ available, want me to check what changed?"). If they agree:
    the engine is already up to date). If the user's `AGENTS.md` is translated or edited,
    offer to carry the changes into their version instead, keeping the template's last
    line (`vault-engine AGENTS.md template: N`) so later updates know it is current.
+   `update` commits each file it writes in the data repo (the CI pin in
+   `.github/workflows/vault.yml`, `AGENTS.md`), like `migrate`; it never pushes. If the
+   data repo has a backup, push it afterward (`git -C "<projects folder>/vault" push`).
+   A `doctor` `WARN` about uncommitted vault-engine files names what is left to commit.
 4. If a command refuses to run because the vault's data schema is newer than this
    computer's engine, run `update` on this computer too.
 

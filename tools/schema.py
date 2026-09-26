@@ -346,16 +346,13 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
     if not can_commit:
         return result
     files = [CONFIG_NAME] + [str(p) for p in sorted(touched)]
-    add = _git(data, "add", "--", *files)
-    if add.returncode != 0:
-        raise SystemExit(f"migrate: git add failed: {add.stderr.strip()}\n"
-                         "the changes are written; rerun migrate to commit them")
     message = (result.leftover or plan).commit_message()
-    done = _git(data, "commit", "-q", "--only", "-m", message, "--", *files)
-    if done.returncode != 0:
-        raise SystemExit(f"migrate: git commit failed: {(done.stderr or done.stdout).strip()}\n"
+    status, detail = g.commit_own_files(data, files, message)
+    if status in ("failed", "skipped"):
+        raise SystemExit(f"migrate: {detail}\n"
                          "the changes are written; rerun migrate to commit them")
-    result.committed = message
+    if status == "committed":
+        result.committed = message
     return result
 
 
