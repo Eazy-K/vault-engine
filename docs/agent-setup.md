@@ -96,16 +96,18 @@ clone it again to the confirmed path and, after asking the user, delete the firs
 ```
 git clone https://github.com/Eazy-K/vault-engine.git "<projects folder>/vault-engine"
 cd "<projects folder>/vault-engine"
-git describe --tags --abbrev=0
+python -c "import re,subprocess as s; t=[x for x in s.check_output(['git','tag']).decode().split() if re.fullmatch(r'v\d+\.\d+\.\d+', x)]; t.sort(key=lambda x: [int(n) for n in x[1:].split('.')]); print(t[-1] if t else '')"
 ```
 
-The last command prints the latest released version, for example `v0.3.0`. Switch to it:
+`git describe --tags --abbrev=0` also picks up pre-release tags like `v0.4.0-rc1`, so pick
+the tag with this command instead: it prints only `vX.Y.Z` release tags, the highest one,
+for example `v0.3.0`. Switch to it:
 
 ```
 git checkout <the tag it printed>
 ```
 
-This switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet (`git describe` says `No names found`), skip the checkout. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
+This switches to the latest released version, so the user never gets unfinished work from `main`. If the command above printed nothing, this repo has no release tags yet — skip the checkout. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
 
 ---
 

@@ -230,6 +230,12 @@ class TestChannel(UpdateTestCase):
         self.assertEqual(status, "unknown")
         self.assertIsNone(ref)
 
+    def test_prerelease_detached_at_non_semver_tag(self):
+        _run(["git", "tag", "v0.4.0-rc1", self.origin["untagged_sha"]], self.engine)
+        self.checkout("v0.4.0-rc1")
+        status, ref = update.channel(self.engine)
+        self.assertEqual((status, ref), ("prerelease", "v0.4.0-rc1"))
+
     def test_unknown_not_a_git_repo(self):
         plain = self.tmp / "plain"
         plain.mkdir()
@@ -370,6 +376,15 @@ class TestUpdateDevAndUnknown(UpdateTestCase):
             with self.assertRaises(SystemExit) as ctx:
                 update.cmd_update(Args(yes=True))
         self.assertTrue(ctx.exception.code)
+
+    def test_prerelease_channel_message_names_the_tag_not_git_checkout(self):
+        _run(["git", "tag", "v0.4.0-rc1", self.origin["untagged_sha"]], self.engine)
+        self.checkout("v0.4.0-rc1")
+        with redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                update.cmd_update(Args(yes=True))
+        self.assertIn("v0.4.0-rc1", str(ctx.exception))
+        self.assertNotIn("not a git checkout", str(ctx.exception))
 
 
 class TestUpdateDirtyTree(UpdateTestCase):

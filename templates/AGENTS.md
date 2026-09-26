@@ -1,6 +1,6 @@
 # AGENTS.md
 
-A model-independent second brain. Information loads through a weighted graph — don't read files one by one. Commands work from any folder: `context` recognizes the current project from the folder you are working in, so run it there rather than in the vault. The engine tool is invoked via the `$VAULT_ENGINE` environment variable (`%VAULT_ENGINE%` in Windows cmd). The data folder's path is in `$VAULT_DATA` (`%VAULT_DATA%` in Windows cmd).
+A model-independent second brain. Information loads through a weighted graph — don't read files one by one. Commands work from any folder: `context` recognizes the current project from the folder you are working in, so run it there rather than in the vault. The engine tool is invoked via the `$VAULT_ENGINE` environment variable (`%VAULT_ENGINE%` in Windows cmd, `$env:VAULT_ENGINE` in PowerShell). The data folder's path is in `$VAULT_DATA` (`%VAULT_DATA%` in Windows cmd, `$env:VAULT_DATA` in PowerShell). Every command below is written for a POSIX-like shell (bash, zsh); in PowerShell, replace `$VAULT_ENGINE` and `$VAULT_DATA` with `$env:VAULT_ENGINE` and `$env:VAULT_DATA`.
 
 If `$VAULT_ENGINE` is empty (in PowerShell check `$env:VAULT_ENGINE`; plain `$VAULT_ENGINE` is always empty there), the terminal or agent was started before setup set it. Tell the user to restart it; until then, on Windows read both values with `reg query HKCU\Environment /v VAULT_ENGINE` (and `/v VAULT_DATA`) in cmd or PowerShell, or `MSYS_NO_PATHCONV=1 reg query 'HKCU\Environment' /v VAULT_ENGINE` in Git Bash, and use them directly.
 
@@ -13,4 +13,4 @@ If `$VAULT_ENGINE` is empty (in PowerShell check `$env:VAULT_ENGINE`; plain `$VA
 5. **Before you finish:** if the vault has a remote (`git remote` prints something), run `git pull --rebase --autostash && git push` in it, also when you wrote no note: it sends the commits `reinforce` and other engine commands made. Without a remote the commits are enough.
 6. **If `context` reports a new vault-engine version:** tell the user once and ask before updating — never update without their permission.
 
-<!-- vault-engine AGENTS.md template: 2. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->
+<!-- vault-engine AGENTS.md template: 3. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->

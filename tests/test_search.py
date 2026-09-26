@@ -88,7 +88,7 @@ class TestOllamaProblems(_Vault):
         self.note("rules", "Some rule.")
         self.calls = []
 
-    def _semantic(self, embed_answer, tags_answer=b'{"models": []}'):
+    def _semantic(self, embed_answer, tags_answer=b'{"models": [{"name": "bge-m3:latest"}]}'):
         def urlopen(req, timeout=None):
             url = req if isinstance(req, str) else req.full_url
             self.calls.append((url.rsplit("/", 1)[-1], timeout))
@@ -110,8 +110,21 @@ class TestOllamaProblems(_Vault):
         self.assertIn(f"ollama pull {graph.EMBED_MODEL}", err)
         self.assertNotIn("HTTP Error 404", err)
 
+    def test_model_missing_from_tags_skips_the_long_embed_call(self):
+        # /api/tags answers fine but lists no bge-m3: fail from the probe alone,
+        # instead of waiting on an /api/embed call that was never going to work.
+        result, err = self._semantic(TimeoutError("should not be reached"),
+                                      tags_answer=b'{"models": [{"name": "llama3:8b"}]}')
+        self.assertIsNone(result)
+        self.assertEqual([c[0] for c in self.calls], ["tags"])
+        self.assertIn(f"ollama pull {graph.EMBED_MODEL}", err)
+
     def test_old_ollama_without_embed_route_is_told_apart(self):
-        result, err = self._semantic(_http_404("http://x/api/embed", b"404 page not found"))
+        # bge-m3 is pulled (so the probe lets the call through), but this Ollama
+        # predates the /api/embed route and answers 404 for the route itself.
+        result, err = self._semantic(
+            _http_404("http://x/api/embed", b"404 page not found"),
+            tags_answer=b'{"models": [{"name": "bge-m3:latest"}]}')
         self.assertIsNone(result)
         self.assertIn("up to date", err)
         self.assertIn("ollama pull", err)

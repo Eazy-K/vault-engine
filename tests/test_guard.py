@@ -89,6 +89,9 @@ class TestGuardPatterns(unittest.TestCase):
     def test_phone_flagged(self):
         self.assertIn("phone", graph.scan_line("call me at 0532 123 45 67"))  # guard:ignore
 
+    def test_dotted_phone_flagged(self):
+        self.assertIn("phone", graph.scan_line("call me at 0532.123.45.67"))  # guard:ignore
+
     def test_email_flagged(self):
         self.assertIn("email", graph.scan_line("contact someone@example.org.notreal"))  # guard:ignore
 
@@ -155,11 +158,23 @@ class TestGuardForeignFormats(unittest.TestCase):
                          _iban("DE", "3704004405320130"),  # too short for DE
                          _iban("DE", "37040044053201300000"))  # too long for DE
 
-    def test_lower_case_hex_is_not_an_iban(self):
-        # Hash-like tokens: right country, length and checksum, but lower case.
+    def test_lower_case_iban_flagged(self):
+        # People often paste IBANs in lower case; the checksum still holds it
+        # to a real IBAN (right country, length and mod-97), so it is caught.
         token = _iban("EE", "ABCDEF0123456789")
         self.assertEqual(len(token), graph.IBAN_LENGTHS["EE"])
-        self.assertClean("IBAN", token.lower())
+        self.assertFlags("IBAN", token.lower())
+
+    def test_hyphenated_iban_flagged(self):
+        hyphenated = "-".join(self.DE[i:i + 4] for i in range(0, len(self.DE), 4))
+        self.assertFlags("IBAN", hyphenated, hyphenated.lower())
+
+    def test_lower_case_hex_with_a_wrong_checksum_is_not_an_iban(self):
+        # A hex-like token that happens to start with a country code and have
+        # the right length, but fails the mod-97 checksum, is not an IBAN.
+        token = _iban("EE", "ABCDEF0123456789")
+        bad = token[:-1] + str((int(token[-1]) + 1) % 10)
+        self.assertClean("IBAN", bad.lower())
 
     def test_international_phone_flagged(self):
         self.assertFlags("phone", "+44 20 7946 0958", "+1 (212) 555-0123",  # guard:ignore
@@ -178,7 +193,8 @@ class TestGuardForeignFormats(unittest.TestCase):
                          "ISBN 978-3-16-148410-0", "123-555-0123", "212 555 0123")
 
     def test_uk_phone_flagged(self):
-        self.assertFlags("phone", "020 7946 0958", "07700 900123")  # guard:ignore
+        self.assertFlags("phone", "020 7946 0958", "07700 900123",  # guard:ignore
+                         "07700900123")  # guard:ignore -- unspaced mobile
 
     def test_uk_phone_lookalikes_not_flagged(self):
         self.assertClean("phone", "020 7946", "07700900123x", "10 7946 0958 0")

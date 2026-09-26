@@ -154,24 +154,40 @@ def _cache_path(paths: g.Paths) -> Path:
     return paths.data / ".graph" / "projects.json"
 
 
+def _root_signature(paths: g.Paths) -> list[list]:
+    """[str(root), mtime] per configured root. A new or removed project folder
+    changes its parent root's mtime, so this also catches that without waiting
+    out CACHE_TTL; a root that doesn't exist (yet) gets mtime None."""
+    sig = []
+    for root in g.project_roots(paths):
+        try:
+            mtime = root.stat().st_mtime
+        except OSError:
+            mtime = None
+        sig.append([str(root), mtime])
+    return sig
+
+
 def load_cached(paths: g.Paths, refresh: bool = False) -> list[dict]:
-    """Reuse the cache when it is fresh (< CACHE_TTL); rebuild otherwise."""
+    """Reuse the cache when it is fresh (< CACHE_TTL) and no root's mtime moved
+    (a new/removed project folder); rebuild otherwise."""
     cache_file = _cache_path(paths)
-    # The roots are part of the key: a cache built for other roots (another engine
-    # checkout, an edited config) must not be reused.
-    roots = [str(r) for r in g.project_roots(paths)]
+    # The roots (and their mtimes) are part of the key: a cache built for other
+    # roots (another engine checkout, an edited config) or a since-changed root
+    # must not be reused.
+    signature = _root_signature(paths)
     if not refresh and cache_file.exists():
         age = time.time() - cache_file.stat().st_mtime
         if age < CACHE_TTL:
             try:
                 cached = json.loads(cache_file.read_text(encoding="utf-8"))
-                if isinstance(cached, dict) and cached.get("roots") == roots:
+                if isinstance(cached, dict) and cached.get("roots") == signature:
                     return cached["projects"]
             except (OSError, ValueError, KeyError):
                 pass
     results = discover(paths)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps({"roots": roots, "projects": results}, indent=2,
+    cache_file.write_text(json.dumps({"roots": signature, "projects": results}, indent=2,
                                      ensure_ascii=False), encoding="utf-8", newline="\n")
     return results
 
