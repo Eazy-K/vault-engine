@@ -474,6 +474,18 @@ class Graph:
             encoding="utf-8", newline="\n",
         )
 
+    def commit_learned(self, message: str) -> None:
+        """Commit this computer's learned file if it has uncommitted changes
+        (also ones an earlier run could not commit). Only that file: learned
+        links reach other computers with the next push, even for someone who
+        never commits a note."""
+        path = self.paths.learned_dir / f"{self.machine}.json"
+        try:
+            rel = path.relative_to(self.paths.data).as_posix()
+        except ValueError:
+            return
+        report_commit(self.paths.data, [rel], commit_own_files(self.paths.data, [rel], message))
+
 
 def _clamp(w: float) -> float:
     return max(0.0, min(1.0, w))
@@ -486,6 +498,101 @@ def _require_writable(paths: "Paths") -> None:
     schema = sys.modules.get("schema")
     if schema is not None:
         schema.require_writable(paths)
+
+
+# --- committing the engine's own files -----------------------------------------
+# Commands that write shared files into the data repo commit exactly those files,
+# so the next task's `git pull --rebase` never stops on changes the engine made.
+
+# Files (and folders) in the data repo that engine commands write. `doctor` warns
+# when any of them has uncommitted changes.
+ENGINE_FILES = ("vault.config.json", "AGENTS.md", "CLAUDE.md", ".gitignore", ".gitattributes",
+                ".github/workflows/vault.yml", ".graph/learned", "profile/language.md",
+                "profile/working-style.md")
+
+
+def _git_in(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True,
+                          encoding="utf-8")
+
+
+def git_status(repo: Path, pathspecs: tuple[str, ...] | list[str] = ()) -> list[str] | None:
+    """Paths with uncommitted changes (staged, unstaged or untracked) under
+    `pathspecs` (the whole repo if empty), or None if `repo` is not a git repo."""
+    try:
+        out = _git_in(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                      "--", *pathspecs)
+    except OSError:
+        return None
+    if out.returncode != 0:
+        return None
+    entries, paths = out.stdout.split("\0"), []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        paths.append(entry[3:])
+        if entry[0] in "RC":
+            i += 1  # a rename's or copy's original path follows
+    return paths
+
+
+def _repo_busy(repo: Path) -> bool:
+    """A merge, rebase or cherry-pick is in progress (a commit now would land in it)."""
+    for name in ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        out = _git_in(repo, "rev-parse", "--git-path", name)
+        if out.returncode == 0 and (repo / out.stdout.strip()).exists():
+            return True
+    return False
+
+
+def commit_own_files(repo: Path, files: list[str], message: str) -> tuple[str, str]:
+    """Commit exactly `files` (paths relative to `repo`) with `git commit --only`,
+    so whatever else is staged stays staged and out of the commit. The commit
+    goes through the repo's hooks (the guard) like any other; nothing is pushed.
+
+    Returns (status, detail):
+      - ("committed", message);
+      - ("unchanged", "") -- those files have nothing to commit;
+      - ("skipped", reason) -- not a git repo, no commits yet, or a merge/rebase
+        in progress; the files stay as written;
+      - ("failed", git's error) -- the files stay as written."""
+    try:
+        if _git_in(repo, "rev-parse", "--git-dir").returncode != 0:
+            return "skipped", "the data folder is not a git repo"
+    except OSError:
+        return "skipped", "git is not available"
+    if _git_in(repo, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
+        return "skipped", "the data repo has no commits yet"
+    changed = git_status(repo, files)
+    if not changed:
+        return "unchanged", ""
+    if _repo_busy(repo):
+        return "skipped", "a merge or rebase is in progress in the data repo"
+    add = _git_in(repo, "add", "--", *changed)
+    if add.returncode != 0:
+        return "failed", f"git add failed: {add.stderr.strip()}"
+    done = _git_in(repo, "commit", "-q", "--only", "-m", message, "--", *changed)
+    if done.returncode != 0:
+        return "failed", f"git commit failed: {(done.stderr or done.stdout).strip()}"
+    return "committed", message
+
+
+def report_commit(repo: Path, files: list[str], outcome: tuple[str, str],
+                  indent: str = "") -> None:
+    """One line about what commit_own_files did, with the manual fix if it did not commit."""
+    status, detail = outcome
+    if status == "committed":
+        print(f"{indent}committed in the data repo: {detail}")
+    elif "no commits yet" in detail:
+        print(f"{indent}not committed ({detail}); make the first commit with everything: "
+              f"git -C \"{repo}\" add -A && git -C \"{repo}\" commit -m \"chore: initialize vault\"")
+    elif status in ("skipped", "failed") and "not a git repo" not in detail:
+        names = " ".join(files)
+        print(f"{indent}not committed ({detail}); commit it yourself: "
+              f"git -C \"{repo}\" add -- {names} && git -C \"{repo}\" commit -m \"<message>\" -- {names}")
 
 
 # --- retrieval ---------------------------------------------------------------
@@ -1130,13 +1237,16 @@ def cmd_reinforce(args) -> None:
         update.maybe_check(paths)
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
-        return
-    _require_writable(paths)  # before printing changes that would not be saved
-    for a, b in combinations(ids, 2):
-        before = graph.weight(a, b)
-        graph.add_learned(pair(a, b), args.rate * (1.0 - before))
-        print(f"{a} <-> {b}: {before:.3f} -> {graph.weight(a, b):.3f}")
-    graph.save_learned()
+    else:
+        _require_writable(paths)  # before printing changes that would not be saved
+        for a, b in combinations(ids, 2):
+            before = graph.weight(a, b)
+            graph.add_learned(pair(a, b), args.rate * (1.0 - before))
+            print(f"{a} <-> {b}: {before:.3f} -> {graph.weight(a, b):.3f}")
+        graph.save_learned()
+    # Committed here rather than left for the agent's note commit (AGENTS.md step
+    # 4): most tasks write no note, and the file would stay uncommitted for good.
+    graph.commit_learned("chore: update learned links")
 
 
 def cmd_stats(_args) -> None:
@@ -1177,6 +1287,7 @@ def cmd_decay(args) -> None:
     print(f"decayed {len(graph.own_learned)} learned edges on {graph.machine}, dropped {dropped}")
     graph.own_learned = kept
     graph.save_learned()
+    graph.commit_learned("chore: decay learned links")
 
 
 def cmd_tasks(args) -> None:

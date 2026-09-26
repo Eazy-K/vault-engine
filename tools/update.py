@@ -352,6 +352,7 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
 
 # --- update command: CI pin ---------------------------------------------------
 
+CI_WORKFLOW = ".github/workflows/vault.yml"
 _CI_PIN_RE = re.compile(r"(uses:\s*[\w.\-]+/vault-engine)@([^\s]+)")
 
 # The header comment that 0.1.0 and 0.2.0 shipped in vault.yml; the engine has
@@ -370,8 +371,8 @@ def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     <data>/.github/workflows/vault.yml) to the newly installed engine ref, so the
     guard workflow always matches the engine version in use. No-op if the
     workflow file is missing or doesn't have that line. Returns True if the file
-    was changed (the caller in the data repo must commit and push it)."""
-    path = data / ".github" / "workflows" / "vault.yml"
+    was changed; the change is committed on its own (pushing is left to the user)."""
+    path = data / CI_WORKFLOW
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
@@ -384,12 +385,23 @@ def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
         return False
     path.write_text(new_text, encoding="utf-8", newline="\n")
     if repin:
-        print(f"updated CI pin in {path}: @{m.group(2)} -> @{new_ref} "
-              "(commit and push this change in the data repo)")
+        print(f"updated CI pin in {path}: @{m.group(2)} -> @{new_ref}")
+        message = f"ci: run the vault-engine guard at {new_ref}"
     else:
-        print(f"updated the outdated comment in {path} "
-              "(commit and push this change in the data repo)")
+        print(f"updated the outdated comment in {path}")
+        message = "ci: update the vault-engine workflow comment"
+    _commit_in_vault(data, [CI_WORKFLOW], message)
     return True
+
+
+def _commit_in_vault(data: Path, files: list[str], message: str) -> None:
+    """Commit what update just wrote into the data repo (only those files),
+    so the next task's `git pull --rebase` finds a clean tree; pushing stays
+    with the user or their agent."""
+    outcome = g.commit_own_files(data, files, message)
+    g.report_commit(data, files, outcome)
+    if outcome[0] == "committed":
+        print("  push it if the data repo has a remote (git push)")
 
 
 # --- update command: AGENTS.md ------------------------------------------------
@@ -461,7 +473,10 @@ def _agents_diff(engine: Path, data: Path) -> str | None:
 def _write_agents(engine: Path, data: Path) -> None:
     template_text = (engine / "templates" / "AGENTS.md").read_text(encoding="utf-8")
     (data / "AGENTS.md").write_text(template_text, encoding="utf-8", newline="\n")
-    print(f"wrote {data / 'AGENTS.md'} (commit it in the data repo)")
+    print(f"wrote {data / 'AGENTS.md'}")
+    revision = _template_revision(template_text)
+    _commit_in_vault(data, ["AGENTS.md"], "docs: update AGENTS.md to the engine's template"
+                     + (f" ({revision})" if revision is not None else ""))
 
 
 def _handle_agents_md(engine: Path, data: Path, args) -> None:
