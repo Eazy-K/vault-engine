@@ -759,9 +759,17 @@ def detect_project(cwd: Path, paths: Paths) -> str | None:
 # KVKK personal data and secrets must never reach a vault repository.
 # Checksums (TCKN, IBAN, Luhn) keep random digit runs from raising false alarms.
 # Real people's names cannot be caught reliably by pattern; that part relies on
-# masking by the agent (standards/data-policy.md).
+# masking by the agent (defaults/standards/data-policy.md, the data-policy note).
 
 GUARD_IGNORE = "guard:ignore"
+
+
+def data_policy_hint() -> str:
+    """Where the data rules are, for block messages: the engine's default note
+    (the data repo has no standards/ folder unless the user adds one)."""
+    return f"the data-policy note, {(ENGINE / 'defaults' / 'standards' / 'data-policy.md').as_posix()}"
+
+
 EMAIL_ALLOW = re.compile(
     r"@(?:example\.(?:com|org|net)|anthropic\.com|users\.noreply\.github\.com)$", re.I)
 
@@ -871,7 +879,7 @@ def cmd_guard(args) -> None:
         print(f"{p}:{n}: possible {label}")
     if findings:
         sys.exit(f"blocked: {len(findings)} possible personal data / secret match(es). Mask them "
-                 f"(standards/data-policy.md) or, if a false alarm, add '{GUARD_IGNORE}' to the line.")
+                 f"(see {data_policy_hint()}) or, if a false alarm, add '{GUARD_IGNORE}' to the line.")
     print("guard: clean")
 
 
@@ -976,7 +984,7 @@ def cmd_leakcheck(args) -> None:
         print(f"{p}:{n}: possible {label}" if n else f"{p}: {label}")
     if findings:
         sys.exit(f"blocked: {len(findings)} leak risk(s). The engine repo must not contain user content "
-                 f"(it belongs in a data repo) or secrets (standards/data-policy.md); add "
+                 f"(it belongs in a data repo) or secrets (defaults/standards/data-policy.md); add "
                  f"'{GUARD_IGNORE}' to a line if it's a false alarm.")
     print("leakcheck: clean")
 
@@ -1075,8 +1083,11 @@ def cmd_query(args, content: bool) -> None:
             if hint:
                 print(hint)
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
-        print(f"<!-- when done: python \"{Path(__file__).resolve()}\" reinforce --task {task} "
-              f"<notes you actually used, or none> -->")
+        # The command ends the line and runs as shown, so an agent that copies it
+        # literally when no note helped still closes the task.
+        print(f"<!-- when done, append the ids of the notes that actually helped (if none "
+              f"did, append nothing): python \"{Path(__file__).resolve()}\" reinforce "
+              f"--task {task} -->")
 
 
 def cmd_index(_args) -> None:
@@ -1089,12 +1100,18 @@ def cmd_index(_args) -> None:
     print(f"{len(cache['notes'])} notes, {count} chunks embedded with {EMBED_MODEL}")
 
 
+# Accepted in place of an empty note list, unless a note has that name.
+NO_NOTES_WORDS = {"none"}
+
+
 def cmd_reinforce(args) -> None:
     paths = default_paths()
     graph = Graph(paths)
     ids = []
     for target in args.notes:
         nid, error = graph.resolve(target)
+        if error and target.strip().casefold() in NO_NOTES_WORDS:
+            continue  # `reinforce --task X none`: an agent saying no note helped
         if error:
             sys.exit(f"[[{target}]] {error}")
         if nid not in ids:

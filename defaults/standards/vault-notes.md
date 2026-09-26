@@ -37,13 +37,13 @@ weights:
 ## Folders
 - `profile/`: the user and their preferences
 - `projects/<project>/`: project information
-- `standards/`: conventions
+- `standards/`: conventions (the engine ships defaults in `$VAULT_ENGINE/defaults/standards/`; a vault note at the same relative path replaces one)
 - `notes/`: personal notes
 - `decisions/`: vault decisions (ADR)
 - `inbox/`: cross-machine task queue (see [[inbox]])
 
 ## Tool
-`python tools/graph.py <command>`
+`python "$VAULT_ENGINE/tools/graph.py" <command>`, from any folder (`context` recognizes the project from the folder it runs in)
 - `context`, `query`: load and list context (`--seed`, `--threshold`, `--budget`, `--no-semantic`, `--no-log`)
 - `show`: shows a note's edges
 - `reinforce --task <id>`, `decay`: learning

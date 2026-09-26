@@ -393,12 +393,64 @@ def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
 
 
 # --- update command: AGENTS.md ------------------------------------------------
+# The template ends with a revision line (TEMPLATE_MARKER_RE). A vault's AGENTS.md
+# that keeps that line after being translated or edited counts as based on that
+# revision, so only a newer template brings up a diff; a file without the line
+# is compared by content alone.
+
+TEMPLATE_MARKER_RE = re.compile(r"<!--\s*vault-engine AGENTS\.md template:\s*(\d+)\b")
+
+
+def _template_revision(text: str) -> int | None:
+    m = TEMPLATE_MARKER_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def _read_optional(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def agents_md_status(engine: Path, data: Path) -> tuple[str, str]:
+    """How <data>/AGENTS.md relates to the engine's templates/AGENTS.md, as
+    (state, message). States:
+      - "current": same text as the template;
+      - "customized": different text (translated or edited) but it keeps the
+        marker line of the template's current revision;
+      - "stale": behind the template (older or no marker, or different text
+        when the template has no marker);
+      - "newer": follows a newer template revision than this engine has;
+      - "missing": the vault has no AGENTS.md;
+      - "unknown": the engine has no template to compare with.
+    Shared by `update` and `doctor`; never raises."""
+    template = _read_optional(engine / "templates" / "AGENTS.md")
+    if template is None:
+        return "unknown", "the engine has no templates/AGENTS.md"
+    current = _read_optional(data / "AGENTS.md")
+    if current is None:
+        return "missing", f"{data / 'AGENTS.md'} does not exist"
+    if current == template:
+        return "current", "AGENTS.md matches this engine's template"
+    t_rev, d_rev = _template_revision(template), _template_revision(current)
+    if t_rev is not None and d_rev is not None:
+        if d_rev == t_rev:
+            return "customized", ("AGENTS.md is edited or translated, based on the current "
+                                  f"template ({t_rev})")
+        if d_rev > t_rev:
+            return "newer", (f"AGENTS.md follows template {d_rev}, newer than this engine's ({t_rev}): "
+                             "another computer runs a newer engine")
+    yours = f"yours: {d_rev}" if d_rev is not None else "yours has no template line"
+    theirs = f"template {t_rev}, " if t_rev is not None else ""
+    return "stale", f"AGENTS.md is behind this engine's template ({theirs}{yours})"
+
 
 def _agents_diff(engine: Path, data: Path) -> str | None:
     template = engine / "templates" / "AGENTS.md"
     target = data / "AGENTS.md"
-    t_text = template.read_text(encoding="utf-8") if template.exists() else ""
-    d_text = target.read_text(encoding="utf-8") if target.exists() else ""
+    t_text = _read_optional(template) or ""
+    d_text = _read_optional(target) or ""
     if t_text == d_text:
         return None
     diff = difflib.unified_diff(d_text.splitlines(keepends=True), t_text.splitlines(keepends=True),
@@ -406,43 +458,55 @@ def _agents_diff(engine: Path, data: Path) -> str | None:
     return "".join(diff)
 
 
-def _template_changed(engine: Path, old_ref: str | None, new_ref: str) -> bool:
-    """Whether templates/AGENTS.md differs between the two releases. Users often
-    translate or edit their AGENTS.md, so its diff against the template is only
-    worth showing when the template itself moved in this update."""
-    if not old_ref:
-        return True
-    try:
-        out = subprocess.run(["git", "diff", "--quiet", old_ref, new_ref, "--", "templates/AGENTS.md"],
-                             cwd=engine, capture_output=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return True
-    return out.returncode != 0
-
-
-def _handle_agents_md(engine: Path, data: Path, args, old_ref: str | None, new_ref: str) -> None:
-    if not _template_changed(engine, old_ref, new_ref):
-        return
-    diff = _agents_diff(engine, data)
-    if diff is None:
-        return
-    print("\nAGENTS.md differs from the new template:\n")
-    print(diff)
+def _write_agents(engine: Path, data: Path) -> None:
     template_text = (engine / "templates" / "AGENTS.md").read_text(encoding="utf-8")
+    (data / "AGENTS.md").write_text(template_text, encoding="utf-8", newline="\n")
+    print(f"wrote {data / 'AGENTS.md'} (commit it in the data repo)")
+
+
+def _handle_agents_md(engine: Path, data: Path, args) -> None:
+    """Compares the vault's AGENTS.md with the engine's template (whatever the
+    engine moved from). Without --apply-agents a diff is shown only when the file
+    is behind the template, so a translated file that keeps the marker line stays
+    quiet; --apply-agents replaces any file that differs, after showing the diff."""
+    state, message = agents_md_status(engine, data)
+    if state in ("current", "unknown"):
+        if args.apply_agents:
+            print(message if state == "unknown" else "AGENTS.md already matches the template")
+        return
+    if state == "newer":
+        print(message + ("; not replaced" if args.apply_agents else ""))
+        return
+    if state == "customized" and not args.apply_agents:
+        return
+    print(f"\n{message}. Diff from it to the template:\n")
+    print(_agents_diff(engine, data))
     if args.apply_agents:
-        (data / "AGENTS.md").write_text(template_text, encoding="utf-8", newline="\n")
-        print(f"wrote {data / 'AGENTS.md'}")
+        _write_agents(engine, data)
         return
     if not args.yes and g.stdin_is_interactive():
         try:
-            answer = input("Replace AGENTS.md with the new template? [y/N]: ").strip().lower()
+            answer = input("Replace AGENTS.md with the template? [y/N]: ").strip().lower()
         except EOFError:
             answer = ""
         if answer.startswith("y"):
-            (data / "AGENTS.md").write_text(template_text, encoding="utf-8", newline="\n")
-            print(f"wrote {data / 'AGENTS.md'}")
+            _write_agents(engine, data)
             return
-    print("review the diff above; rerun with --apply-agents to replace")
+    print("review the diff above; rerun with --apply-agents to replace "
+          "(a translated copy should keep the template line at the end)")
+
+
+def _agents_md_step(engine: Path, args) -> None:
+    """The AGENTS.md check on paths where the engine did not move (already up to
+    date, dev or unknown channel): a hand-upgraded vault still gets the diff, and
+    --apply-agents works there too."""
+    try:
+        data = g.default_paths().data
+    except SystemExit:
+        if args.apply_agents:
+            raise
+        return
+    _handle_agents_md(engine, data, args)
 
 
 # --- update command ------------------------------------------------------------
@@ -462,9 +526,12 @@ def cmd_update(args) -> None:
     if status == "dev":
         print(f"this is a development checkout (branch {ref}). "
               "Update it with: git pull, then `python tools/graph.py migrate` (if available). "
-              "No changes made.")
+              "The engine was not changed.")
+        _agents_md_step(engine, args)
         return
     if status != "stable":
+        if args.apply_agents:
+            _agents_md_step(engine, args)
         sys.exit("update: channel is unknown (not a git checkout of the engine); "
                  "update this manually (git clone / re-download).")
 
@@ -495,6 +562,7 @@ def cmd_update(args) -> None:
             _rewrite_ci_pin(g.default_paths().data, ref or target)
         except SystemExit:
             pass
+        _agents_md_step(engine, args)
         return
 
     is_upgrade = current_v is not None and target_v > current_v
@@ -545,7 +613,7 @@ def cmd_update(args) -> None:
     _rewrite_ci_pin(paths.data, target)
 
     ok = _run_post_checkout(engine, paths.data, target, is_upgrade, ref)
-    _handle_agents_md(engine, paths.data, args, ref, target)
+    _handle_agents_md(engine, paths.data, args)
     if not ok:
         sys.exit(1)
 
@@ -557,5 +625,6 @@ def register(sub) -> None:
     p.add_argument("--to", help="target tag (default: highest local tag after fetch)")
     p.add_argument("--yes", action="store_true", help="apply without an interactive confirmation")
     p.add_argument("--apply-agents", action="store_true",
-                   help="replace data/AGENTS.md with the new template (never done silently)")
+                   help="replace the data repo's AGENTS.md with the engine's template after "
+                        "showing the diff; also works when the engine is already up to date")
     p.set_defaults(func=cmd_update)
