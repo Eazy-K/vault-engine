@@ -385,6 +385,16 @@ after step 2.
    newer engine has upgraded. Until every computer is on 0.3.0 or later, don't install a
    release whose Upgrade notes say it raises the data schema.
 
+   If `doctor`'s `master`/`main` WARN (step 6) already ran on one computer, GitHub still
+   has `main` as an ordinary branch, not the repository's default, and `master` still
+   exists there — set `main` as the default branch once (GitHub: Settings > Branches, or
+   `gh repo edit --default-branch main`) and delete `master` (`git push origin --delete
+   master`), so pull requests and clones stop defaulting to it. On the next computer,
+   `git branch -m master main` followed by a plain push would be rejected (the first
+   computer already pushed `main`): pull it first, `git pull --rebase origin main`, then
+   push, or just follow the exact command `doctor` prints there, which includes the pull
+   when it can tell `main` already exists on the remote.
+
 ---
 
 ## Troubleshooting

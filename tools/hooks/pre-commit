@@ -1,5 +1,5 @@
 #!/bin/sh
 # Block commits that add KVKK personal data or secrets (the engine's defaults/standards/data-policy.md).
 HOOK_DIR=$(dirname "$0")
-PY=$(command -v python || command -v python3 || command -v py) || { echo "guard: python not found" >&2; exit 1; }
-exec "$PY" "$HOOK_DIR/../graph.py" guard --staged
+. "$HOOK_DIR/_find-python.sh"
+exec "$PYTHON_CMD" $PYTHON_ARGS "$HOOK_DIR/../graph.py" guard --staged

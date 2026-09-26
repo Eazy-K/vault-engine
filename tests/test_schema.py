@@ -393,6 +393,34 @@ class TestCmdMigrate(MigrateRepoCase):
         again = self._run()
         self.assertIn("nothing to migrate", again)
 
+    def test_data_flag_overrides_the_default_paths(self):
+        # A second, unrelated data repo the mocked default_paths knows nothing
+        # about; --data must still reach it (task 0014, finding 8).
+        self.commit_config({"feedback": {"level": "off"}})
+        other = self.tmp / "other-vault"
+        other_paths = graph.Paths(graph.ENGINE, other)
+        init_repo(other)
+        write_config(other_paths, {"feedback": {"level": "off"}})
+        git(["add", "vault.config.json"], other)
+        git(["commit", "-q", "-m", "initial"], other)
+
+        args = Namespace(yes=True, no_commit=False, dry_run=False, data=str(other))
+        with mock.patch.object(graph, "default_paths", return_value=self.paths), \
+             redirect_stdout(StringIO()) as buf:
+            schema.cmd_migrate(args)
+        self.assertIn("committed: chore: record vault schema 1", buf.getvalue())
+        self.assertEqual(json.loads(other_paths.config_file.read_text(encoding="utf-8"))["schema"], 1)
+        # The mocked default (self.data) was left untouched.
+        self.assertNotIn("schema", self.config())
+
+    def test_moving_project_roots_notes_other_computers(self):
+        root = self.tmp / "projects"
+        root.mkdir()
+        self.commit_config({"project_roots": [str(root)], "feedback": {"level": "off"}})
+        out = self._run()
+        self.assertIn("note: on other computers that use the same project root(s)", out)
+        self.assertIn("machine --project-root <path>", out)
+
     def test_dry_run_prints_plan_and_writes_nothing(self):
         self.commit_config({"feedback": {"level": "off"}})
         before = self.paths.config_file.read_bytes()
@@ -729,12 +757,49 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         out = self._run_doctor_on(("dev", "main"))
         self.assertNotIn("vault CI", out)
 
-    def test_master_branch_never_triggers_ci(self):
+    def test_master_branch_without_a_remote_only_suggests_the_rename(self):
+        # No `git remote` here: a push command would just fail, so the WARN
+        # stops at the rename (task 0014, finding 4).
         self._workflow("main")
         self._on_branch("master")
         out = self._run_doctor_on(("dev", "main"))
         self.assertIn("WARN vault CI runs on pushes to main, but the data repo is on master, "
-                      "so CI never runs: git branch -m master main && git push -u origin main", out)
+                      "so CI would never run once a remote is added: git branch -m master main",
+                      out)
+        self.assertNotIn("git push", out)
+
+    def test_master_branch_with_a_remote_suggests_push_and_default_branch(self):
+        self._workflow("main")
+        self._on_branch("master")
+        git(["remote", "add", "origin", "https://example.invalid/owner/vault.git"], self.data)
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("git branch -m master main && git push -u origin main", out)
+        self.assertNotIn("pull --rebase", out)
+        self.assertIn("set main as the GitHub default branch and delete master", out)
+
+    def test_master_branch_pulls_first_when_origin_main_is_already_known(self):
+        # A second computer: the first one already renamed and pushed `main`,
+        # so a plain push here would be rejected (task 0014, finding 3).
+        self._workflow("main")
+        self._on_branch("master")
+        git(["commit", "--allow-empty", "-q", "-m", "x"], self.data)
+        sha = git(["rev-parse", "HEAD"], self.data).stdout.strip()
+        git(["remote", "add", "origin", "https://example.invalid/owner/vault.git"], self.data)
+        git(["update-ref", "refs/remotes/origin/main", sha], self.data)
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn("git branch -m master main && git pull --rebase origin main && "
+                      "git push -u origin main", out)
+
+    def test_engine_repo_placeholder_left_in_place_is_warned(self):
+        path = self.data / ".github" / "workflows" / "vault.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("name: vault guard\non:\n  push:\n    branches: [main]\n  pull_request:\n\n"
+                        "jobs:\n  guard:\n    runs-on: ubuntu-latest\n    steps:\n"
+                        f"      - uses: {onboarding.ENGINE_REPO_PLACEHOLDER}@main\n",
+                        encoding="utf-8", newline="\n")
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertIn(f"WARN vault CI workflow still has the {onboarding.ENGINE_REPO_PLACEHOLDER} "
+                      "placeholder", out)
 
     def test_agents_md_behind_the_template(self):
         # setUp's "root\n" stands for an AGENTS.md from before the template line.

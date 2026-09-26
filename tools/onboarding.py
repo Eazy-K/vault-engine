@@ -258,7 +258,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     if target == g.ENGINE.resolve() or g.ENGINE.resolve() in target.parents:
         sys.exit(f"refusing to create a data repo inside the engine ({g.ENGINE})")
     enclosing = _enclosing_repo(target)
-    if enclosing is not None and not (target.is_dir() and _same_path(str(enclosing), str(target))):
+    is_own_root = target.is_dir() and enclosing is not None and _same_path(str(enclosing), str(target))
+    if enclosing is not None and not is_own_root:
         # Its hooks setting and commits would land in that other repo (e.g. turning off husky).
         sys.exit(f"refusing to create a data repo inside another git repo ({enclosing}): "
                  "init would change that repo's settings. Pick a folder outside it, "
@@ -271,6 +272,15 @@ def cmd_init(args: argparse.Namespace) -> None:
         # Only a vault that already has a config can conflict with a newer
         # engine's layout; a brand-new one has nothing to protect yet.
         g._require_writable(g.Paths(g.ENGINE, target))
+    elif is_own_root and _has_commits(target) and not getattr(args, "force", False):
+        # target is a git repo's own root (not a subfolder of one), already has
+        # commits, and has no vault.config.json/AGENTS.md of its own: it looks
+        # like someone's code repo, not a fresh or existing data repo. Writing
+        # templates and core.hooksPath into it (e.g. overriding an existing
+        # husky setup) would be a surprising side effect.
+        sys.exit(f"refusing to write vault-engine files into {target}: it is a git repo with "
+                 "commits and is not already a data repo (no vault.config.json). Pass --force "
+                 "if you really want to turn it into one, or pick an empty folder.")
 
     target.mkdir(parents=True, exist_ok=True)
     copied, skipped = _copy_templates(target)
@@ -778,6 +788,10 @@ def cmd_machine(args: argparse.Namespace) -> None:
         print(f"  wrote: .graph/machine.json ({', '.join(updates)}); nothing else was changed")
         if "machine" in updates and g.sanitize_machine_name(os.environ.get("VAULT_MACHINE", "")):
             print("  note: VAULT_MACHINE is set and wins over this name")
+        if "project_roots" in updates:
+            print("  note: this replaces the saved project root list on this computer (not "
+                  "merged with the previous one); run `setup --data <this data repo>` to add "
+                  "CLAUDE.md routing for any new root")
         _rename_hint(data, before, g.machine_name(paths))
 
     saved = _machine_json(data)
@@ -816,14 +830,40 @@ _CI_PIN_RE = re.compile(r"uses:\s*[\w.\-]+/vault-engine@(\S+)")
 _CI_PUSH_BRANCHES_RE = re.compile(r"^\s*push:[ \t]*\n\s*branches:\s*\[([^\]]*)\]", re.M)
 
 
+def _has_remote(data: Path) -> bool:
+    try:
+        out = subprocess.run(["git", "remote"], cwd=data, capture_output=True, text=True,
+                              encoding="utf-8")
+    except OSError:
+        return False
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
+def _local_ref_exists(data: Path, ref: str) -> bool:
+    """True if `ref` is known locally (e.g. refs/remotes/origin/main from an
+    earlier fetch); never fetches, so this stays a fast, offline check."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=data,
+                              capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        return False
+    return out.returncode == 0
+
+
 def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[tuple[str, str]]:
     """Problems an older vault's CI workflow carries over: the engine pin lags
-    behind a stable install, or the data repo is on a branch the workflow never
-    runs on (v0.2.0 vaults were often created on `master`)."""
+    behind a stable install, the data repo is on a branch the workflow never
+    runs on (v0.2.0 vaults were often created on `master`), or `init` never
+    found a GitHub remote to fill the engine repo placeholder in."""
     text = _read_text(data / ".github" / "workflows" / "vault.yml")
     if not text:
         return []
     found: list[tuple[str, str]] = []
+    if ENGINE_REPO_PLACEHOLDER in text:
+        found.append(("WARN", f"vault CI workflow still has the {ENGINE_REPO_PLACEHOLDER} "
+                              "placeholder (no GitHub remote found when init ran): edit "
+                              ".github/workflows/vault.yml and set `uses:` to "
+                              "<owner>/vault-engine@<ref> by hand, then commit and push"))
     pin = _CI_PIN_RE.search(text)
     if channel == "stable" and engine_ref and pin and pin.group(1) != engine_ref:
         found.append(("WARN", f"vault CI runs the engine at @{pin.group(1)}, this engine is "
@@ -839,9 +879,22 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
         branch = ""
     if branch and branches and branch not in branches:
         target = "main" if "main" in branches else branches[0]
-        found.append(("WARN", f"vault CI runs on pushes to {', '.join(branches)}, but the data "
-                              f"repo is on {branch}, so CI never runs: git branch -m {branch} "
-                              f"{target} && git push -u origin {target}"))
+        if not _has_remote(data):
+            # No remote to push to yet (or to run CI at all): renaming the
+            # branch is all that applies here.
+            found.append(("WARN", f"vault CI runs on pushes to {', '.join(branches)}, but the "
+                                  f"data repo is on {branch}, so CI would never run once a "
+                                  f"remote is added: git branch -m {branch} {target}"))
+        else:
+            pull = (f" && git pull --rebase origin {target}"
+                    if _local_ref_exists(data, f"refs/remotes/origin/{target}") else "")
+            found.append(("WARN", f"vault CI runs on pushes to {', '.join(branches)}, but the "
+                                  f"data repo is on {branch}, so CI never runs: git branch -m "
+                                  f"{branch} {target}{pull} && git push -u origin {target}; then "
+                                  f"set {target} as the GitHub default branch and delete "
+                                  f"{branch} (Settings > Branches, or `gh repo edit "
+                                  f"--default-branch {target}` and `git push origin --delete "
+                                  f"{branch}`)"))
     return found
 
 
@@ -1021,7 +1074,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             if claude_md.exists() and _routes_to(claude_md, data):
                 check("OK", f"routing present for {root}")
             else:
-                check("WARN", f"routing missing for {root}")
+                check("WARN", f"routing missing for {root}: run "
+                              f"setup --data \"{data}\" (writes {claude_md} if it doesn't "
+                              "exist yet, or add the routing line to it by hand)")
 
     try:
         models = g.ollama_models()
@@ -1351,6 +1406,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--feedback-mode", choices=FEEDBACK_MODES)
     p.add_argument("--project-root", action="append", help="repeatable")
     p.add_argument("--yes", action="store_true", help="never prompt, use defaults")
+    p.add_argument("--force", action="store_true",
+                   help="write into a git repo that already has commits and is not a data repo")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("setup", help="wire env vars, agents and routing to this engine")
