@@ -414,7 +414,7 @@ def _handle_agents_md(engine: Path, data: Path, args, old_ref: str | None, new_r
         (data / "AGENTS.md").write_text(template_text, encoding="utf-8", newline="\n")
         print(f"wrote {data / 'AGENTS.md'}")
         return
-    if not args.yes and sys.stdin.isatty():
+    if not args.yes and g.stdin_is_interactive():
         try:
             answer = input("Replace AGENTS.md with the new template? [y/N]: ").strip().lower()
         except EOFError:
@@ -501,12 +501,14 @@ def cmd_update(args) -> None:
                      "corrupt it. Update the engine on this computer instead.")
 
     if not args.yes:
-        if sys.stdin.isatty():
+        if g.stdin_is_interactive():
             try:
                 answer = input(f"Proceed with the {'upgrade' if is_upgrade else 'downgrade'} "
                                f"to {target}? [y/N]: ").strip().lower()
             except EOFError:
-                answer = ""
+                print()
+                sys.exit("update: no answer (input ended), nothing changed; "
+                         "rerun with --yes to apply.")
             if not answer.startswith("y"):
                 print("update: cancelled")
                 return

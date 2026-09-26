@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -24,6 +25,15 @@ from unittest import mock
 
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
+
+
+# Nor through the Windows registry, where graph finds the VAULT_DATA that setup
+# saved for the user: every test sees an empty HKCU\Environment instead.
+def _no_registry(*_args):
+    raise OSError("tests never read the real registry")
+
+
+sys.modules["winreg"] = types.SimpleNamespace(HKEY_CURRENT_USER=None, OpenKey=_no_registry)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -406,6 +416,28 @@ class TestUpdatePreviewAndNonTty(UpdateTestCase):
         self.assertNotIn("makeronepointoh", out)
         self.assertIn("Upgrade notes", out)
         # no checkout happened
+        self.assertEqual(self.head_tag(), "v0.1.0")
+
+    def test_nul_stdin_on_windows_is_not_a_terminal(self):
+        # `update < NUL`: isatty() is True for NUL on Windows.
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch.object(update.g, "_is_windows", return_value=True), \
+             mock.patch.object(update.g, "_is_console", return_value=False), \
+             mock.patch("builtins.input") as prompt, redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                update.cmd_update(Args())
+        self.assertIn("--yes", str(ctx.exception.code))
+        prompt.assert_not_called()
+        self.assertEqual(self.head_tag(), "v0.1.0")
+
+    def test_end_of_input_at_the_prompt_is_not_a_cancel(self):
+        # Before: "update: cancelled", exit 0, as if the user had said no.
+        with mock.patch.object(update.g, "stdin_is_interactive", return_value=True), \
+             mock.patch("builtins.input", side_effect=EOFError), redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                update.cmd_update(Args())
+        self.assertIn("nothing changed", str(ctx.exception.code))
+        self.assertIn("--yes", str(ctx.exception.code))
         self.assertEqual(self.head_tag(), "v0.1.0")
 
 

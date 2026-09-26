@@ -20,8 +20,19 @@ assume any of that knowledge. Follow this guide step by step.
 - If a command fails, show the user the plain-English reason and offer to retry, skip,
   or stop — don't loop silently.
 
-Commands below use `python`; if the user's `python` is Python 2 or missing, try
-`python3` first.
+Commands below use `python`. If the user's `python` is Python 2 or missing, use
+`python3` on macOS/Linux and `py -3` on Windows (there `python3` may only open the
+Microsoft Store).
+
+On Windows, find out which shell your commands run in (Git Bash, PowerShell or cmd):
+environment variables and the `reg` command are written differently in each.
+
+| Windows | Git Bash | PowerShell | cmd |
+|---|---|---|---|
+| Use a variable | `$VAULT_ENGINE` | `$env:VAULT_ENGINE` | `%VAULT_ENGINE%` |
+| Read the value `setup` saved for the user | `MSYS_NO_PATHCONV=1 reg query 'HKCU\Environment' /v VAULT_ENGINE` | `reg query HKCU\Environment /v VAULT_ENGINE` | `reg query HKCU\Environment /v VAULT_ENGINE` |
+
+The commands in the steps below work as written in all three.
 
 ---
 
@@ -46,6 +57,9 @@ If the user wants Ollama, after installing run:
 ```
 ollama pull bge-m3
 ```
+
+If `python` or `git` is still not found right after a `winget install`, the open terminal
+has the old `PATH`: ask the user to restart the terminal and the agent, then continue.
 
 If they skip `gh` or Ollama, say plainly that everything still works — backups just
 stay local, and search falls back to keyword matching.
@@ -76,10 +90,16 @@ Tell the user this downloads the vault-engine program itself (no personal data i
 ```
 git clone https://github.com/Eazy-K/vault-engine.git "<projects folder>/vault-engine"
 cd "<projects folder>/vault-engine"
-git checkout "$(git describe --tags --abbrev=0)"
+git describe --tags --abbrev=0
 ```
 
-The last command switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet, skip it. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
+The last command prints the latest released version, for example `v0.3.0`. Switch to it:
+
+```
+git checkout <the tag it printed>
+```
+
+This switches to the latest released version, so the user never gets unfinished work from `main`. If the repository has no release tags yet (`git describe` says `No names found`), skip the checkout. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
 
 ---
 
@@ -185,7 +205,11 @@ this to the user. On macOS/Linux, it asks first, then writes `VAULT_ENGINE`/`VAU
 into the shell startup file it detects (`~/.zshrc`, `~/.bashrc`/`~/.bash_profile` on macOS,
 the fish config, or `~/.profile`), inside a clearly marked `# >>> vault-engine >>>` block.
 Either way, tell the user to restart their open terminal(s) and any coding agent
-(Claude Code, Codex) afterward — they only see the new values after that restart.
+(Claude Code, Codex) after the install — they only see the new values after that restart.
+
+That includes you: this session keeps running without `VAULT_ENGINE`/`VAULT_DATA`. Finish
+the install without restarting; the next steps pass `--data` and use full paths for that
+reason.
 
 ---
 
@@ -206,24 +230,29 @@ just say "that's fine."
    `extra` (free text, optional).
 2. Ask the user each question conversationally (translate into their language; a couple
    at a time, not all at once), propose a default, accept their answer or the default.
-3. Write the answers as JSON to a **temporary file outside any repo**, e.g. your own
-   scratch/temp directory, not inside the engine or data folder.
+3. Write the answers as JSON (UTF-8; a BOM is fine) to a **temporary file outside any
+   repo**, e.g. your own scratch/temp directory, not inside the engine or data folder.
 4. Save the profile:
    ```
-   python "<projects folder>/vault-engine/tools/graph.py" onboard --answers "<temp file path>"
+   python "<projects folder>/vault-engine/tools/graph.py" onboard --answers "<temp file path>" --data "<projects folder>/vault"
    ```
 5. Delete the temporary file afterward.
+
+Don't run `onboard` without `--questions` or `--answers`: it only asks its questions in a
+terminal where a person types the answers, and otherwise stops without writing anything.
 
 ---
 
 ## Step 8 — Health check
 
 ```
-python "<projects folder>/vault-engine/tools/graph.py" doctor
+python "<projects folder>/vault-engine/tools/graph.py" doctor --data "<projects folder>/vault"
 ```
 Each line is `OK`, `WARN`, `FAIL`, or `INFO`. Fix what you reasonably can (e.g. rerun a
 skipped step), explain anything you can't fix (e.g. "Ollama not running" is fine to
 leave — see Troubleshooting), and don't treat `INFO`/optional `WARN`s as failures.
+In this session, `WARN` lines saying `VAULT_ENGINE`/`VAULT_DATA` are set but not in this
+process (or not set) are expected: they go away once the terminal and agent restart.
 
 ---
 
@@ -313,7 +342,16 @@ after step 2.
 - **`python` / `python3` not found**: the user needs to install Python (step 0) and
   possibly restart their terminal.
 - **Windows: env vars don't seem set after `setup`**: `setx` only applies to *new*
-  terminals — close and reopen, or restart the coding agent.
+  terminals — close and reopen, or restart the coding agent. Until then, engine commands
+  that need the data repo use the `VAULT_DATA` saved for the user (and print a note), and
+  you can read both saved values with the `reg query` line from the table at the top of
+  this guide. In PowerShell, `$VAULT_ENGINE` is always empty: use `$env:VAULT_ENGINE`.
+- **`onboard` says "not an interactive terminal"** (or `update`/`migrate` say to rerun
+  with `--yes`): the command had no terminal to ask in — normal for an agent, also when
+  its input is `NUL` or `/dev/null`. Nothing was written. Use `onboard --questions` /
+  `--answers` (Step 7), or ask the user, then rerun `update`/`migrate` with `--yes`.
+- **`onboard --answers` says "already filled, skipped"**: the profile notes were filled
+  before (by hand or an earlier run) and were kept. Rerun with `--force` to replace them.
 - **Codex on Windows can't run commands**: Codex's sandbox may need
   `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml` to execute the
   commands in this guide. Explain the trade-off plainly — this gives Codex

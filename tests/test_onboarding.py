@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import types
 import tempfile
 import unittest
 from argparse import Namespace
@@ -24,6 +25,15 @@ from pathlib import Path
 # (a missing patch then fails loudly instead of writing into it).
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
+
+
+# Nor through the Windows registry, where graph finds the VAULT_DATA that setup
+# saved for the user: every test sees an empty HKCU\Environment instead.
+def _no_registry(*_args):
+    raise OSError("tests never read the real registry")
+
+
+sys.modules["winreg"] = types.SimpleNamespace(HKEY_CURRENT_USER=None, OpenKey=_no_registry)
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -97,6 +107,15 @@ class TestInit(unittest.TestCase):
 
         hooks_path = git(["config", "core.hooksPath"], target).stdout.strip()
         self.assertEqual(hooks_path, (graph.ENGINE / "tools" / "hooks").as_posix())
+
+    def test_next_steps_lead_agents_to_questions_and_answers(self):
+        # An agent's stdin isn't a terminal; plain `onboard` can't ask it anything.
+        target = self.tmp / "example-data-next"
+        with redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_init(self._args(target))
+        out = buf.getvalue()
+        self.assertIn("onboard --questions", out)
+        self.assertIn(f'onboard --answers <answers.json> --data "{target}"', out)
 
     def test_default_feedback_is_off(self):
         target = self.tmp / "example-data2"
@@ -202,7 +221,7 @@ class TestInit(unittest.TestCase):
     def test_interactive_answer_same_as_default_writes_nothing(self):
         target = self.tmp / "example-data-proot-default"
         default = str(graph.ENGINE.parent)
-        with mock.patch("sys.stdin.isatty", return_value=True), \
+        with mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=True), \
              mock.patch("builtins.input", return_value=""), \
              redirect_stdout(StringIO()):
             onboarding.cmd_init(self._args(target, yes=False))
@@ -413,6 +432,21 @@ class TestSetup(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIn("already set", buf.getvalue())
 
+    def test_env_rerun_in_the_same_session_skips_setx(self):
+        # setup ran before in this session: setx saved both values, but this
+        # process (started earlier) still has neither in its environment.
+        calls = []
+        saved = {"VAULT_ENGINE": str(graph.ENGINE), "VAULT_DATA": str(self.data)}
+        with mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding._set_user_env_var", side_effect=lambda n, v: calls.append(n)), \
+             mock.patch("onboarding._user_env_var", side_effect=saved.get), \
+             mock.patch("onboarding._is_windows", return_value=True), \
+             mock.patch.dict(os.environ, {}, clear=True), \
+             redirect_stdout(StringIO()) as buf:
+            onboarding.cmd_setup(self._args(no_env=False, yes=True))
+        self.assertEqual(calls, [])
+        self.assertIn("VAULT_DATA already saved for your user", buf.getvalue())
+
 
 class TestDoctorTools(unittest.TestCase):
     def _run(self, installed: set[str]) -> str:
@@ -523,6 +557,54 @@ class TestDoctor(unittest.TestCase):
     def test_user_env_var_is_none_off_windows(self):
         with mock.patch("onboarding._is_windows", return_value=False):
             self.assertIsNone(onboarding._user_env_var("VAULT_ENGINE"))
+
+    def _doctor_without_vault_data(self, saved: dict, data: str | None = None,
+                                   windows: bool = True, shell: str = "") -> tuple[int, str]:
+        env = self._env()
+        del env["VAULT_DATA"]
+        env["SHELL"] = shell
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("onboarding._user_env_var", side_effect=lambda name: saved.get(name)), \
+             mock.patch("onboarding._is_windows", return_value=windows), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit) as ctx:
+                onboarding.cmd_doctor(Namespace(data=data))
+        return ctx.exception.code, buf.getvalue()
+
+    def test_data_flag_checks_the_vault_without_vault_data(self):
+        # Same session as setup: VAULT_DATA isn't in this process yet.
+        code, out = self._doctor_without_vault_data({}, data=str(self.data))
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARN VAULT_DATA not set: run setup --data", out)
+        self.assertIn(f"OK   data dir has AGENTS.md ({self.data})", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_value_saved_for_the_user_is_checked_with_a_restart_hint(self):
+        code, out = self._doctor_without_vault_data({"VAULT_DATA": str(self.data)})
+        self.assertEqual(code, 0, out)
+        self.assertIn("WARN VAULT_DATA is set for the user but not in this process: "
+                      "restart the terminal and the agent", out)
+        self.assertIn(f"OK   data dir has AGENTS.md ({self.data})", out)
+
+    def test_no_vault_data_anywhere_fails_and_names_data_flag(self):
+        code, out = self._doctor_without_vault_data({})
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL VAULT_DATA (or VAULT_HOME) not set", out)
+        self.assertIn("--data", out)
+        self.assertNotIn("data dir has", out)
+
+    def test_rc_block_without_data_flag_gives_restart_hint(self):
+        rc = self.home / ".bashrc"
+        onboarding._write_rc_block(rc, [("VAULT_DATA", str(self.data))], "bash")
+        code, out = self._doctor_without_vault_data({}, windows=False, shell="/bin/bash")
+        self.assertEqual(code, 1)
+        self.assertIn(f"FAIL VAULT_DATA is set in {rc} but not in this process", out)
+        code, out = self._doctor_without_vault_data({}, data=str(self.data), windows=False,
+                                                    shell="/bin/bash")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"WARN VAULT_DATA is set in {rc} but not in this process", out)
 
 
 class TestOnboardQuestions(unittest.TestCase):
@@ -668,9 +750,40 @@ class TestOnboardAnswers(unittest.TestCase):
         self._run({"chat_language": "Turkish"})
         out = self._run({"chat_language": "German"})
         self.assertIn("already filled", out)
+        self.assertIn("--force", out)
         lang_body = (self.data / "profile" / "language.md").read_text(encoding="utf-8")
         self.assertIn("Talk in Turkish.", lang_body)
         self.assertNotIn("Talk in German.", lang_body)
+
+    def test_answers_file_with_bom_is_accepted(self):
+        # PowerShell 5.1: Set-Content -Encoding UTF8 writes a BOM first.
+        path = self.tmp / "answers-bom.json"
+        path.write_text(json.dumps({"chat_language": "Turkish"}), encoding="utf-8-sig")
+        with redirect_stdout(StringIO()):
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(path),
+                                             data=str(self.data), force=False))
+        self.assertIn("Talk in Turkish.",
+                      (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
+
+    def _bad_answers(self, content: str | None) -> str:
+        path = self.tmp / "answers-bad.json"
+        if content is not None:
+            path.write_text(content, encoding="utf-8")
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as ctx:
+            onboarding.cmd_onboard(Namespace(questions=False, answers=str(path),
+                                             data=str(self.data), force=False))
+        self.assertIn(onboarding.SKELETON_MARKER,
+                      (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
+        return str(ctx.exception.code)
+
+    def test_broken_json_is_a_clear_error(self):
+        self.assertIn("not valid JSON", self._bad_answers('{"chat_language": '))
+
+    def test_json_that_is_not_an_object_is_a_clear_error(self):
+        self.assertIn("one JSON object", self._bad_answers('["Turkish"]'))
+
+    def test_missing_answers_file_is_a_clear_error(self):
+        self.assertIn("cannot read the answers file", self._bad_answers(None))
 
     def test_force_overwrites_already_filled_note(self):
         self._run({"chat_language": "Turkish"})
@@ -681,12 +794,61 @@ class TestOnboardAnswers(unittest.TestCase):
 
 
 class TestOnboardNonInteractive(unittest.TestCase):
-    def test_no_flags_non_tty_prints_hint(self):
-        with mock.patch("sys.stdin.isatty", return_value=False), redirect_stdout(StringIO()) as buf, \
-             mock.patch.dict(os.environ, {"VAULT_DATA": str(Path(tempfile.mkdtemp()))}, clear=False):
-            onboarding.cmd_onboard(Namespace(questions=False, answers=None, data=None, force=False))
-        self.assertIn("--questions", buf.getvalue())
-        self.assertIn("--answers", buf.getvalue())
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.data = self.tmp / "example-data"
+        (self.data / "profile").mkdir(parents=True)
+        for name in ("language.md", "working-style.md"):
+            shutil.copy2(REPO_ROOT / "templates" / "profile" / name, self.data / "profile" / name)
+
+    def _onboard(self) -> str:
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as ctx:
+            onboarding.cmd_onboard(Namespace(questions=False, answers=None,
+                                             data=str(self.data), force=False))
+        return str(ctx.exception.code)
+
+    def assert_untouched(self):
+        for name in ("language.md", "working-style.md"):
+            self.assertIn(onboarding.SKELETON_MARKER,
+                          (self.data / "profile" / name).read_text(encoding="utf-8"))
+
+    def test_no_flags_non_tty_stops_with_hint(self):
+        with mock.patch("sys.stdin.isatty", return_value=False):
+            message = self._onboard()
+        self.assertIn("nothing written", message)
+        self.assertIn("--questions", message)
+        self.assertIn("--answers", message)
+        self.assert_untouched()
+
+    def test_nul_stdin_on_windows_is_not_a_terminal(self):
+        # `onboard < NUL` (or `</dev/null` in Git Bash): isatty() says True there.
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch.object(onboarding.g, "_is_windows", return_value=True), \
+             mock.patch.object(onboarding.g, "_is_console", return_value=False):
+            message = self._onboard()
+        self.assertIn("not an interactive terminal", message)
+        self.assert_untouched()
+
+    def test_end_of_input_mid_questions_writes_nothing(self):
+        # Before: every prompt fell back to its default on EOF, the default
+        # profile was written, and a later `--answers` run was skipped.
+        with mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=True), \
+             mock.patch("builtins.input", side_effect=["Turkish", EOFError()]):
+            message = self._onboard()
+        self.assertIn("input ended", message)
+        self.assertIn("--answers", message)
+        self.assert_untouched()
+
+    def test_interactive_answers_are_written(self):
+        answers = iter(["Turkish"])
+        with mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=True), \
+             mock.patch("builtins.input", side_effect=lambda _p: next(answers, "")), \
+             redirect_stdout(StringIO()):
+            onboarding.cmd_onboard(Namespace(questions=False, answers=None,
+                                             data=str(self.data), force=False))
+        self.assertIn("Talk in Turkish.",
+                      (self.data / "profile" / "language.md").read_text(encoding="utf-8"))
 
 
 class TestOnboardDoctorIntegration(unittest.TestCase):

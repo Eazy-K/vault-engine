@@ -40,11 +40,14 @@ SKELETON_MARKER = "<!-- vault:skeleton -->"
 
 # --- shared helpers ------------------------------------------------------------
 
-def _ask(prompt: str, default: str) -> str:
-    """Prompt with a shown default; EOF (non-interactive stdin) falls back to it."""
+def _ask(prompt: str, default: str, strict: bool = False) -> str:
+    """Prompt with a shown default; EOF (non-interactive stdin) falls back to it,
+    or, with strict=True, is raised so the caller can stop without writing."""
     try:
         raw = input(f"{prompt} [{default}]: ").strip()
     except EOFError:
+        if strict:
+            raise
         return default
     return raw or default
 
@@ -61,7 +64,7 @@ def _ask_yn(prompt: str, default: bool) -> bool:
 
 
 def _is_interactive(args: argparse.Namespace) -> bool:
-    return sys.stdin.isatty() and not args.yes
+    return not args.yes and g.stdin_is_interactive()
 
 
 def _is_git_repo(path: Path) -> bool:
@@ -327,10 +330,13 @@ def cmd_init(args: argparse.Namespace) -> None:
     if not had_commits:
         _initial_commit(target)
 
+    graph_py = g.ENGINE / "tools" / "graph.py"
     print("\nNext steps:")
-    print(f"  1. python \"{g.ENGINE / 'tools' / 'graph.py'}\" setup --data \"{target}\"")
-    print(f"  2. python \"{g.ENGINE / 'tools' / 'graph.py'}\" onboard --data \"{target}\""
-          "   (a few questions that fill in your profile)")
+    print(f"  1. python \"{graph_py}\" setup --data \"{target}\"")
+    print("  2. fill in your profile with a few questions:")
+    print(f"     agent: python \"{graph_py}\" onboard --questions, ask the user, then")
+    print(f"            python \"{graph_py}\" onboard --answers <answers.json> --data \"{target}\"")
+    print(f"     terminal: python \"{graph_py}\" onboard --data \"{target}\"")
 
 
 # --- setup -----------------------------------------------------------------------
@@ -346,12 +352,7 @@ def _user_env_var(name: str) -> str | None:
     started before setx, such as an open terminal or agent, don't see it."""
     if not _is_windows():
         return None
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            return str(winreg.QueryValueEx(key, name)[0])
-    except (ImportError, OSError):
-        return None
+    return g.user_env_var(name)
 
 
 def _same_path(a: str, b: str) -> bool:
@@ -456,6 +457,18 @@ def _setup_env(data: Path, interactive: bool, assume_yes: bool = False) -> None:
     for name, value in pairs:
         if (name, value) not in pending:
             print(f"  ok: {name} already set")
+    if _is_windows():
+        # A rerun in the same session: setx already saved it, only this process
+        # (started before) can't see it yet.
+        still_pending = []
+        for name, value in pending:
+            saved = _user_env_var(name)
+            if saved and _same_path(saved, value):
+                print(f"  ok: {name} already saved for your user "
+                      "(restart terminals and agents to load it)")
+            else:
+                still_pending.append((name, value))
+        pending = still_pending
     if not pending:
         return
     if _is_windows():
@@ -473,7 +486,7 @@ def _setup_env(data: Path, interactive: bool, assume_yes: bool = False) -> None:
                 print(f"  export {name}={value}")
     else:
         rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
-        is_tty = sys.stdin.isatty()
+        is_tty = g.stdin_is_interactive()
         if is_tty and not assume_yes:
             do_it = _ask_yn(f"Write these to {rc_path}?", True)
         else:
@@ -579,7 +592,7 @@ def _lint_summary(data: Path) -> tuple[bool, str]:
     ok = True
     try:
         with redirect_stdout(buf):
-            g.cmd_lint(argparse.Namespace())
+            g.cmd_lint(argparse.Namespace(), g.Paths(g.ENGINE, data))
     except SystemExit as exc:
         ok = not exc.code
     lines = [l for l in buf.getvalue().splitlines() if l.strip()]
@@ -628,11 +641,40 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
     return found
 
 
-def cmd_doctor(_args: argparse.Namespace) -> None:
+def _doctor_data_dir(data_arg: str | None,
+                     rc_path: Path) -> tuple[Path | None, list[tuple[str, str]]]:
+    """The data dir doctor checks and the VAULT_DATA lines to report. --data wins;
+    otherwise VAULT_DATA/VAULT_HOME, then (Windows) the value setx saved for the
+    user, which a terminal or agent started before setup can't see yet."""
+    data = Path(data_arg).expanduser().resolve() if data_arg else None
+    raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+    if raw:
+        if data is not None and not _same_path(raw, str(data)):
+            return data, [("WARN", f"VAULT_DATA={raw} != --data {data}")]
+        return data or Path(raw).expanduser().resolve(), []
+    saved = _user_env_var("VAULT_DATA") or _user_env_var("VAULT_HOME")
+    if saved:
+        return data or Path(saved).expanduser().resolve(), [
+            ("WARN", "VAULT_DATA is set for the user but not in this process: "
+                     "restart the terminal and the agent")]
+    if not _is_windows() and _rc_block_present(rc_path, "VAULT_DATA"):
+        msg = (f"VAULT_DATA is set in {rc_path} but not in this process: "
+               "restart the terminal and the agent")
+        return data, [("WARN", msg) if data else ("FAIL", msg + " (or pass --data)")]
+    if data is not None:
+        return data, [("WARN", "VAULT_DATA not set: run setup --data")]
+    return None, [("FAIL", "VAULT_DATA (or VAULT_HOME) not set: run setup --data, "
+                           "or pass --data to doctor")]
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
     checks: list[tuple[str, str]] = []
 
     def check(status: str, msg: str) -> None:
         checks.append((status, msg))
+
+    rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
+    data, data_checks = _doctor_data_dir(getattr(args, "data", None), rc_path)
 
     check("OK", f"vault-engine {g.__version__}")
 
@@ -647,12 +689,8 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         else:
             check("INFO", "channel: unknown (not a git checkout)")
         if status == "stable":
-            try:
-                update_data = g.resolve_data_dir()
-            except SystemExit:
-                update_data = None
-            settings = (update.load_settings(g.Paths(g.ENGINE, update_data))
-                       if update_data is not None else dict(update.DEFAULT_SETTINGS))
+            settings = (update.load_settings(g.Paths(g.ENGINE, data))
+                        if data is not None else dict(update.DEFAULT_SETTINGS))
             if settings.get("check", True):
                 latest = update.record_check(g.ENGINE)
                 if latest is None:
@@ -681,7 +719,6 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         check("INFO", "ollama CLI not found (keyword-only search unless Ollama runs elsewhere)")
 
     raw_engine = os.environ.get("VAULT_ENGINE")
-    rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
     if not raw_engine and _user_env_var("VAULT_ENGINE"):
         check("WARN", "VAULT_ENGINE is set for the user but not in this process: "
                       "restart the terminal and the agent")
@@ -695,12 +732,8 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
     else:
         check("OK", "VAULT_ENGINE matches this engine")
 
-    data: Path | None
-    try:
-        data = g.resolve_data_dir()
-    except SystemExit:
-        check("FAIL", "VAULT_DATA (or VAULT_HOME) not set")
-        data = None
+    for data_status, msg in data_checks:
+        check(data_status, msg)
 
     if data is not None:
         if (data / "AGENTS.md").exists():
@@ -724,7 +757,8 @@ def cmd_doctor(_args: argparse.Namespace) -> None:
         unfilled = [p.name for p in sorted(profile_dir.glob("*.md"))
                     if SKELETON_MARKER in _read_text(p)] if profile_dir.is_dir() else []
         if unfilled:
-            check("WARN", "profile not filled yet (run `onboard`)")
+            check("WARN", "profile not filled yet: run `onboard --questions`, ask the user, "
+                          "then `onboard --answers <file>` (or `onboard` in a terminal)")
 
     src_dir = g.ENGINE / "tools" / "claude-agents"
     dest_dir = Path.home() / ".claude" / "agents"
@@ -969,6 +1003,8 @@ def _run_onboard(data: Path, raw: dict, force: bool) -> None:
         style_rules, force)
     print(f"  profile/language.md: {status_lang}")
     print(f"  profile/working-style.md: {status_style}")
+    if any(status != "written" for status in (status_lang, status_style)):
+        print("  Filled notes were kept; rerun with --force to replace them with these answers.")
 
 
 def _default_for(qid: str, raw: dict) -> object:
@@ -981,7 +1017,7 @@ def _ask_question(q: dict, default) -> object:
     if q["kind"] == "choice":
         prompt = f"{q['question']} ({'/'.join(q['options'])})"
         while True:
-            raw = _ask(prompt, str(default))
+            raw = _ask(prompt, str(default), strict=True)
             if raw in q["options"]:
                 return raw
             print(f"  invalid choice: {raw!r}; options: {', '.join(q['options'])}")
@@ -989,13 +1025,37 @@ def _ask_question(q: dict, default) -> object:
         prompt = f"{q['question']} ({', '.join(q['options'])}; comma-separated)"
         default_str = ",".join(default)
         while True:
-            raw = _ask(prompt, default_str)
+            raw = _ask(prompt, default_str, strict=True)
             items = [x.strip() for x in raw.split(",") if x.strip()]
             bad = [i for i in items if i not in q["options"]]
             if not bad:
                 return items
             print(f"  invalid option(s): {', '.join(bad)}; options: {', '.join(q['options'])}")
-    return _ask(q["question"], str(default))
+    return _ask(q["question"], str(default), strict=True)
+
+
+ONBOARD_AGENT_HINT = ("Get the questions with `onboard --questions`, ask the user, then run "
+                      "`onboard --answers <file>` with the answers as JSON.")
+
+
+def _load_answers(path: Path) -> dict:
+    """The answers JSON object. utf-8-sig: PowerShell 5.1's
+    `Set-Content -Encoding UTF8` starts the file with a BOM."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        sys.exit(f"onboard: cannot read the answers file {path}: {exc.strerror or exc}")
+    except UnicodeDecodeError:
+        sys.exit(f"onboard: the answers file {path} is not UTF-8 text; save it as UTF-8")
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        sys.exit(f"onboard: the answers file {path} is not valid JSON ({exc}); "
+                 "see `onboard --questions` for the expected keys")
+    if not isinstance(raw, dict):
+        sys.exit(f"onboard: the answers file {path} must hold one JSON object "
+                 '({"chat_language": "...", ...})')
+    return raw
 
 
 def cmd_onboard(args: argparse.Namespace) -> None:
@@ -1003,23 +1063,26 @@ def cmd_onboard(args: argparse.Namespace) -> None:
         print(json.dumps(QUESTIONS, indent=2, ensure_ascii=False))
         return
 
-    if not args.answers and not sys.stdin.isatty():
-        print("Not an interactive terminal. Get the questions with "
-              "`onboard --questions`, ask the user, then run "
-              "`onboard --answers <file>` with the answers as JSON.")
-        return
+    if not args.answers and not g.stdin_is_interactive():
+        sys.exit("onboard: not an interactive terminal, nothing written. " + ONBOARD_AGENT_HINT)
 
     data = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
     g._require_writable(g.Paths(g.ENGINE, data))
 
     if args.answers:
-        raw = json.loads(Path(args.answers).read_text(encoding="utf-8"))
-        _run_onboard(data, raw, args.force)
+        _run_onboard(data, _load_answers(Path(args.answers)), args.force)
         return
 
     raw: dict = {}
-    for q in QUESTIONS:
-        raw[q["id"]] = _ask_question(q, _default_for(q["id"], raw))
+    try:
+        for q in QUESTIONS:
+            raw[q["id"]] = _ask_question(q, _default_for(q["id"], raw))
+    except EOFError:
+        # Input ended (e.g. stdin is NUL): stop before writing anything, so the
+        # skeleton stays and a later `--answers` run still fills the profile.
+        print()
+        sys.exit("onboard: input ended before every question was answered; nothing written. "
+                 + ONBOARD_AGENT_HINT)
     _run_onboard(data, raw, args.force)
 
 
@@ -1044,6 +1107,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("doctor", help="check the onboarding setup, one line per check")
+    p.add_argument("--data", help="data dir (default: resolve_data_dir())")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("onboard", help="fill in profile/ from a few questions")

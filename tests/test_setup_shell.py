@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import sys
+import types
 import tempfile
 import unittest
 from argparse import Namespace
@@ -26,6 +27,15 @@ TOOLS_DIR = REPO_ROOT / "tools"
 
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
+
+
+# Nor through the Windows registry, where graph finds the VAULT_DATA that setup
+# saved for the user: every test sees an empty HKCU\Environment instead.
+def _no_registry(*_args):
+    raise OSError("tests never read the real registry")
+
+
+sys.modules["winreg"] = types.SimpleNamespace(HKEY_CURRENT_USER=None, OpenKey=_no_registry)
 
 _spec = importlib.util.spec_from_file_location("graph", GRAPH_PATH)
 graph = importlib.util.module_from_spec(_spec)
@@ -221,7 +231,7 @@ class TestSetupEnvNonWindows(unittest.TestCase):
         with mock.patch("onboarding._is_windows", return_value=False), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch.dict(os.environ, {"SHELL": "/bin/zsh"}, clear=True), \
-             mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=True), \
              mock.patch("onboarding._ask_yn", return_value=True), \
              redirect_stdout(StringIO()):
             onboarding.cmd_setup(self._args(yes=False))
@@ -231,7 +241,7 @@ class TestSetupEnvNonWindows(unittest.TestCase):
         with mock.patch("onboarding._is_windows", return_value=False), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch.dict(os.environ, {"SHELL": "/bin/zsh"}, clear=True), \
-             mock.patch("sys.stdin.isatty", return_value=True), \
+             mock.patch.object(onboarding.g, "stdin_is_interactive", return_value=True), \
              mock.patch("onboarding._ask_yn", return_value=False), \
              redirect_stdout(StringIO()) as buf:
             onboarding.cmd_setup(self._args(yes=False))
