@@ -399,6 +399,29 @@ after step 2.
 
 ---
 
+## Optional — block expensive subagents (Claude Code)
+
+Only if the user works in Claude Code and wants to stop the orchestrator from starting
+subagents that use an expensive model or a general-purpose subagent instead of this
+engine's cheap `worker-*` agents. This installs a PreToolUse hook into Claude Code's
+`settings.json`; nothing is written until `--install` is passed.
+
+```
+python "<projects folder>/vault-engine/tools/graph.py" claude-hooks
+```
+prints what it would change (dry run). After the user agrees:
+```
+python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
+```
+This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in one
+`PreToolUse` hook for the `Agent` tool, without touching any other hook already there.
+It denies starting a subagent unless its type starts with `worker-` and, if the call
+also picks a model, that model is `sonnet` or `haiku`. Set `VAULT_AGENT_GUARD=off` in
+the environment to disable the hook without uninstalling it. `doctor` warns if it isn't
+installed.
+
+---
+
 ## Troubleshooting
 
 - **`python` / `python3` not found**: the user needs to install Python (step 0) and

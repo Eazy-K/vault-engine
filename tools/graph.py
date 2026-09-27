@@ -197,7 +197,8 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update")  # optional modules in tools/
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
+              "claude_hooks")  # optional modules in tools/
 
 
 def sanitize_machine_name(raw: str) -> str:
