@@ -1382,8 +1382,10 @@ def cmd_stats(args) -> None:
         import token_stats
         from datetime import date
         projects_dir = Path(args.projects_dir).expanduser()
+        codex_dir = Path(args.codex_dir).expanduser()
         since = date.fromisoformat(args.since) if args.since else None
-        print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json))
+        print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json,
+                               codex_dir=codex_dir))
         return
     events = read_usage(default_paths())
     contexts = [e for e in events if e.get("event") == "context"]
@@ -1529,6 +1531,8 @@ def main() -> None:
                    help="read-only token usage report over local Claude Code transcripts")
     p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
                    help="transcripts root (default: ~/.claude/projects)")
+    p.add_argument("--codex-dir", default=str(Path("~/.codex/sessions").expanduser()),
+                   help="Codex rollout sessions root (default: ~/.codex/sessions)")
     p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
     p.add_argument("--top", type=int, default=5, help="how many top sessions to list")
     p.add_argument("--json", action="store_true", help="machine-readable output")
