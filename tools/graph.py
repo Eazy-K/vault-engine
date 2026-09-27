@@ -171,6 +171,13 @@ PROBE_TIMEOUT = 3  # "is anything answering at OLLAMA_URL" before that long wait
 SKIP_DIRS = {".git", ".obsidian", ".graph", "tools", "__pycache__"}
 SKIP_ROOT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md"}
 
+
+def skip_dirs() -> set[str]:
+    extra = os.environ.get("VAULT_SKIP_DIRS", "")
+    names = {name.strip() for name in extra.split(",") if name.strip()}
+    return SKIP_DIRS | names
+
+
 DEFAULT_LINK_WEIGHT = 0.7  # frontmatter link without an explicit weight
 BODY_LINK_WEIGHT = 0.5  # wikilink written in the note body
 LEARNING_RATE = 0.1
@@ -372,9 +379,10 @@ def _load_notes_from(root: Path, source: str) -> dict[str, Note]:
     notes: dict[str, Note] = {}
     if not root.is_dir():
         return notes
+    skipped = skip_dirs()
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root)
-        if any(part in SKIP_DIRS for part in rel.parts[:-1]):
+        if any(part in skipped for part in rel.parts[:-1]):
             continue
         if len(rel.parts) == 1 and rel.name in SKIP_ROOT_FILES:
             continue
