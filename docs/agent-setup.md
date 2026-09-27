@@ -399,12 +399,10 @@ after step 2.
 
 ---
 
-## Optional — block expensive subagents (Claude Code)
+## Optional — block expensive subagents, warn on context size (Claude Code)
 
-Only if the user works in Claude Code and wants to stop the orchestrator from starting
-subagents that use an expensive model or a general-purpose subagent instead of this
-engine's cheap `worker-*` agents. This installs a PreToolUse hook into Claude Code's
-`settings.json`; nothing is written until `--install` is passed.
+Only if the user works in Claude Code. This installs three things into Claude Code's
+`settings.json`: nothing is written until `--install` is passed.
 
 ```
 python "<projects folder>/vault-engine/tools/graph.py" claude-hooks
@@ -413,12 +411,22 @@ prints what it would change (dry run). After the user agrees:
 ```
 python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
-This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in one
-`PreToolUse` hook for the `Agent` tool, without touching any other hook already there.
-It denies starting a subagent unless its type starts with `worker-` and, if the call
-also picks a model, that model is `sonnet` or `haiku`. Set `VAULT_AGENT_GUARD=off` in
-the environment to disable the hook without uninstalling it. `doctor` warns if it isn't
-installed.
+This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
+- a `PreToolUse` hook for the `Agent` tool that denies starting a subagent unless its
+  type starts with `worker-` and, if the call also picks a model, that model is
+  `sonnet` or `haiku`. Set `VAULT_AGENT_GUARD=off` in the environment to disable it
+  without uninstalling it.
+- a `UserPromptSubmit` hook (`context-warn.py`) that warns the model when the session's
+  estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`, default 150000
+  tokens; re-warns after every further ~25K tokens of growth). The warning tells the
+  model to write the current state to the vault's status note, then suggest the user
+  start a new session or run `/compact`.
+- a `statusLine` command (`statusline.py`) that shows context usage, e.g. `ctx 44K/200K
+  22%` -- **only if `settings.json` has no `statusLine` configured yet**; an existing
+  one is left untouched (the installer prints a note when this happens).
+
+None of these touch any other hook or setting already there. `doctor` warns if either
+hook isn't installed.
 
 ---
 
