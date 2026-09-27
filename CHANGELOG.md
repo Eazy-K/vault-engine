@@ -2,6 +2,17 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.5.0] - 2026-09-27
+
+### Added
+- Worker agent templates (`worker-low`, `worker-medium`) gained token-saving rules: read large files with Grep/targeted Read first, keep test/command output and reports short, and stop to propose a split instead of continuing if a task is too large for one run.
+- Worker agents now run with a restricted tool allowlist (`Read, Grep, Glob, Bash, Edit, Write`, plus `WebFetch, WebSearch` for `worker-medium`) and a `maxTurns` cap (40 for `worker-low`, 60 for `worker-medium`); neither can start subagents.
+- `stats --tokens [--projects-dir] [--since YYYY-MM-DD] [--top N] [--json]` reports Claude Code transcript token usage: totals by model, main sessions vs subagents, top sessions, sessions over a high peak-context threshold, median first-call context, subagent turn distribution, and a list-price USD estimate. Read-only; prints only numbers and session/agent ids.
+- `claude-hooks [--settings PATH] [--install]`: opt-in installer for two hooks. `agent-guard.py` (PreToolUse on `Agent`) denies starting a subagent that is not a `worker-*` type or that requests a model other than `sonnet`/`haiku` (`VAULT_AGENT_GUARD=off` disables it). `context-warn.py` (UserPromptSubmit) warns once context passes a threshold (`VAULT_CONTEXT_WARN`, default 150000) to save state and start a new session or `/compact`, then every +25K after. A status line script prints current context usage. `doctor` warns when the hooks are not installed.
+
+### Upgrade notes
+- After updating, run `python tools/graph.py claude-hooks --install` to enable the agent-guard and context-warn hooks and the context status line; `doctor` warns if they are still missing. Start a new Claude Code session afterwards so the updated worker agent definitions (tool allowlist, `maxTurns`) and hooks take effect.
+
 ## [0.4.0] - 2026-09-26
 
 ### Added
