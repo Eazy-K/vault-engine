@@ -2,6 +2,30 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.8.0] - 2026-09-28
+
+### Added
+- Status line gains segments for the active model, thinking effort, current folder and git branch, and an estimated session cost, alongside the existing context usage.
+- `claude-hooks` gains a delegation-warn hook that reminds the orchestrator to delegate to a subagent instead of doing the work itself once it has made 4 or more tool calls in a turn.
+- `models` command and a single model-selection config: `agent-guard` now derives its allowed models from this config instead of a hard-coded list, and `doctor` checks the config is present and consistent.
+- `update --models` step and a context notice for Claude Code hooks or model settings that are stale (installed before a hooks/model change).
+- `update --agents` step and a context notice for worker agent definition files (`worker-low.md`, `worker-medium.md`) that are stale.
+
+### Changed
+- Worker agent definitions (`worker-low`, `worker-medium`) gain explicit working rules (branch check before editing, commit after each logical step, never pipe test output through `tail`/`head`, commit and report when low on turns).
+- `worker-medium`'s `maxTurns` raised from 60 to 100.
+- `templates/orchestration.md` gains rules on waiting for and resuming subagents and on turn limits.
+
+### Fixed
+- Windows: `claude-hooks --install` wrote hook commands with single quotes, which `cmd.exe` does not strip, breaking the hooks; commands are now written shell-neutral so they work on Windows.
+
+### Upgrade notes
+- Run `python "$VAULT_ENGINE/tools/graph.py" update --claude-hooks --models --agents` to install or refresh the Claude Code hooks, model settings and worker agent files.
+- Windows users who installed the Claude Code hooks before this release had broken (single-quoted) hook commands; the update above fixes them.
+- `templates/AGENTS.md` is now template revision 7; translated or otherwise edited copies should be merged by hand, `update --apply-agents` replaces the file outright.
+- `agent-guard` behavior is unchanged unless a `models` config has been set.
+- No vault data schema change in this release.
+
 ## [0.7.0] - 2026-09-28
 
 ### Added
