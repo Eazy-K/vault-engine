@@ -118,7 +118,28 @@ class TestMerge(unittest.TestCase):
         self.assertTrue(changed)
         pre = settings["hooks"]["PreToolUse"]
         self.assertEqual(len(pre), 1)
-        self.assertIn(str(claude_hooks.GUARD_SCRIPT), pre[0]["hooks"][0]["command"])
+        self.assertEqual(pre[0]["hooks"][0]["command"], claude_hooks._guard_command())
+
+    def test_merge_refreshes_own_stale_statusline(self):
+        existing = {"statusLine": {"type": "command",
+                                   "command": r"'C:\py\python.exe' 'C:\old\statusline.py'"}}
+        settings, changed = claude_hooks.merge(existing)
+        self.assertTrue(changed)
+        self.assertEqual(settings["statusLine"]["command"], claude_hooks._statusline_command())
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows-only quoting")
+class TestWindowsShellArg(unittest.TestCase):
+    """Claude Code may run hooks in PowerShell, where `'a' 'b'` is a parse error."""
+
+    def test_no_single_quotes_or_backslashes(self):
+        for cmd in (claude_hooks._guard_command(), claude_hooks._context_warn_command(),
+                    claude_hooks._statusline_command()):
+            self.assertNotIn("'", cmd)
+            self.assertNotIn("\\", cmd)
+
+    def test_plain_path_stays_unquoted(self):
+        self.assertEqual(claude_hooks._shell_arg(r"C:\Dev\x\a.py"), "C:/Dev/x/a.py")
 
 
 class TestCmdClaudeHooks(unittest.TestCase):

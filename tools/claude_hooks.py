@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -30,18 +31,49 @@ CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
 
 STATUSLINE_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "statusline.py"
+STATUSLINE_MARKER = "statusline.py"
+
+_SAFE_ARG = re.compile(r"[A-Za-z0-9_./:~+-]+")
+
+
+def _shell_arg(path: str) -> str:
+    """One argument that bash, PowerShell and cmd all parse the same way. Claude Code
+    may run hook commands in any of them on Windows, and POSIX quoting breaks there:
+    PowerShell reads `'a.exe' 'b.py'` as two string literals, a parse error, so the
+    hook silently never runs. Windows paths get forward slashes (every shell and
+    Windows itself accept them) and stay unquoted; one with spaces or other special
+    characters falls back to its 8.3 short name, which has none."""
+    if sys.platform != "win32":
+        return shlex.quote(path)
+    arg = path.replace("\\", "/")
+    if _SAFE_ARG.fullmatch(arg):
+        return arg
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        if ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf)):
+            short = buf.value.replace("\\", "/")
+            if _SAFE_ARG.fullmatch(short):
+                return short
+    except (AttributeError, OSError):
+        pass
+    return f'"{arg}"'  # no short name: bash and cmd still parse this, PowerShell does not
+
+
+def _command(script: Path) -> str:
+    return f"{_shell_arg(sys.executable)} {_shell_arg(str(script))}"
 
 
 def _guard_command() -> str:
-    return f"{shlex.quote(sys.executable)} {shlex.quote(str(GUARD_SCRIPT))}"
+    return _command(GUARD_SCRIPT)
 
 
 def _context_warn_command() -> str:
-    return f"{shlex.quote(sys.executable)} {shlex.quote(str(CONTEXT_WARN_SCRIPT))}"
+    return _command(CONTEXT_WARN_SCRIPT)
 
 
 def _statusline_command() -> str:
-    return f"{shlex.quote(sys.executable)} {shlex.quote(str(STATUSLINE_SCRIPT))}"
+    return _command(STATUSLINE_SCRIPT)
 
 
 def _load(path: Path) -> dict:
@@ -119,11 +151,18 @@ def _merge_context_warn(settings: dict) -> bool:
 
 
 def _merge_statusline(settings: dict) -> bool:
-    """Set statusLine to our command, but only if none is configured yet. Returns
-    True if changed; leaves an existing statusLine of any kind untouched."""
-    if settings.get("statusLine"):
-        return False
-    settings["statusLine"] = {"type": "command", "command": _statusline_command()}
+    """Set statusLine to our command if none is configured yet, or refresh it if it
+    is ours (a stale path or quoting). Returns True if changed; a statusLine that is
+    not ours is left untouched."""
+    current = settings.get("statusLine")
+    command = _statusline_command()
+    if current:
+        if not (isinstance(current, dict)
+                and STATUSLINE_MARKER in str(current.get("command", ""))):
+            return False
+        if current.get("command") == command and current.get("type") == "command":
+            return False
+    settings["statusLine"] = {"type": "command", "command": command}
     return True
 
 
@@ -160,7 +199,9 @@ def context_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, st
 def cmd_claude_hooks(args: argparse.Namespace) -> None:
     settings_path = Path(args.settings).expanduser() if args.settings else DEFAULT_SETTINGS
     settings = _load(settings_path)
-    had_statusline = bool(settings.get("statusLine"))
+    current = settings.get("statusLine")
+    had_statusline = bool(current) and not (
+        isinstance(current, dict) and STATUSLINE_MARKER in str(current.get("command", "")))
     merged, changed = merge(settings)
 
     if not args.install:
