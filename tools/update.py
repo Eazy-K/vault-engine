@@ -353,6 +353,38 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
     return True
 
 
+# --- update command: Claude Code hooks ------------------------------------------
+
+def _claude_hooks_step(engine: Path, data: Path, args) -> None:
+    """Offers the engine's Claude Code hooks (agent-guard, context-warn, status
+    line) when they are missing or point at an old path. ~/.claude/settings.json
+    belongs to the user, so --yes alone never writes it: an interactive yes or
+    --claude-hooks does. Skipped when the engine has no claude-hooks command or
+    this computer has no ~/.claude folder (Claude Code not used here)."""
+    if not (engine / "tools" / "claude_hooks.py").exists() or not (Path.home() / ".claude").is_dir():
+        return
+    result = run_step(engine, data, ["claude-hooks"])
+    if result.returncode != 0 or "would update" not in result.stdout:
+        return
+    print("\nClaude Code hooks (agent-guard, context-warn, status line) are missing or out of date:")
+    _print_step_output(result)
+    install = getattr(args, "claude_hooks", False)
+    if not install and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Install them into Claude Code's settings.json? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        install = answer.startswith("y")
+    if not install:
+        print("install them later with: python tools/graph.py claude-hooks --install "
+              "(or rerun update with --claude-hooks)")
+        return
+    result = run_step(engine, data, ["claude-hooks", "--install"])
+    _print_step_output(result)
+    if result.returncode == 0:
+        print("start a new Claude Code session so the hooks take effect")
+
+
 # --- update command: CI pin ---------------------------------------------------
 
 CI_WORKFLOW = ".github/workflows/vault.yml"
@@ -612,6 +644,10 @@ def cmd_update(args) -> None:
         except SystemExit:
             pass
         _agents_md_step(engine, args)
+        try:
+            _claude_hooks_step(engine, _data_paths(args).data, args)
+        except SystemExit:
+            pass
         return
 
     is_upgrade = current_v is not None and target_v > current_v
@@ -665,6 +701,7 @@ def cmd_update(args) -> None:
     _handle_agents_md(engine, paths.data, args)
     if not ok:
         sys.exit(1)
+    _claude_hooks_step(engine, paths.data, args)
 
 
 def register(sub) -> None:
@@ -677,4 +714,7 @@ def register(sub) -> None:
     p.add_argument("--apply-agents", action="store_true",
                    help="replace the data repo's AGENTS.md with the engine's template after "
                         "showing the diff; also works when the engine is already up to date")
+    p.add_argument("--claude-hooks", action="store_true",
+                   help="install the Claude Code hooks (claude-hooks --install) without asking "
+                        "if they are missing; --yes alone only prints the command")
     p.set_defaults(func=cmd_update)
