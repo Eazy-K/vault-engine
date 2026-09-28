@@ -439,8 +439,10 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool that denies starting a subagent unless its
   type starts with `worker-` and, if the call also picks a model, that model is
-  `sonnet` or `haiku`. Set `VAULT_AGENT_GUARD=off` in the environment to disable it
-  without uninstalling it.
+  strictly cheaper than the configured orchestrator model (`sonnet` or `haiku` by
+  default; see `python tools/graph.py models` below to change which model each role
+  uses). Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
+  uninstalling it.
 - a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
   short one-line reminder to delegate multi-step work to a worker subagent (and to
   run `context` first if the task hasn't started), and additionally warns the model
@@ -464,6 +466,22 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
 
 None of these touch any other hook or setting already there. `doctor` warns if any of
 the three hooks isn't installed.
+
+Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
+not three: `python tools/graph.py models` shows it (plus whether `settings.json` and
+`~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
+<level>`, `--worker-low <model>` / `--worker-low-effort <level>`, `--worker-medium
+<model>` / `--worker-medium-effort <level>` change it, shared across every computer
+using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
+just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
+first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
+worker files' `model:`/`effort:` frontmatter, so the agent-guard hook above, the
+worker agents, and Claude Code's own model picker all agree. A worker model is always
+kept strictly cheaper than the orchestrator's: raising the orchestrator to a model a
+worker is no longer cheaper than downgrades that worker automatically (with a note),
+unless that worker's model was itself set explicitly in the same command, which
+refuses instead. `doctor` warns if `settings.json` or the worker files drift from this
+config (skipped silently if `settings.json` doesn't exist yet).
 
 ---
 

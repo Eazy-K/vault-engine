@@ -40,5 +40,7 @@ Definitions live under the engine's `$VAULT_ENGINE/tools/claude-agents/` and are
 ## Model choice and cost
 Run subagents on a model that is cheaper than the orchestrator's own model, never on the orchestrator's model itself. In Claude Code this means always passing a subagent type (`worker-low` / `worker-medium`) with an explicit `model` such as `sonnet`; `general-purpose` (or any type started without an explicit model) is never used without one, because a subagent started without a model inherits the orchestrator's own model (e.g. Opus), which is far more expensive at scale.
 
+Which model each role (orchestrator, worker-low, worker-medium) actually uses is configurable: `python tools/graph.py models` shows the effective config and whether `settings.json` and the worker agent files match it; `--orchestrator`/`--effort`/`--worker-low`/`--worker-low-effort`/`--worker-medium`/`--worker-medium-effort` change it (shared across the vault by default, or `--this-computer` for one machine only), and `--apply` writes it into `settings.json` and the worker `.md` frontmatter. A worker model is always kept strictly cheaper than the orchestrator's; setting an orchestrator that would make a worker no longer cheaper downgrades that worker automatically (with a note), unless the worker model was itself set explicitly, in which case it refuses.
+
 ## Other tools
 On tools without subagent support, work proceeds with a single agent.
