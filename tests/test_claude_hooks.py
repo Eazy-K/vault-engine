@@ -69,6 +69,36 @@ class TestMerge(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(len(settings2["hooks"]["UserPromptSubmit"]), 1)
 
+    def test_merge_adds_delegation_warn_hook(self):
+        settings, changed = claude_hooks.merge({})
+        self.assertTrue(changed)
+        entries = settings["hooks"]["PostToolUse"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["matcher"], "Bash|Read|Edit|Write")
+        self.assertIn("delegation-warn.py", entries[0]["hooks"][0]["command"])
+
+    def test_merge_delegation_warn_hook_is_idempotent(self):
+        settings, _ = claude_hooks.merge({})
+        settings2, changed = claude_hooks.merge(settings)
+        self.assertFalse(changed)
+        self.assertEqual(len(settings2["hooks"]["PostToolUse"]), 1)
+
+    def test_merge_delegation_warn_updates_stale_command_in_place(self):
+        existing = {
+            "hooks": {
+                "PostToolUse": [
+                    {"matcher": "Bash|Read|Edit|Write",
+                     "hooks": [{"type": "command",
+                                "command": "python /old/path/delegation-warn.py"}]},
+                ],
+            },
+        }
+        settings, changed = claude_hooks.merge(existing)
+        self.assertTrue(changed)
+        post = settings["hooks"]["PostToolUse"]
+        self.assertEqual(len(post), 1)
+        self.assertEqual(post[0]["hooks"][0]["command"], claude_hooks._delegation_warn_command())
+
     def test_merge_sets_statusline_when_absent(self):
         settings, changed = claude_hooks.merge({})
         self.assertTrue(changed)
@@ -101,7 +131,9 @@ class TestMerge(unittest.TestCase):
         self.assertTrue(changed)
         pre = settings["hooks"]["PreToolUse"]
         self.assertEqual(len(pre), 2)
-        self.assertEqual(settings["hooks"]["PostToolUse"], existing["hooks"]["PostToolUse"])
+        post = settings["hooks"]["PostToolUse"]
+        self.assertEqual(len(post), 2)
+        self.assertIn(existing["hooks"]["PostToolUse"][0], post)
         commands = {h["command"] for entry in pre for h in entry["hooks"]}
         self.assertIn("echo hi", commands)
 
@@ -134,7 +166,7 @@ class TestWindowsShellArg(unittest.TestCase):
 
     def test_no_single_quotes_or_backslashes(self):
         for cmd in (claude_hooks._guard_command(), claude_hooks._context_warn_command(),
-                    claude_hooks._statusline_command()):
+                    claude_hooks._delegation_warn_command(), claude_hooks._statusline_command()):
             self.assertNotIn("'", cmd)
             self.assertNotIn("\\", cmd)
 
@@ -236,6 +268,19 @@ class TestStatus(unittest.TestCase):
             claude_hooks.cmd_claude_hooks(
                 Namespace(install=True, settings=str(self.settings_path)))
         level, msg = claude_hooks.context_warn_status(self.settings_path)
+        self.assertEqual(level, "OK")
+
+    def test_delegation_warn_status_warn_when_missing(self):
+        level, msg = claude_hooks.delegation_warn_status(self.settings_path)
+        self.assertEqual(level, "WARN")
+        self.assertIn("not installed", msg)
+
+    def test_delegation_warn_status_ok_after_install(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            claude_hooks.cmd_claude_hooks(
+                Namespace(install=True, settings=str(self.settings_path)))
+        level, msg = claude_hooks.delegation_warn_status(self.settings_path)
         self.assertEqual(level, "OK")
 
 

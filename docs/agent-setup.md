@@ -426,7 +426,7 @@ after step 2.
 
 ## Optional — block expensive subagents, warn on context size (Claude Code)
 
-Only if the user works in Claude Code. This installs three things into Claude Code's
+Only if the user works in Claude Code. This installs four things into Claude Code's
 `settings.json`: nothing is written until `--install` is passed.
 
 ```
@@ -441,11 +441,19 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   type starts with `worker-` and, if the call also picks a model, that model is
   `sonnet` or `haiku`. Set `VAULT_AGENT_GUARD=off` in the environment to disable it
   without uninstalling it.
-- a `UserPromptSubmit` hook (`context-warn.py`) that warns the model when the session's
-  estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`, default 150000
-  tokens; re-warns after every further ~25K tokens of growth). The warning tells the
-  model to write the current state to the vault's status note, then suggest the user
-  start a new session or run `/compact`.
+- a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
+  short one-line reminder to delegate multi-step work to a worker subagent (and to
+  run `context` first if the task hasn't started), and additionally warns the model
+  when the session's estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`,
+  default 150000 tokens; re-warns after every further ~25K tokens of growth). The
+  context-usage warning tells the model to write the current state to the vault's
+  status note, then suggest the user start a new session or run `/compact`. Neither
+  part of this hook ever blocks the prompt.
+- a `PostToolUse` hook (`delegation-warn.py`, matcher `Bash|Read|Edit|Write`) that
+  counts tool calls made directly by the orchestrator (not inside a subagent) for the
+  current user message and, once that count exceeds 3, adds a short one-time warning
+  suggesting the rest of the work be delegated to a worker. The counter resets on
+  every new user message. It never blocks a tool call, only adds context for the model.
 - a `statusLine` command (`statusline.py`) that shows the model and effort, the current
   folder with its git branch, context usage, and session cost, e.g. `Opus 5.5·med │
   vault-engine (main) │ ctx 44K/200K 22% │ $1.42` (segments with missing data are
@@ -454,8 +462,8 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   **only if `settings.json` has no `statusLine` configured yet**; an existing one is
   left untouched (the installer prints a note when this happens).
 
-None of these touch any other hook or setting already there. `doctor` warns if either
-hook isn't installed.
+None of these touch any other hook or setting already there. `doctor` warns if any of
+the three hooks isn't installed.
 
 ---
 

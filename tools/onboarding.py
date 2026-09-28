@@ -1100,6 +1100,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if claude_hooks is not None:
         check(*claude_hooks.status())
         check(*claude_hooks.context_warn_status())
+        check(*claude_hooks.delegation_warn_status())
 
     if data is not None:
         paths = g.Paths(g.ENGINE, data)

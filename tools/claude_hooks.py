@@ -2,7 +2,11 @@
 - agent-guard: a PreToolUse hook that stops the orchestrator from starting
   expensive subagents.
 - context-warn: a UserPromptSubmit hook that warns the model when the
-  session's context usage crosses a threshold.
+  session's context usage crosses a threshold, and reminds it on every user
+  message to delegate multi-step work to a worker subagent.
+- delegation-warn: a PostToolUse hook that additionally warns once a user
+  message has driven several tool calls on the orchestrator's own thread,
+  instead of delegating them.
 - statusLine: a command that shows context usage in the status line (only
   set if settings has no statusLine yet -- an existing one is left alone).
 
@@ -29,6 +33,10 @@ GUARD_MARKER = "agent-guard.py"  # substring identifying our hook's command, for
 
 CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
+
+DELEGATION_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "delegation-warn.py"
+DELEGATION_WARN_MATCHER = "Bash|Read|Edit|Write"
+DELEGATION_WARN_MARKER = "delegation-warn.py"
 
 STATUSLINE_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "statusline.py"
 STATUSLINE_MARKER = "statusline.py"
@@ -70,6 +78,10 @@ def _guard_command() -> str:
 
 def _context_warn_command() -> str:
     return _command(CONTEXT_WARN_SCRIPT)
+
+
+def _delegation_warn_command() -> str:
+    return _command(DELEGATION_WARN_SCRIPT)
 
 
 def _statusline_command() -> str:
@@ -116,6 +128,20 @@ def _find_context_warn_hook(settings: dict) -> dict | None:
     return None
 
 
+def _find_delegation_warn_hook(settings: dict) -> dict | None:
+    """Same idea as _find_guard_hook, but for the PostToolUse hook list."""
+    entries = settings.get("hooks", {}).get("PostToolUse", [])
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
+            if isinstance(hook, dict) and DELEGATION_WARN_MARKER in str(hook.get("command", "")):
+                return hook
+    return None
+
+
 def _merge_guard(settings: dict) -> bool:
     """Merge in the agent-guard PreToolUse hook. Returns True if it changed anything."""
     command = _guard_command()
@@ -150,6 +176,24 @@ def _merge_context_warn(settings: dict) -> bool:
     return True
 
 
+def _merge_delegation_warn(settings: dict) -> bool:
+    """Merge in the delegation-warn PostToolUse hook. Returns True if changed."""
+    command = _delegation_warn_command()
+    existing = _find_delegation_warn_hook(settings)
+    if existing is not None:
+        if existing.get("command") == command and existing.get("type") == "command":
+            return False
+        existing["type"] = "command"
+        existing["command"] = command
+        return True
+
+    hooks = settings.setdefault("hooks", {})
+    post = hooks.setdefault("PostToolUse", [])
+    post.append({"matcher": DELEGATION_WARN_MATCHER,
+                 "hooks": [{"type": "command", "command": command}]})
+    return True
+
+
 def _merge_statusline(settings: dict) -> bool:
     """Set statusLine to our command if none is configured yet, or refresh it if it
     is ours (a stale path or quoting). Returns True if changed; a statusLine that is
@@ -167,11 +211,12 @@ def _merge_statusline(settings: dict) -> bool:
 
 
 def merge(settings: dict) -> tuple[dict, bool]:
-    """Merge in the agent-guard and context-warn hooks, and (if none is configured)
-    the statusLine command, without touching any other existing hook or an existing
-    statusLine. Returns (new_settings, changed)."""
+    """Merge in the agent-guard, context-warn and delegation-warn hooks, and (if none
+    is configured) the statusLine command, without touching any other existing hook
+    or an existing statusLine. Returns (new_settings, changed)."""
     changed = _merge_guard(settings)
     changed = _merge_context_warn(settings) or changed
+    changed = _merge_delegation_warn(settings) or changed
     changed = _merge_statusline(settings) or changed
     return settings, changed
 
@@ -196,6 +241,18 @@ def context_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, st
                      "`graph.py claude-hooks --install` to warn before context runs out")
 
 
+def delegation_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the delegation-warn hook is
+    installed."""
+    settings = _load(settings_path)
+    hook = _find_delegation_warn_hook(settings)
+    if hook is not None and hook.get("command") == _delegation_warn_command():
+        return "OK", f"delegation-warn hook installed ({settings_path})"
+    return "WARN", (f"delegation-warn hook not installed in {settings_path}: run "
+                     "`graph.py claude-hooks --install` to nudge delegation of "
+                     "multi-step work")
+
+
 def cmd_claude_hooks(args: argparse.Namespace) -> None:
     settings_path = Path(args.settings).expanduser() if args.settings else DEFAULT_SETTINGS
     settings = _load(settings_path)
@@ -211,6 +268,8 @@ def cmd_claude_hooks(args: argparse.Namespace) -> None:
             print(f"would update: {settings_path}")
             print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
             print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
+            print(f"  matcher: {DELEGATION_WARN_MATCHER}  "
+                  f"command: {_delegation_warn_command()}")
             if not had_statusline:
                 print(f"  statusLine: {_statusline_command()}")
             print("(dry run: pass --install to write it)")
@@ -241,6 +300,7 @@ def cmd_claude_hooks(args: argparse.Namespace) -> None:
     print(f"  installed: {settings_path}")
     print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
     print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
+    print(f"  matcher: {DELEGATION_WARN_MATCHER}  command: {_delegation_warn_command()}")
     if not had_statusline:
         print(f"  statusLine: {_statusline_command()}")
     else:
@@ -248,9 +308,9 @@ def cmd_claude_hooks(args: argparse.Namespace) -> None:
 
 
 def register(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn "
-                                             "hooks and a statusLine into Claude "
-                                             "Code's settings.json")
+    p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn, "
+                                             "delegation-warn hooks and a statusLine "
+                                             "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")
     p.add_argument("--settings", help=f"settings.json path (default: {DEFAULT_SETTINGS})")

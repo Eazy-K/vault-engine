@@ -48,12 +48,17 @@ class TestContextWarn(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
                                capture_output=True, text=True, env=env)
 
-    def test_under_threshold_is_silent(self):
+    def test_under_threshold_only_has_reminder(self):
         self._write_transcript([{"input_tokens": 1000, "cache_creation_input_tokens": 0,
                                   "cache_read_input_tokens": 0}])
         out = self._run()
         self.assertEqual(out.returncode, 0)
-        self.assertEqual(out.stdout.strip(), "")
+        payload = json.loads(out.stdout)
+        msg = payload["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Reminder", msg)
+        self.assertIn("worker-low", msg)
+        self.assertNotIn("context-warn", msg)
+        self.assertNotIn("systemMessage", payload["hookSpecificOutput"])
 
     def test_over_threshold_warns(self):
         self._write_transcript([{"input_tokens": 160000, "cache_creation_input_tokens": 0,
@@ -65,6 +70,13 @@ class TestContextWarn(unittest.TestCase):
         self.assertIn("context-warn", msg)
         self.assertIn("vault", msg)
         self.assertIn("compact", msg)
+        self.assertIn("Reminder", msg)
+
+        system_msg = payload["hookSpecificOutput"]["systemMessage"]
+        self.assertIn("context-warn", system_msg)
+        self.assertIn("vault", system_msg)
+        self.assertIn("compact", system_msg)
+        self.assertNotIn("Reminder", system_msg)
 
     def test_custom_threshold_env(self):
         self._write_transcript([{"input_tokens": 5000, "cache_creation_input_tokens": 0,
@@ -83,7 +95,11 @@ class TestContextWarn(unittest.TestCase):
         self._write_transcript([{"input_tokens": 165000, "cache_creation_input_tokens": 0,
                                   "cache_read_input_tokens": 0}])
         second = self._run()
-        self.assertEqual(second.stdout.strip(), "")
+        second_payload = json.loads(second.stdout)["hookSpecificOutput"]
+        second_msg = second_payload["additionalContext"]
+        self.assertIn("Reminder", second_msg)
+        self.assertNotIn("context-warn", second_msg)
+        self.assertNotIn("systemMessage", second_payload)
 
         # enough growth: re-warn
         self._write_transcript([{"input_tokens": 190000, "cache_creation_input_tokens": 0,
@@ -91,19 +107,23 @@ class TestContextWarn(unittest.TestCase):
         third = self._run()
         self.assertNotEqual(third.stdout.strip(), "")
 
-    def test_no_prior_assistant_turn_is_silent(self):
+    def test_no_prior_assistant_turn_only_has_reminder(self):
         self.transcript.write_text("", encoding="utf-8")
         out = self._run()
         self.assertEqual(out.returncode, 0)
-        self.assertEqual(out.stdout.strip(), "")
+        msg = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Reminder", msg)
+        self.assertNotIn("context-warn", msg)
 
-    def test_missing_transcript_is_silent(self):
+    def test_missing_transcript_only_has_reminder(self):
         payload = {"session_id": self.session_id,
                    "transcript_path": str(self.tmp / "does-not-exist.jsonl")}
         out = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
                               capture_output=True, text=True, env=self.env)
         self.assertEqual(out.returncode, 0)
-        self.assertEqual(out.stdout.strip(), "")
+        msg = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Reminder", msg)
+        self.assertNotIn("context-warn", msg)
 
     def test_garbage_transcript_lines_are_skipped(self):
         with open(self.transcript, "w", encoding="utf-8") as f:

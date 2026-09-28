@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook for Claude Code: warns the MODEL (and the user) when
-the session's context usage crosses a threshold.
+the session's context usage crosses a threshold, and reminds it on every user
+message to delegate multi-step work to a worker subagent.
 
 Claude Code hooks are never handed the context window size directly, so this
 estimates it from the *last assistant message* in the transcript's `usage`
@@ -14,8 +15,14 @@ State: a per-session temp file records the token level at which we last
 warned, so we only warn again after context has grown by >= GROWTH_STEP
 tokens since the last warning (avoids repeating the warning every turn).
 
-On any parse error, missing transcript, or usage under the threshold this
-prints nothing and exits 0; a bug here can never block a prompt.
+Delegation reminder: a short, constant one-line reminder is added to every
+prompt's context, independent of the context-usage warning above (see
+REMINDER_MESSAGE below); both can appear together in the same output.
+
+On any parse error or garbage input this prints nothing and exits 0; a bug
+here can never block a prompt. A missing transcript or usage under the
+threshold only silences the context-usage part -- the reminder is still
+printed for every well-formed prompt.
 """
 import json
 import os
@@ -87,14 +94,15 @@ def warning_message(tokens: int, threshold: int) -> str:
     )
 
 
-def main() -> None:
-    try:
-        payload = json.load(sys.stdin)
-        if not isinstance(payload, dict):
-            return
-    except Exception:
-        return  # no/garbage input, nothing to do
+REMINDER_MESSAGE = (
+    "Reminder: delegate multi-step work to worker-low/worker-medium; if the "
+    "task has not started, run `context` first."
+)
 
+
+def _context_usage_warning(payload: dict) -> str | None:
+    """The context-usage warning line for this prompt, or None if none applies
+    (under threshold, no prior assistant turn, or too soon since the last one)."""
     session_id = payload.get("session_id") or "unknown"
     transcript_path = payload.get("transcript_path")
     try:
@@ -104,11 +112,11 @@ def main() -> None:
 
     usage = last_assistant_usage(transcript_path) if transcript_path else None
     if usage is None:
-        return  # no prior assistant turn yet (e.g. first prompt of session)
+        return None  # no prior assistant turn yet (e.g. first prompt of session)
 
     tokens = context_tokens(usage)
     if tokens < threshold:
-        return  # under threshold, nothing to say
+        return None  # under threshold, nothing to say
 
     sp = state_path(str(session_id))
     state = load_state(sp)
@@ -117,19 +125,39 @@ def main() -> None:
         last_warned_at = 0
 
     if last_warned_at != 0 and tokens - last_warned_at < GROWTH_STEP:
-        return  # already warned recently, context hasn't grown enough since
-
-    msg = warning_message(tokens, threshold)
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": msg,
-            "systemMessage": msg,
-        },
-    }))
+        return None  # already warned recently, context hasn't grown enough since
 
     state["last_warned_at"] = tokens
     save_state(sp, state)
+    return warning_message(tokens, threshold)
+
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            return
+    except Exception:
+        return  # no/garbage input, nothing to do
+
+    lines = [REMINDER_MESSAGE]
+    try:
+        context_warning = _context_usage_warning(payload)
+    except Exception:
+        context_warning = None
+    if context_warning:
+        lines.append(context_warning)
+
+    additional_context = "\n".join(lines)
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": additional_context,
+        },
+    }
+    if context_warning:
+        output["hookSpecificOutput"]["systemMessage"] = context_warning
+    print(json.dumps(output))
 
 
 if __name__ == "__main__":
