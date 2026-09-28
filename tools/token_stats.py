@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only token usage report over local Claude Code transcripts.
 
-Transcripts live under ``~/.claude/projects/<project-slug>/``:
+Transcripts live under ``<Claude config dir>/projects/<project-slug>/`` (config dir: $CLAUDE_CONFIG_DIR, else ~/.claude):
   - main sessions:  ``<session-id>.jsonl``
   - subagent runs:  ``<session-id>/subagents/agent-<id>.jsonl`` with a sibling
     ``agent-<id>.meta.json`` holding the agent type (``agentType``).

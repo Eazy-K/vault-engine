@@ -222,7 +222,7 @@ marked `# >>> vault-engine >>>` block.
 
 It also gives this computer a neutral name such as `pc-3f9a` for its file of learned links
 (`.graph/learned/<name>.json`, committed with the notes), instead of the computer's own
-name. Existing files in `~/.claude/agents/` with the user's own content are kept and
+name. Existing files in `~/.claude/agents/` (or `$CLAUDE_CONFIG_DIR/agents/`; every registered Claude config dir, see `claude-dirs`) with the user's own content are kept and
 listed as `skipped`; tell the user if that happens.
 Either way, tell the user to restart their open terminal(s) and any coding agent
 (Claude Code, Codex) after the install — they only see the new values after that restart.

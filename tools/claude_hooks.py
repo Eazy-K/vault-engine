@@ -24,9 +24,16 @@ import shlex
 import sys
 from pathlib import Path
 
+import claude_dirs
 import graph as g
 
-DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+
+def default_settings() -> Path:
+    """settings.json in the active Claude config dir ($CLAUDE_CONFIG_DIR or ~/.claude)."""
+    return g.claude_config_dir() / "settings.json"
+
+
 GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "agent-guard.py"
 GUARD_MATCHER = "Agent"
 GUARD_MARKER = "agent-guard.py"  # substring identifying our hook's command, for idempotent merges
@@ -221,8 +228,9 @@ def merge(settings: dict) -> tuple[dict, bool]:
     return settings, changed
 
 
-def status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
+def status(settings_path: Path | None = None) -> tuple[str, str]:
     """("OK"|"WARN", message) for `doctor`: whether the agent-guard hook is installed."""
+    settings_path = settings_path or default_settings()
     settings = _load(settings_path)
     hook = _find_guard_hook(settings)
     if hook is not None and hook.get("command") == _guard_command():
@@ -231,8 +239,9 @@ def status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
                      "`graph.py claude-hooks --install` to stop expensive subagents")
 
 
-def context_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
+def context_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
     """("OK"|"WARN", message) for `doctor`: whether the context-warn hook is installed."""
+    settings_path = settings_path or default_settings()
     settings = _load(settings_path)
     hook = _find_context_warn_hook(settings)
     if hook is not None and hook.get("command") == _context_warn_command():
@@ -241,9 +250,10 @@ def context_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, st
                      "`graph.py claude-hooks --install` to warn before context runs out")
 
 
-def delegation_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str, str]:
+def delegation_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
     """("OK"|"WARN", message) for `doctor`: whether the delegation-warn hook is
     installed."""
+    settings_path = settings_path or default_settings()
     settings = _load(settings_path)
     hook = _find_delegation_warn_hook(settings)
     if hook is not None and hook.get("command") == _delegation_warn_command():
@@ -254,7 +264,14 @@ def delegation_warn_status(settings_path: Path = DEFAULT_SETTINGS) -> tuple[str,
 
 
 def cmd_claude_hooks(args: argparse.Namespace) -> None:
-    settings_path = Path(args.settings).expanduser() if args.settings else DEFAULT_SETTINGS
+    if args.settings:
+        _apply_to(Path(args.settings).expanduser(), args)
+        return
+    for claude_dir in claude_dirs.targets(prompt=args.install):
+        _apply_to(claude_dir / "settings.json", args)
+
+
+def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     settings = _load(settings_path)
     current = settings.get("statusLine")
     had_statusline = bool(current) and not (
@@ -313,5 +330,7 @@ def register(sub: argparse._SubParsersAction) -> None:
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")
-    p.add_argument("--settings", help=f"settings.json path (default: {DEFAULT_SETTINGS})")
+    p.add_argument("--settings", help="settings.json path (default: settings.json in every "
+                                       "registered Claude config dir, see `claude-dirs`; "
+                                       "~/.claude or $CLAUDE_CONFIG_DIR)")
     p.set_defaults(func=cmd_claude_hooks)

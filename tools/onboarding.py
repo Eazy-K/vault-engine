@@ -23,6 +23,7 @@ import urllib.request
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import claude_dirs
 import graph as g
 
 FEEDBACK_LEVELS = ("off", "metrics", "reports")
@@ -587,11 +588,11 @@ def _backup_path(path: Path) -> Path:
 
 def stale_claude_agents(dest_dir: Path | None = None) -> list[str]:
     """Names of tools/claude-agents/*.md files that differ from (or are missing
-    from) dest_dir (default ~/.claude/agents), sorted. Empty if every shipped
+    from) dest_dir (default <Claude config dir>/agents), sorted. Empty if every shipped
     agent file matches, or the engine ships none. Cheap: no subprocess, just
     reads a handful of small files."""
     src_dir = g.ENGINE / "tools" / "claude-agents"
-    dest_dir = dest_dir or Path.home() / ".claude" / "agents"
+    dest_dir = dest_dir or g.claude_config_dir() / "agents"
     stale = []
     for src in sorted(src_dir.glob("*.md")) if src_dir.is_dir() else []:
         dest = dest_dir / src.name
@@ -601,13 +602,18 @@ def stale_claude_agents(dest_dir: Path | None = None) -> list[str]:
 
 
 def _setup_agents(interactive: bool = False) -> None:
-    """Copy the engine's subagent files into ~/.claude/agents. A file there that
+    """Copy the engine's subagent files into agents/ of every registered Claude
+    config dir (~/.claude, $CLAUDE_CONFIG_DIR, see claude_dirs.py). A file there that
     is neither the engine's current version nor an earlier one is the user's own
     (or edited): it is only replaced after a yes in a terminal, with a backup."""
     src_dir = g.ENGINE / "tools" / "claude-agents"
-    dest_dir = Path.home() / ".claude" / "agents"
     if not src_dir.is_dir():
         return
+    for claude_dir in claude_dirs.targets(prompt=interactive):
+        _setup_agents_in(src_dir, claude_dir / "agents", interactive)
+
+
+def _setup_agents_in(src_dir: Path, dest_dir: Path, interactive: bool) -> None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     for src in sorted(src_dir.glob("*.md")):
         dest = dest_dir / src.name
@@ -743,7 +749,8 @@ def _setup_routing(data: Path) -> None:
 
 def _setup_user_level(data: Path) -> None:
     line = _routing_line(data)
-    _append_if_missing(Path.home() / ".claude" / "CLAUDE.md", line)
+    for claude_dir in claude_dirs.targets():
+        _append_if_missing(claude_dir / "CLAUDE.md", line)
     codex_line = USER_LEVEL_CODEX_LINE.format(agents=f"{data.as_posix()}/AGENTS.md")
     _append_if_missing(Path.home() / ".codex" / "AGENTS.md", codex_line)
 
@@ -1101,28 +1108,36 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("WARN", "profile not filled yet: run `onboard --questions`, ask the user, "
                           "then `onboard --answers <file>` (or `onboard` in a terminal)")
 
-    stale = stale_claude_agents()
-    if stale:
-        check("WARN", f"claude-agents out of date: {', '.join(stale)}")
-    else:
-        check("OK", "claude-agents up to date")
-
     claude_hooks = sys.modules.get("claude_hooks")
-    if claude_hooks is not None:
-        check(*claude_hooks.status())
-        check(*claude_hooks.context_warn_status())
-        check(*claude_hooks.delegation_warn_status())
+    models = sys.modules.get("models")
+    for claude_dir, source in claude_dirs.sources(data):
+        settings = claude_dir / "settings.json"
+        check("OK", f"Claude config dir: {claude_dir} ({source})")
+        stale = stale_claude_agents(claude_dir / "agents")
+        if stale:
+            check("WARN", f"claude-agents out of date in {claude_dir / 'agents'}: "
+                          f"{', '.join(stale)}")
+        else:
+            check("OK", f"claude-agents up to date in {claude_dir / 'agents'}")
+        if claude_hooks is not None:
+            check(*claude_hooks.status(settings))
+            check(*claude_hooks.context_warn_status(settings))
+            check(*claude_hooks.delegation_warn_status(settings))
+        if models is not None and data is not None:
+            result = models.status(data, settings, claude_dir / "agents")
+            if result is not None:
+                check(*result)
+    unconfirmed = claude_dirs.candidates(data)
+    if unconfirmed:
+        graph_py = g.ENGINE / "tools" / "graph.py"
+        check("WARN", f"unconfirmed Claude config dirs: {', '.join(str(c) for c in unconfirmed)} "
+                      f"(ask the user: `claude-dirs --ask`; `python \"{graph_py}\" claude-dirs "
+                      "--add <path>` to include one)")
 
     codex_hooks = sys.modules.get("codex_hooks")
     codex_home = Path.home() / ".codex"
     if codex_hooks is not None and codex_home.is_dir():
         for result in codex_hooks.statuses():
-            check(*result)
-
-    models = sys.modules.get("models")
-    if models is not None and data is not None:
-        result = models.status(data)
-        if result is not None:
             check(*result)
 
     if data is not None:
@@ -1471,7 +1486,7 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     p = sub.add_parser("setup", help="wire env vars, agents and routing to this engine")
     p.add_argument("--data", help="data dir (default: resolve_data_dir())")
-    p.add_argument("--user-level", action="store_true", help="also wire ~/.claude and ~/.codex")
+    p.add_argument("--user-level", action="store_true", help="also wire ~/.claude (or $CLAUDE_CONFIG_DIR) and ~/.codex")
     p.add_argument("--no-env", action="store_true")
     p.add_argument("--no-agents", action="store_true")
     p.add_argument("--no-routing", action="store_true")

@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GRAPH_PATH = REPO_ROOT / "tools" / "graph.py"
 TOOLS_DIR = REPO_ROOT / "tools"
 
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(_var, None)
 
 

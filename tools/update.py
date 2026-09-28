@@ -31,6 +31,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import claude_dirs
 import graph as g
 import schema as sch
 
@@ -353,15 +354,20 @@ def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
     return True
 
 
+def _claude_in_use(data: Path) -> bool:
+    """True if any registered Claude Code config dir (see claude_dirs.py) exists."""
+    return any(d.is_dir() for d in claude_dirs.registered(data))
+
+
 # --- update command: Claude Code hooks ------------------------------------------
 
 def _claude_hooks_step(engine: Path, data: Path, args) -> None:
     """Offers the engine's Claude Code hooks (agent-guard, context-warn, status
     line) when they are missing or point at an old path. ~/.claude/settings.json
-    belongs to the user, so --yes alone never writes it: an interactive yes or
+    (or $CLAUDE_CONFIG_DIR/settings.json) belongs to the user, so --yes alone never writes it: an interactive yes or
     --claude-hooks does. Skipped when the engine has no claude-hooks command or
-    this computer has no ~/.claude folder (Claude Code not used here)."""
-    if not (engine / "tools" / "claude_hooks.py").exists() or not (Path.home() / ".claude").is_dir():
+    this computer has no ~/.claude (or $CLAUDE_CONFIG_DIR) folder (Claude Code not used here)."""
+    if not (engine / "tools" / "claude_hooks.py").exists() or not _claude_in_use(data):
         return
     result = run_step(engine, data, ["claude-hooks"])
     if result.returncode != 0 or "would update" not in result.stdout:
@@ -392,9 +398,9 @@ def _models_step(engine: Path, data: Path, args) -> None:
     worker-*.md frontmatter with the engine's model config (`models`, see
     tools/models.py). settings.json belongs to the user, so --yes alone never
     writes it: an interactive yes or --models does. Skipped when the engine has
-    no models command or this computer has no ~/.claude folder (Claude Code not
+    no models command or this computer has no ~/.claude (or $CLAUDE_CONFIG_DIR) folder (Claude Code not
     used here)."""
-    if not (engine / "tools" / "models.py").exists() or not (Path.home() / ".claude").is_dir():
+    if not (engine / "tools" / "models.py").exists() or not _claude_in_use(data):
         return
     result = run_step(engine, data, ["models"])
     if result.returncode != 0 or "OUT OF DATE" not in result.stdout:
@@ -420,19 +426,20 @@ def _models_step(engine: Path, data: Path, args) -> None:
 # --- update command: Claude Code subagent files -----------------------------
 
 def _agents_step(engine: Path, data: Path, args) -> None:
-    """Offers to refresh ~/.claude/agents/worker-*.md (and the other shipped
+    """Offers to refresh ~/.claude/agents/worker-*.md (or under $CLAUDE_CONFIG_DIR; and the other shipped
     subagent files) that differ from the engine's current versions (see
     onboarding.stale_claude_agents / onboarding._setup_agents). ~/.claude
     belongs to the user, so --yes alone never writes it: an interactive yes or
     --agents does. Skipped when the engine ships no agent files, this computer
-    has no ~/.claude folder, or the onboarding module is unavailable."""
+    has no ~/.claude (or $CLAUDE_CONFIG_DIR) folder, or the onboarding module is unavailable."""
     src_dir = engine / "tools" / "claude-agents"
-    if not src_dir.is_dir() or not (Path.home() / ".claude").is_dir():
+    if not src_dir.is_dir() or not _claude_in_use(data):
         return
     onboarding = sys.modules.get("onboarding")
     if onboarding is None:
         return
-    stale = onboarding.stale_claude_agents(Path.home() / ".claude" / "agents")
+    stale = sorted({name for d in claude_dirs.registered(data) if d.is_dir()
+                    for name in onboarding.stale_claude_agents(d / "agents")})
     if not stale:
         return
     print(f"\nClaude Code subagent files are missing or out of date: {', '.join(stale)}")
@@ -742,7 +749,7 @@ def cmd_update(args) -> None:
                      "corrupt it. Update the engine on this computer instead.")
 
     print("after switching: migrate (one commit in the data repo), setup (only the engine's "
-          "own subagent files in ~/.claude/agents and missing routing files, never shell "
+          "own subagent files in ~/.claude/agents (or $CLAUDE_CONFIG_DIR/agents) and missing routing files, never shell "
           "startup files or environment variables) and doctor; each change is listed.")
     if not args.yes:
         if g.stdin_is_interactive():
@@ -792,7 +799,7 @@ def register(sub) -> None:
                    help="sync Claude Code's model settings (models --apply) without asking "
                         "if they are out of date; --yes alone only prints the command")
     p.add_argument("--agents", action="store_true",
-                   help="refresh ~/.claude/agents/*.md from the engine's shipped versions "
+                   help="refresh ~/.claude/agents/ (or $CLAUDE_CONFIG_DIR/agents/)*.md from the engine's shipped versions "
                         "without asking if they are out of date; --yes alone only prints "
                         "the command")
     p.set_defaults(func=cmd_update)

@@ -18,7 +18,7 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
 
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(_var, None)
 
 
@@ -235,7 +235,7 @@ class TestCmdClaudeHooks(unittest.TestCase):
         with redirect_stdout(buf):
             claude_hooks.cmd_claude_hooks(Namespace(install=False, settings=None))
         out = buf.getvalue()
-        self.assertIn(str(claude_hooks.DEFAULT_SETTINGS), out)
+        self.assertIn(str(claude_hooks.default_settings()), out)
 
 
 class TestStatus(unittest.TestCase):

@@ -19,7 +19,7 @@ from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
 
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     import os
     os.environ.pop(_var, None)
 

@@ -77,6 +77,9 @@ def _settings_path(settings_path: str | None = None) -> str:
     env_path = os.environ.get(SETTINGS_ENV_VAR)
     if env_path:
         return env_path
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if config_dir:
+        return os.path.join(os.path.expanduser(config_dir), "settings.json")
     return os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 
 
