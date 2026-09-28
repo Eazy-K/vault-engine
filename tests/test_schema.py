@@ -24,7 +24,7 @@ from unittest import mock
 
 # Never let a test reach the real user's data repo through the environment
 # (a missing patch then fails loudly instead of writing into it).
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(_var, None)
 
 

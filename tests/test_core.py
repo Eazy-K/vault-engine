@@ -14,6 +14,7 @@ import sys
 import types
 import tempfile
 import unittest
+from unittest import mock
 from argparse import Namespace
 from contextlib import redirect_stdout
 from io import StringIO
@@ -21,7 +22,7 @@ from pathlib import Path
 
 # Never let a test reach the real user's data repo through the environment
 # (a missing patch then fails loudly instead of writing into it).
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(_var, None)
 
 
@@ -433,17 +434,21 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         real), so the notice's own logic is exercised without ever touching a
         real ~/.claude folder."""
         write(self.data / "standards" / "a.md", note("A", "hello", core=True))
-        names = ("claude_hooks", "codex_hooks", "models", "onboarding")
+        names = ("claude_dirs", "claude_hooks", "codex_hooks", "models", "onboarding")
         saved = {name: sys.modules.get(name) for name in names}
-        for name, module in (("claude_hooks", claude_hooks), ("codex_hooks", codex_hooks),
+        for name, module in (("claude_dirs", None), ("claude_hooks", claude_hooks),
+                             ("codex_hooks", codex_hooks),
                              ("models", models),
                              ("onboarding", onboarding)):
             if module is None:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+        env = {"CLAUDE_CONFIG_DIR": str(getattr(self, "_claude_dir",
+                                                self.tmp / "no-such-home" / ".claude"))}
         try:
-            return self._run_context(no_project=True, no_log=False, **overrides)
+            with mock.patch.dict(os.environ, env):
+                return self._run_context(no_project=True, no_log=False, **overrides)
         finally:
             for name, module in saved.items():
                 if module is None:
@@ -454,9 +459,9 @@ class TestProjectSeedingAndHint(unittest.TestCase):
     def test_stale_claude_hooks_prints_notice(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
         claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
         fake_hooks = types.SimpleNamespace(
-            DEFAULT_SETTINGS=claude_dir / "settings.json",
-            status=lambda: ("WARN", "agent-guard hook not installed"))
+            status=lambda settings_path=None: ("WARN", "agent-guard hook not installed"))
         output = self._run_context_with_modules(claude_hooks=fake_hooks)
         self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
         self.assertIn("update --claude-hooks --models", output)
@@ -464,18 +469,18 @@ class TestProjectSeedingAndHint(unittest.TestCase):
     def test_stale_models_prints_notice(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
         claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
         fake_models = types.SimpleNamespace(
-            DEFAULT_SETTINGS=claude_dir / "settings.json",
-            status=lambda data_dir: ("WARN", "model config out of date"))
+            status=lambda data_dir, settings_path=None, agents_dir=None: ("WARN", "model config out of date"))
         output = self._run_context_with_modules(models=fake_models)
         self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
 
     def test_stale_claude_agents_prints_notice(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
         claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
         fake_hooks = types.SimpleNamespace(
-            DEFAULT_SETTINGS=claude_dir / "settings.json",
-            status=lambda: ("OK", "agent-guard hook installed"))
+            status=lambda settings_path=None: ("OK", "agent-guard hook installed"))
         fake_onboarding = types.SimpleNamespace(
             stale_claude_agents=lambda dest_dir: ["worker-low.md"])
         output = self._run_context_with_modules(claude_hooks=fake_hooks, onboarding=fake_onboarding)
@@ -485,19 +490,17 @@ class TestProjectSeedingAndHint(unittest.TestCase):
     def test_up_to_date_is_quiet(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
         claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
         fake_hooks = types.SimpleNamespace(
-            DEFAULT_SETTINGS=claude_dir / "settings.json",
-            status=lambda: ("OK", "agent-guard hook installed"))
+            status=lambda settings_path=None: ("OK", "agent-guard hook installed"))
         fake_models = types.SimpleNamespace(
-            DEFAULT_SETTINGS=claude_dir / "settings.json",
-            status=lambda data_dir: ("OK", "model config matches"))
+            status=lambda data_dir, settings_path=None, agents_dir=None: ("OK", "model config matches"))
         output = self._run_context_with_modules(claude_hooks=fake_hooks, models=fake_models)
         self.assertNotIn("out of date on this computer", output)
 
     def test_no_claude_dir_is_quiet(self):
         fake_hooks = types.SimpleNamespace(
-            DEFAULT_SETTINGS=self.tmp / "no-such-home" / ".claude" / "settings.json",
-            status=lambda: ("WARN", "agent-guard hook not installed"))
+            status=lambda settings_path=None: ("WARN", "agent-guard hook not installed"))
         output = self._run_context_with_modules(claude_hooks=fake_hooks)
         self.assertNotIn("out of date on this computer", output)
 

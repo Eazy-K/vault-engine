@@ -16,11 +16,20 @@ import re
 import sys
 from pathlib import Path
 
+import claude_dirs
 import graph as g
 import model_config as mc
 
-DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
-DEFAULT_AGENTS_DIR = Path.home() / ".claude" / "agents"
+
+
+def default_settings() -> Path:
+    """settings.json in the active Claude config dir ($CLAUDE_CONFIG_DIR or ~/.claude)."""
+    return g.claude_config_dir() / "settings.json"
+
+
+def default_agents_dir() -> Path:
+    return g.claude_config_dir() / "agents"
+
 
 WORKER_ROLES = ("worker-low", "worker-medium")
 FLAG_TO_ROLE = {"orchestrator": "orchestrator", "worker_low": "worker-low",
@@ -194,11 +203,13 @@ def apply_config(effective: dict, settings_path: Path, agents_dir: Path) -> list
 
 # --- doctor ---------------------------------------------------------------
 
-def status(data_dir: Path, settings_path: Path = DEFAULT_SETTINGS,
-           agents_dir: Path = DEFAULT_AGENTS_DIR) -> tuple[str, str] | None:
+def status(data_dir: Path, settings_path: Path | None = None,
+           agents_dir: Path | None = None) -> tuple[str, str] | None:
     """("OK"|"WARN", message) for `doctor`: whether settings.json and the
     worker-*.md agent files match the configured model selection. None (skip
     silently) if settings.json doesn't exist yet -- nothing to compare."""
+    settings_path = settings_path or default_settings()
+    agents_dir = agents_dir or default_agents_dir()
     if not settings_path.exists():
         return None
     effective, _ = mc.load_layered(data_dir / "vault.config.json",
@@ -228,9 +239,6 @@ def cmd_models(args: argparse.Namespace) -> None:
     data_dir = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
     shared_path = data_dir / "vault.config.json"
     machine_path = data_dir / ".graph" / "machine.json"
-    settings_path = Path(args.settings).expanduser() if args.settings else DEFAULT_SETTINGS
-    agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else DEFAULT_AGENTS_DIR
-
     role_updates: dict[str, dict[str, str]] = {}
     explicit_worker_models: set[str] = set()
 
@@ -283,6 +291,18 @@ def cmd_models(args: argparse.Namespace) -> None:
         model_src, effort_src = sources[role]["model"], sources[role]["effort"]
         print(f"  {role}: model={model} ({model_src})  effort={effort} ({effort_src})")
 
+    if args.settings or args.agents_dir:
+        pairs = [(Path(args.settings).expanduser() if args.settings else default_settings(),
+                  Path(args.agents_dir).expanduser() if args.agents_dir else default_agents_dir())]
+    else:
+        pairs = [(d / "settings.json", d / "agents")
+                 for d in claude_dirs.targets(prompt=args.apply)]
+    for settings_path, agents_dir in pairs:
+        _report_and_apply(args, effective, settings_path, agents_dir)
+
+
+def _report_and_apply(args: argparse.Namespace, effective: dict, settings_path: Path,
+                      agents_dir: Path) -> None:
     if settings_path.exists():
         note = "matches" if settings_matches(effective, settings_path) else "OUT OF DATE"
         print(f"  {settings_path}: {note}")
@@ -324,6 +344,9 @@ def register(sub: argparse._SubParsersAction) -> None:
                          "model/effortLevel and the worker-*.md frontmatter "
                          "(backs up each file first)")
     p.add_argument("--data", help="data dir (default: resolve_data_dir())")
-    p.add_argument("--settings", help=f"settings.json path (default: {DEFAULT_SETTINGS})")
-    p.add_argument("--agents-dir", help=f"Claude Code agents dir (default: {DEFAULT_AGENTS_DIR})")
+    p.add_argument("--settings", help="settings.json path (default: every registered Claude "
+                                       "config dir, see `claude-dirs`; ~/.claude or "
+                                       "$CLAUDE_CONFIG_DIR)")
+    p.add_argument("--agents-dir", help="Claude Code agents dir (default: agents/ in every "
+                                         "registered Claude config dir)")
     p.set_defaults(func=cmd_models)

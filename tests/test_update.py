@@ -23,7 +23,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-for _var in ("VAULT_DATA", "VAULT_HOME"):
+for _var in ("VAULT_DATA", "VAULT_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(_var, None)
 
 

@@ -40,6 +40,13 @@ __version__ = "0.8.0"
 ENGINE = Path(__file__).resolve().parent.parent
 
 
+def claude_config_dir() -> Path:
+    """Where Claude Code keeps its config: $CLAUDE_CONFIG_DIR when set (Claude
+    Code reads it too), else ~/.claude. Resolved at call time, never cached."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
 def _is_windows() -> bool:
     # A function, not a bare os.name check, so tests can pretend to be Windows
     # without patching os.name (which breaks pathlib on other systems).
@@ -205,7 +212,7 @@ MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
-              "claude_hooks", "codex_hooks", "models")  # optional modules in tools/
+              "claude_dirs", "claude_hooks", "codex_hooks", "models")  # optional modules in tools/
 
 
 def sanitize_machine_name(raw: str) -> str:
@@ -1337,12 +1344,15 @@ def cmd_query(args, content: bool) -> None:
             codex_hooks = sys.modules.get("codex_hooks")
             models = sys.modules.get("models")
             onboarding = sys.modules.get("onboarding")
+            claude_dirs = sys.modules.get("claude_dirs")
             if claude_hooks is not None or models is not None:
-                claude_dir = (claude_hooks or models).DEFAULT_SETTINGS.parent
-                if claude_dir.is_dir():
-                    stale = claude_hooks is not None and claude_hooks.status()[0] != "OK"
+                dirs = claude_dirs.registered(paths.data) if claude_dirs is not None else [
+                    claude_config_dir()]
+                for claude_dir in [d for d in dirs if d.is_dir()]:
+                    settings = claude_dir / "settings.json"
+                    stale = claude_hooks is not None and claude_hooks.status(settings)[0] != "OK"
                     if not stale and models is not None:
-                        result = models.status(paths.data)
+                        result = models.status(paths.data, settings, claude_dir / "agents")
                         stale = result is not None and result[0] != "OK"
                     if not stale and onboarding is not None:
                         stale = bool(onboarding.stale_claude_agents(claude_dir / "agents"))
@@ -1351,6 +1361,7 @@ def cmd_query(args, content: bool) -> None:
                         print(f"<!-- Claude Code hooks/model settings are out of date on this "
                               f"computer: ask the user once, then run python \"{graph_py}\" "
                               f"update --claude-hooks --models --agents -->")
+                        break
             codex_home = Path.home() / ".codex"
             if codex_hooks is not None and codex_home.is_dir():
                 checks = codex_hooks.statuses()
@@ -1425,7 +1436,8 @@ def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
         from datetime import date
-        projects_dir = Path(args.projects_dir).expanduser()
+        projects_dir = (Path(args.projects_dir).expanduser() if args.projects_dir
+                        else claude_config_dir() / "projects")
         codex_dir = Path(args.codex_dir).expanduser()
         since = date.fromisoformat(args.since) if args.since else None
         print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json,
@@ -1573,8 +1585,9 @@ def main() -> None:
     p = sub.add_parser("stats", help="how often context calls are closed by reinforce")
     p.add_argument("--tokens", action="store_true",
                    help="read-only token usage report over local Claude Code transcripts")
-    p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
-                   help="transcripts root (default: ~/.claude/projects)")
+    p.add_argument("--projects-dir", default=None,
+                   help="transcripts root (default: <Claude config dir>/projects, i.e. "
+                        "$CLAUDE_CONFIG_DIR or ~/.claude)")
     p.add_argument("--codex-dir", default=str(Path("~/.codex/sessions").expanduser()),
                    help="Codex rollout sessions root, experimental (default: ~/.codex/sessions)")
     p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
@@ -1610,6 +1623,10 @@ def main() -> None:
         module.register(sub)
 
     args = parser.parse_args()
+    # Remember the Claude config dir this command runs with (see claude_dirs.py).
+    dirs_module = sys.modules.get("claude_dirs")
+    if dirs_module is not None and os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
+        dirs_module.record_env()
     if getattr(args, "func", None):
         args.func(args)
     elif args.command in ("query", "context"):
