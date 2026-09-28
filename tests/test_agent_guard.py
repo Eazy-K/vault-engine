@@ -20,11 +20,22 @@ SCRIPT = REPO_ROOT / "tools" / "claude-hooks" / "agent-guard.py"
 def _run(payload, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.pop("VAULT_AGENT_GUARD", None)
+    # Isolate from this machine's real vault: without this, a host that has set
+    # VAULT_DATA/VAULT_HOME to a vault.config.json with a non-default orchestrator
+    # model would change ALLOWED_MODELS and make these tests flaky.
+    env.pop("VAULT_DATA", None)
+    env.pop("VAULT_HOME", None)
     if env_extra:
         env.update(env_extra)
     stdin = payload if isinstance(payload, str) else json.dumps(payload)
     return subprocess.run([sys.executable, str(SCRIPT)], input=stdin,
                            capture_output=True, text=True, env=env)
+
+
+def _assert_denied(case, out) -> None:
+    case.assertEqual(out.returncode, 0)
+    payload = json.loads(out.stdout)
+    case.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 def _agent_call(subagent_type=None, model=None) -> dict:
@@ -37,10 +48,7 @@ def _agent_call(subagent_type=None, model=None) -> dict:
 
 
 class TestAgentGuard(unittest.TestCase):
-    def assertDenied(self, out):
-        self.assertEqual(out.returncode, 0)
-        payload = json.loads(out.stdout)
-        self.assertEqual(payload["hookSpecificOutput"]["permissionDecision"], "deny")
+    assertDenied = _assert_denied
 
     def test_allows_worker_low_with_sonnet(self):
         out = _run(_agent_call("worker-low", "sonnet"))
@@ -108,6 +116,58 @@ class TestAgentGuard(unittest.TestCase):
 
     def test_non_string_subagent_type_denies(self):
         out = _run({"tool_name": "Agent", "tool_input": {"subagent_type": 123}})
+        self.assertDenied(out)
+
+
+class TestAgentGuardModelConfig(unittest.TestCase):
+    """Allowed worker models come from <data>/vault.config.json (+ machine.json)
+    "models" -> "orchestrator" -> "model" (see tools/model_config.py), read via
+    VAULT_DATA. Everything here uses a throwaway temp dir; the real vault is
+    never read."""
+
+    assertDenied = _assert_denied
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def _write_config(self, models: dict) -> None:
+        (self.tmp / "vault.config.json").write_text(
+            json.dumps({"models": models}), encoding="utf-8")
+
+    def test_no_config_falls_back_to_default(self):
+        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertDenied(out)
+        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertEqual(out.returncode, 0)
+
+    def test_sonnet_orchestrator_only_allows_haiku(self):
+        self._write_config({"orchestrator": {"model": "sonnet"}})
+        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertDenied(out)
+        out = _run(_agent_call("worker-low", "haiku"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertEqual(out.returncode, 0)
+
+    def test_opus_orchestrator_still_allows_sonnet_and_haiku(self):
+        self._write_config({"orchestrator": {"model": "opus"}})
+        for model in ("sonnet", "haiku"):
+            out = _run(_agent_call("worker-low", model), env_extra={"VAULT_DATA": str(self.tmp)})
+            self.assertEqual(out.returncode, 0)
+
+    def test_deny_message_mentions_allowed_models(self):
+        self._write_config({"orchestrator": {"model": "sonnet"}})
+        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertDenied(out)
+        payload = json.loads(out.stdout)
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("haiku", reason)
+
+    def test_invalid_config_falls_back_to_default(self):
+        (self.tmp / "vault.config.json").write_text("not json", encoding="utf-8")
+        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertEqual(out.returncode, 0)
+        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
         self.assertDenied(out)
 
 

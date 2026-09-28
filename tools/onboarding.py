@@ -1102,6 +1102,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         check(*claude_hooks.context_warn_status())
         check(*claude_hooks.delegation_warn_status())
 
+    models = sys.modules.get("models")
+    if models is not None and data is not None:
+        result = models.status(data)
+        if result is not None:
+            check(*result)
+
     if data is not None:
         paths = g.Paths(g.ENGINE, data)
         for root in g.project_roots(paths):
