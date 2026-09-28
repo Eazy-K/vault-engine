@@ -446,9 +446,13 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   tokens; re-warns after every further ~25K tokens of growth). The warning tells the
   model to write the current state to the vault's status note, then suggest the user
   start a new session or run `/compact`.
-- a `statusLine` command (`statusline.py`) that shows context usage, e.g. `ctx 44K/200K
-  22%` -- **only if `settings.json` has no `statusLine` configured yet**; an existing
-  one is left untouched (the installer prints a note when this happens).
+- a `statusLine` command (`statusline.py`) that shows the model and effort, the current
+  folder with its git branch, context usage, and session cost, e.g. `Opus 5.5·med │
+  vault-engine (main) │ ctx 44K/200K 22% │ $1.42` (segments with missing data are
+  omitted; effort comes from Claude Code's input if available, otherwise from
+  `settings.json`'s `modelSettings.<model>.effortLevel` or `effortLevel`) --
+  **only if `settings.json` has no `statusLine` configured yet**; an existing one is
+  left untouched (the installer prints a note when this happens).
 
 None of these touch any other hook or setting already there. `doctor` warns if either
 hook isn't installed.
