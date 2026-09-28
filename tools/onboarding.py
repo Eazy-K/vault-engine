@@ -893,9 +893,11 @@ def _local_ref_exists(data: Path, ref: str) -> bool:
 
 def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[tuple[str, str]]:
     """Problems an older vault's CI workflow carries over: the engine pin lags
-    behind a stable install, the data repo is on a branch the workflow never
-    runs on (v0.2.0 vaults were often created on `master`), or `init` never
-    found a GitHub remote to fill the engine repo placeholder in."""
+    behind a stable install, the data repo is on the legacy `master` branch
+    while CI is configured for `main`, or `init` never found a GitHub remote to
+    fill the engine repo placeholder in. Feature branches are intentionally
+    ignored: pull requests can still run the workflow, and renaming/deleting
+    them is not an appropriate doctor suggestion."""
     text = _read_text(data / ".github" / "workflows" / "vault.yml")
     if not text:
         return []
@@ -918,7 +920,7 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
         branch = out.stdout.strip() if out.returncode == 0 else ""
     except OSError:
         branch = ""
-    if branch and branches and branch not in branches:
+    if branch == "master" and branches and branch not in branches:
         target = "main" if "main" in branches else branches[0]
         if not _has_remote(data):
             # No remote to push to yet (or to run CI at all): renaming the
