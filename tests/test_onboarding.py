@@ -48,6 +48,7 @@ _spec.loader.exec_module(graph)
 
 sys.path.insert(0, str(TOOLS_DIR))
 import onboarding  # noqa: E402  (path must be set up first)
+import codex_hooks  # noqa: E402
 
 
 def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -846,6 +847,26 @@ class TestDoctor(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         self.assertEqual(ctx.exception.code, 0)
         self.assertNotIn("FAIL", buf.getvalue())
+
+    def test_doctor_reports_codex_setup(self):
+        codex_home = self.home / ".codex"
+        codex_home.mkdir()
+        config = codex_home / "config.toml"
+        config.write_text('model = "gpt-6-sol"\nmodel_reasoning_effort = "high"\n',
+                          encoding="utf-8")
+        codex_hooks.cmd_codex_hooks(Namespace(install=True,
+            hooks=str(codex_home / "hooks.json"), agents_dir=str(codex_home / "agents")))
+        with mock.patch.dict(os.environ, self._env(), clear=True), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=_ollama_tags("bge-m3:latest")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit) as ctx:
+                onboarding.cmd_doctor(Namespace())
+        output = buf.getvalue()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("Codex hooks installed", output)
+        self.assertIn("Codex model and reasoning effort are explicitly configured", output)
+        self.assertIn("Codex worker profiles match engine templates", output)
 
     def test_fail_missing_agents_md(self):
         (self.data / "AGENTS.md").unlink()

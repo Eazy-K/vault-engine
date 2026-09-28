@@ -205,7 +205,7 @@ MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
-              "claude_hooks", "models")  # optional modules in tools/
+              "claude_hooks", "codex_hooks", "models")  # optional modules in tools/
 
 
 def sanitize_machine_name(raw: str) -> str:
@@ -1334,6 +1334,7 @@ def cmd_query(args, content: bool) -> None:
         # and never allowed to fail context itself.
         try:
             claude_hooks = sys.modules.get("claude_hooks")
+            codex_hooks = sys.modules.get("codex_hooks")
             models = sys.modules.get("models")
             onboarding = sys.modules.get("onboarding")
             if claude_hooks is not None or models is not None:
@@ -1350,6 +1351,14 @@ def cmd_query(args, content: bool) -> None:
                         print(f"<!-- Claude Code hooks/model settings are out of date on this "
                               f"computer: ask the user once, then run python \"{graph_py}\" "
                               f"update --claude-hooks --models --agents -->")
+            codex_home = Path.home() / ".codex"
+            if codex_hooks is not None and codex_home.is_dir():
+                checks = codex_hooks.statuses()
+                if any(level != "OK" for level, _message in checks):
+                    graph_py = Path(__file__).resolve()
+                    print(f"<!-- Codex hooks/model/worker settings are missing or out of "
+                          f"date on this computer: ask the user once, then run python "
+                          f"\"{graph_py}\" codex-hooks --install -->")
         except Exception:
             pass
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.

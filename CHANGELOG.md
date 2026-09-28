@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## Unreleased
+
+### Added
+- `codex-hooks [--install]` installs the Codex context/delegation hooks and missing worker profiles. Existing hooks are merged and backed up before changes; customized worker TOMLs are kept. `doctor` and `context` report missing/stale hooks and worker profiles and check for explicit, valid top-level Codex model/effort values when `~/.codex` exists. They do not enforce a preferred model because that is user-specific.
+
 ## [0.8.0] - 2026-09-28
 
 ### Added

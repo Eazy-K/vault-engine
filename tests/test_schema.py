@@ -790,6 +790,17 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         self.assertIn("git branch -m master main && git pull --rebase origin main && "
                       "git push -u origin main", out)
 
+    def test_feature_branch_is_not_advised_to_rename_or_delete(self):
+        self._workflow("main")
+        self._on_branch("docs/codex-parity")
+        git(["remote", "add", "origin", "https://example.invalid/owner/vault.git"], self.data)
+        sha = git(["rev-parse", "HEAD"], self.data).stdout.strip()
+        git(["update-ref", "refs/remotes/origin/main", sha], self.data)
+        out = self._run_doctor_on(("dev", "main"))
+        self.assertNotIn("vault CI runs on pushes", out)
+        self.assertNotIn("git branch -m docs/codex-parity", out)
+        self.assertNotIn("delete docs/codex-parity", out)
+
     def test_engine_repo_placeholder_left_in_place_is_warned(self):
         path = self.data / ".github" / "workflows" / "vault.yml"
         path.parent.mkdir(parents=True, exist_ok=True)
