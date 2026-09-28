@@ -350,8 +350,8 @@ class TestProjectSeedingAndHint(unittest.TestCase):
     def test_no_notes_prints_hint(self):
         output = self._run_context()
         self.assertIn("project example-project has no notes", output)
-        self.assertIn("projects/example-project/example-project-overview.md", output)
-        self.assertIn("projects/example-project/example-project-status.md", output)
+        self.assertIn("projects --ask", output)
+        self.assertIn("projects --skip example-project", output)
 
     def test_project_note_is_seeded_and_no_hint(self):
         write(self.data / "projects" / "example-project" / "example-project-overview.md",

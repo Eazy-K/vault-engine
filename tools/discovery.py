@@ -5,6 +5,17 @@ Only lightweight metadata is read (repo name, README first line, file
 extension counts, git remote host, last commit date). Code is never indexed
 and nothing leaves the machine; results are cached under the data folder,
 which is gitignored (.graph/projects.json).
+
+This module never writes project notes itself: `projects --ask` only prints a
+report so the agent can ask the user which discovered projects should get
+notes, then write real ones by hand (see `docs/agent-setup.md`). Two ways a
+project stops being suggested, and how they differ:
+- `exclude` (globs) in the shared `vault.config.json`: the project is hidden
+  from discovery entirely, on every computer that uses this vault.
+- `skip_projects` (names) in this computer's gitignored `.graph/machine.json`
+  (written by `projects --skip`): the project still shows up in `projects`
+  (marked skipped) and stays out of `--missing`/`--ask`, but only on this
+  computer -- another computer sharing the vault is still asked about it.
 """
 from __future__ import annotations
 
@@ -150,6 +161,42 @@ def discover(paths: g.Paths) -> list[dict]:
     return results
 
 
+def _machine_json_path(paths: g.Paths) -> Path:
+    return paths.data / ".graph" / "machine.json"
+
+
+def _load_machine_json(paths: g.Paths) -> dict:
+    try:
+        data = json.loads(_machine_json_path(paths).read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_machine_json(paths: g.Paths, updates: dict) -> None:
+    """Merge `updates` into <data>/.graph/machine.json, keeping other keys
+    (machine name, project_roots, ...) intact. Same shape and merge pattern
+    as onboarding._write_machine_json, kept local here to avoid importing the
+    much larger onboarding module for one write."""
+    path = _machine_json_path(paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _load_machine_json(paths)
+    data.update(updates)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                     encoding="utf-8", newline="\n")
+
+
+def skip_list(paths: g.Paths) -> list[str]:
+    """Project names this computer never suggests notes for (see the module
+    docstring for how this differs from the shared `exclude` patterns)."""
+    raw = _load_machine_json(paths).get("skip_projects")
+    return [n for n in raw if isinstance(n, str)] if isinstance(raw, list) else []
+
+
+def set_skip_list(paths: g.Paths, names: list[str]) -> None:
+    _write_machine_json(paths, {"skip_projects": names})
+
+
 def _cache_path(paths: g.Paths) -> Path:
     return paths.data / ".graph" / "projects.json"
 
@@ -192,9 +239,24 @@ def load_cached(paths: g.Paths, refresh: bool = False) -> list[dict]:
     return results
 
 
+def cached_only(paths: g.Paths) -> list[dict]:
+    """Read the discovery cache without ever scanning or shelling out to git,
+    for callers like `context` that run on every prompt and must stay fast.
+    TTL is ignored here (a stale-but-present cache is still useful for a
+    one-line hint); [] when there is no cache yet or it can't be parsed."""
+    try:
+        data = json.loads(_cache_path(paths).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    projects = data.get("projects") if isinstance(data, dict) else None
+    return projects if isinstance(projects, list) else []
+
+
 def missing_projects(paths: g.Paths) -> list[str]:
-    """Names of discovered projects that have no notes yet, from the cache."""
-    return [p["name"] for p in load_cached(paths) if not p["has_notes"]]
+    """Names of discovered projects that have no notes yet and are not on
+    this computer's skip list, from the cache."""
+    skip = set(skip_list(paths))
+    return [p["name"] for p in load_cached(paths) if not p["has_notes"] and p["name"] not in skip]
 
 
 def _print_table(projects: list[dict]) -> None:
@@ -202,31 +264,91 @@ def _print_table(projects: list[dict]) -> None:
         print("No projects found.")
         return
     for p in projects:
-        notes = "yes" if p["has_notes"] else "no"
+        notes = "no (skipped)" if p.get("skipped") and not p["has_notes"] else \
+                ("yes" if p["has_notes"] else "no")
         langs = ",".join(p["languages"]) or "-"
         commit = p["last_commit"] or "-"
         readme = p["readme"] or ""
-        print(f"{p['name']:<24} notes:{notes:<4} {langs:<18} {commit:<20} {readme}")
+        print(f"{p['name']:<24} notes:{notes:<13} {langs:<18} {commit:<20} {readme}")
+
+
+def _project_line(p: dict) -> str:
+    langs = ",".join(p["languages"]) or "-"
+    commit = p["last_commit"] or "-"
+    readme = p["readme"] or ""
+    return f"  {p['name']:<24} {langs:<18} {commit:<20} {readme}"
+
+
+def _print_ask(projects: list[dict]) -> None:
+    """Report for the agent, not the user: `projects --ask` never writes notes
+    itself (see the module docstring)."""
+    candidates = [p for p in projects if not p["has_notes"] and not p["skipped"]]
+    if not candidates:
+        print("Nothing to ask: every discovered project already has notes or is on the "
+              "skip list (see `projects` for why).")
+        return
+    graph_py = Path(g.__file__).resolve()
+    print("Discovered projects without vault notes:")
+    for p in candidates:
+        print(_project_line(p))
+    print()
+    print("Ask the user which of these should get vault notes (projects/<name>/<name>-overview.md "
+          "and projects/<name>/<name>-status.md), and whether there is a project folder not in "
+          "this list -- for example one that isn't a git repo, or lives elsewhere -- they also "
+          "want included.")
+    print("For each project the user picks: read its README, top-level folder layout, and "
+          "manifest files (package.json, pyproject.toml, ...) plus recent commit metadata only "
+          "(never index code -- see defaults/standards/data-policy.md), then write real notes "
+          "(no skeleton/placeholder notes -- see defaults/standards/vault-notes.md), run "
+          f'python "{graph_py}" lint, and commit.')
+    print(f'For the rest: python "{graph_py}" projects --skip ' +
+          " ".join(p["name"] for p in candidates))
 
 
 def cmd_projects(args) -> None:
     paths = g.default_paths()
+    if args.skip or args.unskip:
+        current = set(skip_list(paths))
+        to_skip = set(args.skip or [])
+        to_unskip = set(args.unskip or [])
+        added = sorted(to_skip - current)
+        removed = sorted(to_unskip & current)
+        set_skip_list(paths, sorted((current | to_skip) - to_unskip))
+        if added:
+            print(f"skipped: {', '.join(added)}")
+        if removed:
+            print(f"unskipped: {', '.join(removed)}")
+        if not added and not removed:
+            print("no change")
+        return
     projects = load_cached(paths, refresh=args.refresh)
+    skip = set(skip_list(paths))
+    for p in projects:
+        p["skipped"] = p["name"] in skip
+    if args.ask:
+        _print_ask(projects)
+        return
     if args.missing:
-        projects = [p for p in projects if not p["has_notes"]]
+        projects = [p for p in projects if not p["has_notes"] and not p["skipped"]]
     if args.json:
         print(json.dumps(projects, indent=2, ensure_ascii=False))
         return
     _print_table(projects)
     if args.missing and projects:
         names = ", ".join(p["name"] for p in projects)
-        print(f"\nsuggest creating projects/<name>/<name>-overview.md and "
-              f"-status.md for: {names}")
+        print(f"\nsuggest asking the user about these with `projects --ask`: {names}")
 
 
 def register(sub) -> None:
     p = sub.add_parser("projects", help="discover sibling projects and note coverage")
     p.add_argument("--refresh", action="store_true", help="ignore the cache")
     p.add_argument("--json", action="store_true")
-    p.add_argument("--missing", action="store_true", help="only projects without notes")
+    p.add_argument("--missing", action="store_true",
+                   help="only projects without notes and not on the skip list")
+    p.add_argument("--ask", action="store_true",
+                   help="report for the agent: which projects to ask the user about")
+    p.add_argument("--skip", nargs="+", metavar="NAME",
+                   help="never suggest these project names on this computer")
+    p.add_argument("--unskip", nargs="+", metavar="NAME",
+                   help="suggest these project names again on this computer")
     p.set_defaults(func=cmd_projects)

@@ -1267,10 +1267,23 @@ def cmd_query(args, content: bool) -> None:
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
         return
-    if content and project and not project_seeds:
-        print(f"<!-- project {project} has no notes: ask the user whether to create "
-              f"projects/{project}/{project}-overview.md and "
-              f"projects/{project}/{project}-status.md -->")
+    if content:
+        discovery = sys.modules.get("discovery")
+        if project:
+            skipped = discovery is not None and project in discovery.skip_list(paths)
+            if not project_seeds and not skipped:
+                print(f"<!-- project {project} has no notes: run python "
+                      f"\"{Path(__file__).resolve()}\" projects --ask and ask the user "
+                      f"whether to add it (`projects --skip {project}` stops this reminder) -->")
+        elif discovery is not None:
+            # Cache-only: `context` must never scan or shell out to git on every prompt.
+            skip = set(discovery.skip_list(paths))
+            missing = [p["name"] for p in discovery.cached_only(paths)
+                      if p["name"] not in skip and not has_project_notes(paths, p["name"])]
+            if missing:
+                print(f"<!-- {len(missing)} discovered projects have no vault notes "
+                      f"({', '.join(missing)}): run python \"{Path(__file__).resolve()}\" "
+                      f"projects --ask and ask the user which to add -->")
     if not results:
         print("No notes above threshold.")
         return

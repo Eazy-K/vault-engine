@@ -752,6 +752,32 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if args.user_level:
         print("User-level routing:")
         _setup_user_level(data)
+    if not getattr(args, "no_projects", False):
+        print("Projects:")
+        _setup_projects(data)
+
+
+def _setup_projects(data: Path) -> None:
+    """Point at the next step (asking the user which discovered projects get
+    notes) instead of doing it here: setup must stay non-interactive and this
+    engine never writes project notes itself (see tools/discovery.py)."""
+    discovery = sys.modules.get("discovery")
+    if discovery is None:
+        print("  skipped (discovery module unavailable)")
+        return
+    try:
+        paths = g.Paths(g.ENGINE, data)
+        projects = discovery.load_cached(paths, refresh=True)
+        skip = set(discovery.skip_list(paths))
+        missing = [p["name"] for p in projects if not p["has_notes"] and p["name"] not in skip]
+    except Exception as exc:  # discovery problems must not fail setup
+        print(f"  note: project discovery failed ({exc})")
+        return
+    if missing:
+        print(f"  next step: ask the user which projects to add: python "
+              f"\"{g.ENGINE / 'tools' / 'graph.py'}\" projects --ask ({', '.join(missing)})")
+    else:
+        print("  ok: every discovered project has notes")
 
 
 # --- machine -----------------------------------------------------------------------
@@ -1106,7 +1132,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("WARN", f"project discovery failed ({exc})")
         else:
             if missing:
-                check("WARN", f"projects without notes: {', '.join(missing)} (see `projects --missing`)")
+                check("WARN", f"projects without notes: {', '.join(missing)} (ask the user: "
+                              "`projects --ask`; `projects --skip <name>` to stop asking)")
             else:
                 check("OK", "every discovered project has notes")
 
@@ -1425,6 +1452,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--no-agents", action="store_true")
     p.add_argument("--no-routing", action="store_true")
     p.add_argument("--no-machine", action="store_true", help="don't name this computer")
+    p.add_argument("--no-projects", action="store_true", help="skip the project discovery check")
     p.add_argument("--yes", action="store_true", help="never prompt, use defaults")
     p.set_defaults(func=cmd_setup)
 

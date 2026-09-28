@@ -285,7 +285,7 @@ class TestProjectsCommand(unittest.TestCase):
         write(self.data / "projects" / "alpha" / "alpha-overview.md", "# Alpha\n")
 
     def _run(self, **kwargs):
-        args = Namespace(refresh=True, json=False, missing=False)
+        args = Namespace(refresh=True, json=False, missing=False, ask=False, skip=None, unskip=None)
         for k, v in kwargs.items():
             setattr(args, k, v)
         with mock_default_paths(self.paths):
@@ -303,8 +303,7 @@ class TestProjectsCommand(unittest.TestCase):
         out = self._run(missing=True)
         self.assertNotIn("alpha", out)
         self.assertIn("beta", out)
-        self.assertIn("<name>-overview.md", out)
-        self.assertIn("-status.md", out)
+        self.assertIn("projects --ask", out)
         self.assertIn("beta", out.splitlines()[-1])
 
     def test_json_output_is_valid(self):
