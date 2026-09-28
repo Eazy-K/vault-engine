@@ -1335,6 +1335,7 @@ def cmd_query(args, content: bool) -> None:
         try:
             claude_hooks = sys.modules.get("claude_hooks")
             models = sys.modules.get("models")
+            onboarding = sys.modules.get("onboarding")
             if claude_hooks is not None or models is not None:
                 claude_dir = (claude_hooks or models).DEFAULT_SETTINGS.parent
                 if claude_dir.is_dir():
@@ -1342,11 +1343,13 @@ def cmd_query(args, content: bool) -> None:
                     if not stale and models is not None:
                         result = models.status(paths.data)
                         stale = result is not None and result[0] != "OK"
+                    if not stale and onboarding is not None:
+                        stale = bool(onboarding.stale_claude_agents(claude_dir / "agents"))
                     if stale:
                         graph_py = Path(__file__).resolve()
                         print(f"<!-- Claude Code hooks/model settings are out of date on this "
                               f"computer: ask the user once, then run python \"{graph_py}\" "
-                              f"update --claude-hooks --models -->")
+                              f"update --claude-hooks --models --agents -->")
         except Exception:
             pass
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.

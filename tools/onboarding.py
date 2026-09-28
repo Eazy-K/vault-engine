@@ -585,6 +585,21 @@ def _backup_path(path: Path) -> Path:
     return backup
 
 
+def stale_claude_agents(dest_dir: Path | None = None) -> list[str]:
+    """Names of tools/claude-agents/*.md files that differ from (or are missing
+    from) dest_dir (default ~/.claude/agents), sorted. Empty if every shipped
+    agent file matches, or the engine ships none. Cheap: no subprocess, just
+    reads a handful of small files."""
+    src_dir = g.ENGINE / "tools" / "claude-agents"
+    dest_dir = dest_dir or Path.home() / ".claude" / "agents"
+    stale = []
+    for src in sorted(src_dir.glob("*.md")) if src_dir.is_dir() else []:
+        dest = dest_dir / src.name
+        if not dest.exists() or dest.read_text(encoding="utf-8") != src.read_text(encoding="utf-8"):
+            stale.append(src.name)
+    return stale
+
+
 def _setup_agents(interactive: bool = False) -> None:
     """Copy the engine's subagent files into ~/.claude/agents. A file there that
     is neither the engine's current version nor an earlier one is the user's own
@@ -1084,13 +1099,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("WARN", "profile not filled yet: run `onboard --questions`, ask the user, "
                           "then `onboard --answers <file>` (or `onboard` in a terminal)")
 
-    src_dir = g.ENGINE / "tools" / "claude-agents"
-    dest_dir = Path.home() / ".claude" / "agents"
-    stale = []
-    for src in sorted(src_dir.glob("*.md")) if src_dir.is_dir() else []:
-        dest = dest_dir / src.name
-        if not dest.exists() or dest.read_text(encoding="utf-8") != src.read_text(encoding="utf-8"):
-            stale.append(src.name)
+    stale = stale_claude_agents()
     if stale:
         check("WARN", f"claude-agents out of date: {', '.join(stale)}")
     else:

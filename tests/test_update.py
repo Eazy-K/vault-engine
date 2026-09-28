@@ -959,3 +959,95 @@ class TestUpdateRunsModelsStep(UpdateTestCase):
         with mock.patch("update._models_step") as step, redirect_stdout(StringIO()):
             update.cmd_update(Args(yes=True))
         step.assert_called_once()
+
+
+class TestUpdateAgents(unittest.TestCase):
+    """update offers to refresh ~/.claude/agents/*.md from the engine's shipped
+    versions (via onboarding.stale_claude_agents / the `setup` command's agent
+    step); --yes alone never writes them."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.engine = self.tmp / "engine"
+        _write(self.engine / "tools" / "claude-agents" / "worker-low.md", "content")
+        self.home = self.tmp / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        home = mock.patch.object(update.Path, "home", return_value=self.home)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def _run(self, stale=("worker-low.md",), interactive=False, answer="", **kw):
+        fake_onboarding = types.SimpleNamespace(stale_claude_agents=lambda dest_dir: list(stale))
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="  updated: x\n", stderr="")
+        with mock.patch.dict(sys.modules, {"onboarding": fake_onboarding}), \
+             mock.patch("update.run_step", return_value=done) as m, \
+             mock.patch.object(update.g, "stdin_is_interactive", return_value=interactive), \
+             mock.patch("builtins.input", return_value=answer), redirect_stdout(StringIO()) as buf:
+            update._agents_step(self.engine, self.tmp / "data", Args(**kw))
+        return [c.args[2] for c in m.call_args_list], buf.getvalue()
+
+    def test_yes_alone_only_prints_the_command(self):
+        calls, out = self._run(yes=True)
+        self.assertEqual(calls, [])
+        self.assertIn("worker-low.md", out)
+        self.assertIn("rerun update with --agents", out)
+
+    def test_interactive_yes_refreshes(self):
+        calls, out = self._run(interactive=True, answer="y")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "setup")
+        self.assertIn("--no-routing", calls[0])
+        self.assertIn("updated: x", out)
+
+    def test_interactive_no_does_not_refresh(self):
+        calls, _ = self._run(interactive=True, answer="n")
+        self.assertEqual(calls, [])
+
+    def test_flag_refreshes_without_asking(self):
+        calls, _ = self._run(yes=True, agents=True)
+        self.assertEqual(len(calls), 1)
+
+    def test_quiet_when_already_current(self):
+        calls, out = self._run(stale=(), agents=True)
+        self.assertEqual(calls, [])
+        self.assertEqual(out, "")
+
+    def test_skipped_without_claude_code_or_shipped_agent_files(self):
+        shutil.rmtree(self.home / ".claude")
+        calls, _ = self._run(agents=True)
+        self.assertEqual(calls, [])
+        (self.home / ".claude").mkdir()
+        shutil.rmtree(self.engine / "tools" / "claude-agents")
+        calls, _ = self._run(agents=True)
+        self.assertEqual(calls, [])
+
+    def test_skipped_when_onboarding_module_unavailable(self):
+        with mock.patch.dict(sys.modules, {"onboarding": None}), \
+             mock.patch("update.run_step") as m, redirect_stdout(StringIO()):
+            update._agents_step(self.engine, self.tmp / "data", Args(yes=True, agents=True))
+        m.assert_not_called()
+
+
+class TestUpdateRunsAgentsStep(UpdateTestCase):
+    def test_called_after_a_successful_upgrade(self):
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             mock.patch("update._agents_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_called_once()
+
+    def test_not_called_when_a_step_fails(self):
+        fake_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        with mock.patch("update.run_step", return_value=fake_fail), \
+             mock.patch("update._agents_step") as step, redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_not_called()
+
+    def test_called_when_already_up_to_date(self):
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        with mock.patch("update._agents_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(yes=True))
+        step.assert_called_once()

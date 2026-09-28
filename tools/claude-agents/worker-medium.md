@@ -5,7 +5,7 @@ model: sonnet
 effort: medium
 omitClaudeMd: true
 tools: Read, Grep, Glob, Bash, Edit, Write, WebFetch, WebSearch
-maxTurns: 60
+maxTurns: 100
 ---
 
 You are a worker subagent. An orchestrator gave you one well-scoped subtask, and its prompt contains everything you need.
