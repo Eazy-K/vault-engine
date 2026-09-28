@@ -413,7 +413,7 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
 def format_codex_section(codex: dict | None, codex_dir: Path) -> list[str]:
     if codex is None:
         return [f"Codex: no sessions found under {codex_dir}."]
-    lines = ["", "Codex sessions:"]
+    lines = ["", "Codex sessions (experimental):"]
     t = codex["totals"]
     lines.append(f"  {codex['sessions']} sessions, {t['total']:,} tokens total "
                  f"(input {t['input']:,}, cached input {t['cached_input']:,}, "

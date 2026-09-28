@@ -2,6 +2,24 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.6.0] - 2026-09-28
+
+### Added
+- `update` offers the Claude Code hooks (agent-guard, context-warn, status line) after a successful switch, and when already up to date, if they are missing or point at an old path and this computer has a `~/.claude` folder. An interactive yes or the new `--claude-hooks` flag runs `claude-hooks --install`; `--yes` alone never writes `settings.json` and only prints the command.
+- `VAULT_SKIP_DIRS` (comma-separated folder names) adds folders to skip when the engine scans notes, on top of the built-in `.git`, `.obsidian`, `.graph`, `tools` and `__pycache__`.
+
+### Changed
+- `templates/AGENTS.md` is ~40% shorter (template revision 4): the Windows variable spelling, the `$VAULT_ENGINE`-empty fallback, the full onboarding procedure and the no-Python fallback moved to a new default note, `defaults/standards/agents-details.md`. All steps and their commands are unchanged.
+- The default `orchestration` note gains the token-economy delegation rules: delegate to a subagent by default, the small-job exception (one short tool call stays with the orchestrator), counting per request rather than per step, and subagents running on a cheaper model than the orchestrator's.
+
+### Experimental
+- `stats --tokens` gains a Codex section (text, and `"codex"` in `--json`): session count, token totals, totals per model and the newest rate limits, read from `~/.codex/sessions` (`--codex-dir`). Read-only, no USD estimate. Codex support is experimental: the output format and fields may change. Known gap: Codex Desktop sessions record only a total, shown under model `unknown`.
+
+### Upgrade notes
+- Run `python tools/graph.py update --apply-agents` to pick up the shorter `AGENTS.md` (revision 4); `doctor` warns while the file is behind. A translated copy should keep the template line at the end.
+- If the Claude Code hooks are not installed yet, `update` now asks; in a non-interactive session run `python tools/graph.py claude-hooks --install` (or `update --claude-hooks`) and start a new Claude Code session.
+- No vault data schema change in this release.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added
