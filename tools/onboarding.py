@@ -1111,6 +1111,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         check(*claude_hooks.context_warn_status())
         check(*claude_hooks.delegation_warn_status())
 
+    codex_hooks = sys.modules.get("codex_hooks")
+    codex_home = Path.home() / ".codex"
+    if codex_hooks is not None and codex_home.is_dir():
+        for result in codex_hooks.statuses():
+            check(*result)
+
     models = sys.modules.get("models")
     if models is not None and data is not None:
         result = models.status(data)

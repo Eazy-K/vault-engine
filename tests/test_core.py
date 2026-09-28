@@ -343,6 +343,7 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         out = StringIO()
         with mock.patch.object(graph, "default_paths", return_value=self.paths), \
              mock.patch("pathlib.Path.cwd", return_value=self.project_dir), \
+             mock.patch("pathlib.Path.home", return_value=self.tmp / "home"), \
              redirect_stdout(out):
             graph.cmd_query(args, content=True)
         return out.getvalue()
@@ -423,7 +424,8 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertIn("reinforce --task", output)
 
     def _run_context_with_modules(self, claude_hooks=None, models=None, onboarding=None,
-                                   **overrides):
+                                  codex_hooks=None,
+                                  **overrides):
         """Same as _run_context, but with fake claude_hooks/models/onboarding
         modules installed in sys.modules for the duration of the call (restored
         after, and with the real "onboarding" always removed even when not
@@ -431,9 +433,10 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         real), so the notice's own logic is exercised without ever touching a
         real ~/.claude folder."""
         write(self.data / "standards" / "a.md", note("A", "hello", core=True))
-        names = ("claude_hooks", "models", "onboarding")
+        names = ("claude_hooks", "codex_hooks", "models", "onboarding")
         saved = {name: sys.modules.get(name) for name in names}
-        for name, module in (("claude_hooks", claude_hooks), ("models", models),
+        for name, module in (("claude_hooks", claude_hooks), ("codex_hooks", codex_hooks),
+                             ("models", models),
                              ("onboarding", onboarding)):
             if module is None:
                 sys.modules.pop(name, None)
@@ -501,6 +504,15 @@ class TestProjectSeedingAndHint(unittest.TestCase):
     def test_neither_module_loaded_is_quiet(self):
         output = self._run_context_with_modules()
         self.assertNotIn("out of date on this computer", output)
+
+    def test_stale_codex_settings_prints_notice(self):
+        codex_home = self.tmp / "home" / ".codex"
+        codex_home.mkdir(parents=True)
+        fake_codex = types.SimpleNamespace(
+            statuses=lambda: [("WARN", "hooks missing")])
+        output = self._run_context_with_modules(codex_hooks=fake_codex)
+        self.assertIn("Codex hooks/model/worker settings are missing or out of date", output)
+        self.assertIn("codex-hooks --install", output)
 
 
 class TestDetectAgent(unittest.TestCase):

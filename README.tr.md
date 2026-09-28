@@ -37,6 +37,13 @@ otomatik olarak arka planda kullanacaktır. Asistan öğrendiklerini zamanla not
 yazar (ör. bir proje için `projects/<proje>/` klasörü gerektiğinde oluşur). Tercihlerinizi
 elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara bakabilirsiniz.
 
+Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
+delegasyon hook'larını ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
+`~/.codex` varsa hook ve worker dosyalarının eksik veya eski olup olmadığını; ayrıca
+`config.toml` içindeki model ve eforun açıkça ayarlanıp ayarlanmadığını denetler. Tercih
+edilen model kullanıcıya özel olduğundan motor onun değişip değişmediğini belirlemez.
+Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
+
 Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar içerir):
 [docs/agent-setup.md](docs/agent-setup.md)
 
