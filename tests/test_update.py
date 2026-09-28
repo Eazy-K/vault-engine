@@ -794,3 +794,84 @@ class TestAgentsMdStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUpdateClaudeHooks(unittest.TestCase):
+    """update offers claude-hooks --install; --yes alone never writes settings.json."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.engine = self.tmp / "engine"
+        _write(self.engine / "tools" / "claude_hooks.py", "")
+        self.home = self.tmp / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        home = mock.patch.object(update.Path, "home", return_value=self.home)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def _run(self, missing=True, interactive=False, answer="", **kw):
+        dry = subprocess.CompletedProcess(args=[], returncode=0, stderr="",
+                                          stdout="would update: x\n" if missing else "up to date: x\n")
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="  installed: x\n", stderr="")
+        with mock.patch("update.run_step", side_effect=[dry, done]) as m, \
+             mock.patch.object(update.g, "stdin_is_interactive", return_value=interactive), \
+             mock.patch("builtins.input", return_value=answer), redirect_stdout(StringIO()) as buf:
+            update._claude_hooks_step(self.engine, self.tmp / "data", Args(**kw))
+        return [c.args[2] for c in m.call_args_list], buf.getvalue()
+
+    def test_yes_alone_only_prints_the_command(self):
+        calls, out = self._run(yes=True)
+        self.assertEqual(calls, [["claude-hooks"]])
+        self.assertIn("claude-hooks --install", out)
+
+    def test_interactive_yes_installs(self):
+        calls, out = self._run(interactive=True, answer="y")
+        self.assertEqual(calls, [["claude-hooks"], ["claude-hooks", "--install"]])
+        self.assertIn("new Claude Code session", out)
+
+    def test_interactive_no_does_not_install(self):
+        calls, _ = self._run(interactive=True, answer="n")
+        self.assertEqual(calls, [["claude-hooks"]])
+
+    def test_flag_installs_without_asking(self):
+        calls, _ = self._run(yes=True, claude_hooks=True)
+        self.assertEqual(calls[-1], ["claude-hooks", "--install"])
+
+    def test_quiet_when_already_installed(self):
+        calls, out = self._run(missing=False, claude_hooks=True)
+        self.assertEqual(calls, [["claude-hooks"]])
+        self.assertEqual(out, "")
+
+    def test_skipped_without_claude_code_or_command(self):
+        shutil.rmtree(self.home / ".claude")
+        calls, _ = self._run(claude_hooks=True)
+        self.assertEqual(calls, [])
+        (self.home / ".claude").mkdir()
+        (self.engine / "tools" / "claude_hooks.py").unlink()
+        calls, _ = self._run(claude_hooks=True)
+        self.assertEqual(calls, [])
+
+
+class TestUpdateRunsClaudeHooksStep(UpdateTestCase):
+    def test_called_after_a_successful_upgrade(self):
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             mock.patch("update._claude_hooks_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_called_once()
+
+    def test_not_called_when_a_step_fails(self):
+        fake_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        with mock.patch("update.run_step", return_value=fake_fail), \
+             mock.patch("update._claude_hooks_step") as step, redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_not_called()
+
+    def test_called_when_already_up_to_date(self):
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        with mock.patch("update._claude_hooks_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(yes=True))
+        step.assert_called_once()
