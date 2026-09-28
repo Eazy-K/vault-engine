@@ -422,14 +422,19 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertIn(expected, output)
         self.assertIn("reinforce --task", output)
 
-    def _run_context_with_modules(self, claude_hooks=None, models=None, **overrides):
-        """Same as _run_context, but with fake claude_hooks/models modules
-        installed in sys.modules for the duration of the call (restored after),
-        so the notice's own logic is exercised without ever touching a real
-        ~/.claude folder."""
+    def _run_context_with_modules(self, claude_hooks=None, models=None, onboarding=None,
+                                   **overrides):
+        """Same as _run_context, but with fake claude_hooks/models/onboarding
+        modules installed in sys.modules for the duration of the call (restored
+        after, and with the real "onboarding" always removed even when not
+        given a fake, since another test module may have imported it for
+        real), so the notice's own logic is exercised without ever touching a
+        real ~/.claude folder."""
         write(self.data / "standards" / "a.md", note("A", "hello", core=True))
-        saved = {name: sys.modules.get(name) for name in ("claude_hooks", "models")}
-        for name, module in (("claude_hooks", claude_hooks), ("models", models)):
+        names = ("claude_hooks", "models", "onboarding")
+        saved = {name: sys.modules.get(name) for name in names}
+        for name, module in (("claude_hooks", claude_hooks), ("models", models),
+                             ("onboarding", onboarding)):
             if module is None:
                 sys.modules.pop(name, None)
             else:
@@ -461,6 +466,18 @@ class TestProjectSeedingAndHint(unittest.TestCase):
             status=lambda data_dir: ("WARN", "model config out of date"))
         output = self._run_context_with_modules(models=fake_models)
         self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
+
+    def test_stale_claude_agents_prints_notice(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        fake_hooks = types.SimpleNamespace(
+            DEFAULT_SETTINGS=claude_dir / "settings.json",
+            status=lambda: ("OK", "agent-guard hook installed"))
+        fake_onboarding = types.SimpleNamespace(
+            stale_claude_agents=lambda dest_dir: ["worker-low.md"])
+        output = self._run_context_with_modules(claude_hooks=fake_hooks, onboarding=fake_onboarding)
+        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
+        self.assertIn("update --claude-hooks --models --agents", output)
 
     def test_up_to_date_is_quiet(self):
         claude_dir = self.tmp / "claude-home" / ".claude"

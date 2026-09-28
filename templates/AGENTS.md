@@ -9,6 +9,6 @@ A model-independent second brain: information loads through a weighted graph, no
 4. **Learned something lasting:** write it to the relevant note per the `vault-notes` note (`$VAULT_ENGINE/defaults/standards/vault-notes.md`), then run `python "$VAULT_ENGINE/tools/graph.py" lint` and commit the notes you changed, in English. The guard hook blocks commits with personal data or secrets.
 5. **Before you finish:** if the vault has a remote, run `git pull --rebase --autostash && git push` in it, even with no note — it sends the commits `reinforce` and other engine commands made. No remote: the commits are enough.
 6. **`context` reports a new vault-engine version:** tell the user once, ask before updating.
-7. **`context` reports Claude Code hooks/model settings out of date:** ask the user once, then run the `update` command it gives (`--claude-hooks --models`).
+7. **`context` reports Claude Code hooks/model settings/agent files out of date:** ask the user once, then run the `update` command it gives (`--claude-hooks --models --agents`).
 
-<!-- vault-engine AGENTS.md template: 6. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->
+<!-- vault-engine AGENTS.md template: 7. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->

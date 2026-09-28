@@ -417,6 +417,41 @@ def _models_step(engine: Path, data: Path, args) -> None:
     _print_step_output(result)
 
 
+# --- update command: Claude Code subagent files -----------------------------
+
+def _agents_step(engine: Path, data: Path, args) -> None:
+    """Offers to refresh ~/.claude/agents/worker-*.md (and the other shipped
+    subagent files) that differ from the engine's current versions (see
+    onboarding.stale_claude_agents / onboarding._setup_agents). ~/.claude
+    belongs to the user, so --yes alone never writes it: an interactive yes or
+    --agents does. Skipped when the engine ships no agent files, this computer
+    has no ~/.claude folder, or the onboarding module is unavailable."""
+    src_dir = engine / "tools" / "claude-agents"
+    if not src_dir.is_dir() or not (Path.home() / ".claude").is_dir():
+        return
+    onboarding = sys.modules.get("onboarding")
+    if onboarding is None:
+        return
+    stale = onboarding.stale_claude_agents(Path.home() / ".claude" / "agents")
+    if not stale:
+        return
+    print(f"\nClaude Code subagent files are missing or out of date: {', '.join(stale)}")
+    refresh = getattr(args, "agents", False)
+    if not refresh and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Refresh them from the engine's current versions? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        refresh = answer.startswith("y")
+    if not refresh:
+        print("refresh them later with: python tools/graph.py setup --no-env --no-routing "
+              "--no-machine --no-projects (or rerun update with --agents)")
+        return
+    result = run_step(engine, data, ["setup", "--yes", "--no-env", "--no-routing",
+                                     "--no-machine", "--no-projects", "--data", str(data)])
+    _print_step_output(result)
+
+
 # --- update command: CI pin ---------------------------------------------------
 
 CI_WORKFLOW = ".github/workflows/vault.yml"
@@ -679,6 +714,7 @@ def cmd_update(args) -> None:
         try:
             _claude_hooks_step(engine, _data_paths(args).data, args)
             _models_step(engine, _data_paths(args).data, args)
+            _agents_step(engine, _data_paths(args).data, args)
         except SystemExit:
             pass
         return
@@ -736,6 +772,7 @@ def cmd_update(args) -> None:
         sys.exit(1)
     _claude_hooks_step(engine, paths.data, args)
     _models_step(engine, paths.data, args)
+    _agents_step(engine, paths.data, args)
 
 
 def register(sub) -> None:
@@ -754,4 +791,8 @@ def register(sub) -> None:
     p.add_argument("--models", action="store_true",
                    help="sync Claude Code's model settings (models --apply) without asking "
                         "if they are out of date; --yes alone only prints the command")
+    p.add_argument("--agents", action="store_true",
+                   help="refresh ~/.claude/agents/*.md from the engine's shipped versions "
+                        "without asking if they are out of date; --yes alone only prints "
+                        "the command")
     p.set_defaults(func=cmd_update)
