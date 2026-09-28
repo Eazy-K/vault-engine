@@ -28,6 +28,12 @@ If you mostly work in short, conversational sessions rather than multi-step agen
 4. **Verification:** The orchestrator verifies every result (tests, lint, guard, reading the diff). An unverified result is never presented to the user as correct.
 5. **Merge:** Commit, PR, push, merge, and `reinforce` happen only in the orchestrator.
 
+## Waiting, resuming and turn limits
+1. A subagent that returns at its turn limit ("partial") may still resume on its own if it has background work running. Before starting a new agent on the same task, stop the old one (`TaskStop`); otherwise two agents edit the same branch.
+2. The orchestrator creates the branch (or worktree) itself before delegating code work and names it in the prompt; a worker that skips this leaves uncommitted changes on the default branch.
+3. Split feature work into one agent for code and tests and a separate one for docs and PR. Tell workers to commit after each logical step (WIP commits are fine) so a turn-limit stop loses nothing; a follow-up agent continues from the commits.
+4. Never pipe a test run through `tail`/`head` — it hides the exit code. Use a long timeout for slow suites and check the exit code and the summary line.
+
 ## Subagent selection (Claude Code)
 | Work | Subagent |
 |---|---|
