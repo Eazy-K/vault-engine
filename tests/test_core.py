@@ -422,7 +422,68 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertIn(expected, output)
         self.assertIn("reinforce --task", output)
 
+    def _run_context_with_modules(self, claude_hooks=None, models=None, **overrides):
+        """Same as _run_context, but with fake claude_hooks/models modules
+        installed in sys.modules for the duration of the call (restored after),
+        so the notice's own logic is exercised without ever touching a real
+        ~/.claude folder."""
+        write(self.data / "standards" / "a.md", note("A", "hello", core=True))
+        saved = {name: sys.modules.get(name) for name in ("claude_hooks", "models")}
+        for name, module in (("claude_hooks", claude_hooks), ("models", models)):
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        try:
+            return self._run_context(no_project=True, no_log=False, **overrides)
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
 
+    def test_stale_claude_hooks_prints_notice(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        fake_hooks = types.SimpleNamespace(
+            DEFAULT_SETTINGS=claude_dir / "settings.json",
+            status=lambda: ("WARN", "agent-guard hook not installed"))
+        output = self._run_context_with_modules(claude_hooks=fake_hooks)
+        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
+        self.assertIn("update --claude-hooks --models", output)
+
+    def test_stale_models_prints_notice(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        fake_models = types.SimpleNamespace(
+            DEFAULT_SETTINGS=claude_dir / "settings.json",
+            status=lambda data_dir: ("WARN", "model config out of date"))
+        output = self._run_context_with_modules(models=fake_models)
+        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
+
+    def test_up_to_date_is_quiet(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        fake_hooks = types.SimpleNamespace(
+            DEFAULT_SETTINGS=claude_dir / "settings.json",
+            status=lambda: ("OK", "agent-guard hook installed"))
+        fake_models = types.SimpleNamespace(
+            DEFAULT_SETTINGS=claude_dir / "settings.json",
+            status=lambda data_dir: ("OK", "model config matches"))
+        output = self._run_context_with_modules(claude_hooks=fake_hooks, models=fake_models)
+        self.assertNotIn("out of date on this computer", output)
+
+    def test_no_claude_dir_is_quiet(self):
+        fake_hooks = types.SimpleNamespace(
+            DEFAULT_SETTINGS=self.tmp / "no-such-home" / ".claude" / "settings.json",
+            status=lambda: ("WARN", "agent-guard hook not installed"))
+        output = self._run_context_with_modules(claude_hooks=fake_hooks)
+        self.assertNotIn("out of date on this computer", output)
+
+    def test_neither_module_loaded_is_quiet(self):
+        output = self._run_context_with_modules()
+        self.assertNotIn("out of date on this computer", output)
 
 
 class TestDetectAgent(unittest.TestCase):

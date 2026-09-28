@@ -385,6 +385,38 @@ def _claude_hooks_step(engine: Path, data: Path, args) -> None:
         print("start a new Claude Code session so the hooks take effect")
 
 
+# --- update command: Claude Code model settings ---------------------------------
+
+def _models_step(engine: Path, data: Path, args) -> None:
+    """Offers to sync Claude Code's settings.json model/effortLevel and the
+    worker-*.md frontmatter with the engine's model config (`models`, see
+    tools/models.py). settings.json belongs to the user, so --yes alone never
+    writes it: an interactive yes or --models does. Skipped when the engine has
+    no models command or this computer has no ~/.claude folder (Claude Code not
+    used here)."""
+    if not (engine / "tools" / "models.py").exists() or not (Path.home() / ".claude").is_dir():
+        return
+    result = run_step(engine, data, ["models"])
+    if result.returncode != 0 or "OUT OF DATE" not in result.stdout:
+        return
+    print("\nClaude Code model settings (settings.json, worker agent files) are out of date:")
+    _print_step_output(result)
+    apply_models = getattr(args, "models", False)
+    if not apply_models and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Sync settings.json and worker agent files with this model "
+                           "config? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        apply_models = answer.startswith("y")
+    if not apply_models:
+        print("sync them later with: python tools/graph.py models --apply "
+              "(or rerun update with --models)")
+        return
+    result = run_step(engine, data, ["models", "--apply"])
+    _print_step_output(result)
+
+
 # --- update command: CI pin ---------------------------------------------------
 
 CI_WORKFLOW = ".github/workflows/vault.yml"
@@ -646,6 +678,7 @@ def cmd_update(args) -> None:
         _agents_md_step(engine, args)
         try:
             _claude_hooks_step(engine, _data_paths(args).data, args)
+            _models_step(engine, _data_paths(args).data, args)
         except SystemExit:
             pass
         return
@@ -702,6 +735,7 @@ def cmd_update(args) -> None:
     if not ok:
         sys.exit(1)
     _claude_hooks_step(engine, paths.data, args)
+    _models_step(engine, paths.data, args)
 
 
 def register(sub) -> None:
@@ -717,4 +751,7 @@ def register(sub) -> None:
     p.add_argument("--claude-hooks", action="store_true",
                    help="install the Claude Code hooks (claude-hooks --install) without asking "
                         "if they are missing; --yes alone only prints the command")
+    p.add_argument("--models", action="store_true",
+                   help="sync Claude Code's model settings (models --apply) without asking "
+                        "if they are out of date; --yes alone only prints the command")
     p.set_defaults(func=cmd_update)

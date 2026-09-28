@@ -1330,6 +1330,25 @@ def cmd_query(args, content: bool) -> None:
             hint = update.context_hint(paths)
             if hint:
                 print(hint)
+        # Cheap (no subprocess: just the status() helpers already used by doctor)
+        # and never allowed to fail context itself.
+        try:
+            claude_hooks = sys.modules.get("claude_hooks")
+            models = sys.modules.get("models")
+            if claude_hooks is not None or models is not None:
+                claude_dir = (claude_hooks or models).DEFAULT_SETTINGS.parent
+                if claude_dir.is_dir():
+                    stale = claude_hooks is not None and claude_hooks.status()[0] != "OK"
+                    if not stale and models is not None:
+                        result = models.status(paths.data)
+                        stale = result is not None and result[0] != "OK"
+                    if stale:
+                        graph_py = Path(__file__).resolve()
+                        print(f"<!-- Claude Code hooks/model settings are out of date on this "
+                              f"computer: ask the user once, then run python \"{graph_py}\" "
+                              f"update --claude-hooks --models -->")
+        except Exception:
+            pass
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
         # The command ends the line and runs as shown, so an agent that copies it
         # literally when no note helped still closes the task.
