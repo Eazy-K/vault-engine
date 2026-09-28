@@ -7,17 +7,17 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ### Added
 - Status line gains segments for the active model, thinking effort, current folder and git branch, and an estimated session cost, alongside the existing context usage.
 - `claude-hooks` gains a delegation-warn hook that reminds the orchestrator to delegate to a subagent instead of doing the work itself once it has made 4 or more tool calls in a turn.
-- `models` command and a single model-selection config: `agent-guard` now derives its allowed models from this config instead of a hard-coded list, and `doctor` checks the config is present and consistent.
+- `models` command and a single model-selection config: `agent-guard` now derives its allowed models from this config instead of a hard-coded list, and `doctor` warns when Claude Code's settings or worker files deviate from it. Without a `models` config the built-in defaults apply.
 - `update --models` step and a context notice for Claude Code hooks or model settings that are stale (installed before a hooks/model change).
 - `update --agents` step and a context notice for worker agent definition files (`worker-low.md`, `worker-medium.md`) that are stale.
 
 ### Changed
 - Worker agent definitions (`worker-low`, `worker-medium`) gain explicit working rules (branch check before editing, commit after each logical step, never pipe test output through `tail`/`head`, commit and report when low on turns).
 - `worker-medium`'s `maxTurns` raised from 60 to 100.
-- `templates/orchestration.md` gains rules on waiting for and resuming subagents and on turn limits.
+- The default orchestration standard (`defaults/standards/orchestration.md`) gains rules on waiting for and resuming subagents and on turn limits.
 
 ### Fixed
-- Windows: `claude-hooks --install` wrote hook commands with single quotes, which `cmd.exe` does not strip, breaking the hooks; commands are now written shell-neutral so they work on Windows.
+- Windows: `claude-hooks --install` wrote hook and status line commands with single quotes, which failed to parse in the Windows shell, so the hooks never ran; commands are now quoted so they work on Windows.
 
 ### Upgrade notes
 - Run `python "$VAULT_ENGINE/tools/graph.py" update --claude-hooks --models --agents` to install or refresh the Claude Code hooks, model settings and worker agent files.
