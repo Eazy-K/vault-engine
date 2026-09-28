@@ -2,6 +2,26 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.7.0] - 2026-09-28
+
+### Added
+- `projects --ask`: a read-only report for the agent listing discovered projects without vault notes, with instructions to ask the user which should get notes (and whether a folder outside the list, such as one that is not a git repo, should be included), then write real overview/status notes by hand. The engine never writes project notes or skeletons.
+- `projects --skip NAME...` / `--unskip NAME...`: a per-computer "don't ask" list (`skip_projects` in the gitignored `.graph/machine.json`). Unlike the shared `exclude` patterns in `vault.config.json`, which hide a project on every computer, a skipped project still shows in `projects` (marked skipped) and is only left out of `--missing`, `--ask`, `context` and `doctor` on this computer. `--json` entries gain `"skipped"`.
+- `setup` gains a "Projects:" section that runs discovery and prints the next step (`projects --ask`) when projects without notes are found; `--no-projects` skips it.
+
+### Changed
+- `context` points at `projects --ask` when the current project has no notes (silent once skipped), and, outside any project, prints one line listing discovered projects without notes, read from the discovery cache only (it never scans).
+- `doctor`'s "projects without notes" warning ignores skipped projects and points at `projects --ask` / `projects --skip <name>`.
+- `templates/AGENTS.md` step 1 adds the project selection rule (template revision 5); the full procedure is in `defaults/standards/agents-details.md` and `docs/agent-setup.md`.
+
+### Known limitations
+- Projects are recognised by folder name: two different projects with the same folder name on two computers share one set of notes.
+
+### Upgrade notes
+- `update` runs `setup`, so the new "Projects:" step appears on its own; follow it (run `projects --ask` and answer which projects to add) or skip projects with `projects --skip <name>`.
+- Run `python tools/graph.py update --apply-agents` to pick up `AGENTS.md` template revision 5; `doctor` warns while the file is behind. The `context` hint works without it.
+- No vault data schema change in this release.
+
 ## [0.6.0] - 2026-09-28
 
 ### Added
