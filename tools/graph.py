@@ -32,7 +32,7 @@ from itertools import combinations
 from pathlib import Path
 
 # Single source of the release version (SemVer; see CHANGELOG.md).
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 # This repo is the user-independent engine; notes live in a separate data
 # folder (see resolve_data_dir). ENGINE never changes; DATA is resolved lazily
@@ -1532,7 +1532,7 @@ def main() -> None:
     p.add_argument("--projects-dir", default=str(Path("~/.claude/projects").expanduser()),
                    help="transcripts root (default: ~/.claude/projects)")
     p.add_argument("--codex-dir", default=str(Path("~/.codex/sessions").expanduser()),
-                   help="Codex rollout sessions root (default: ~/.codex/sessions)")
+                   help="Codex rollout sessions root, experimental (default: ~/.codex/sessions)")
     p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
     p.add_argument("--top", type=int, default=5, help="how many top sessions to list")
     p.add_argument("--json", action="store_true", help="machine-readable output")
