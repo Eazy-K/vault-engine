@@ -200,7 +200,7 @@ class TestSetupEnvNonWindows(unittest.TestCase):
 
     def _args(self, **kw):
         base = dict(data=str(self.data), user_level=False, no_env=False,
-                    no_agents=True, no_routing=True, yes=True)
+                    no_agents=True, no_routing=True, no_projects=True, yes=True)
         base.update(kw)
         return Namespace(**base)
 

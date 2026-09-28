@@ -564,7 +564,7 @@ class TestSetup(unittest.TestCase):
 
     def _args(self, **kw):
         base = dict(data=str(self.data), user_level=False, no_env=True, no_machine=True,
-                    no_agents=True, no_routing=True, yes=True)
+                    no_agents=True, no_routing=True, no_projects=True, yes=True)
         base.update(kw)
         return Namespace(**base)
 
@@ -836,7 +836,8 @@ class TestDoctor(unittest.TestCase):
     def test_ok(self):
         with mock.patch("pathlib.Path.home", return_value=self.home), redirect_stdout(StringIO()):
             onboarding.cmd_setup(Namespace(data=str(self.data), user_level=False, no_env=True,
-                                           no_agents=False, no_routing=True, yes=True))
+                                           no_agents=False, no_routing=True, no_projects=True,
+                                           yes=True))
         with mock.patch.dict(os.environ, self._env(), clear=True), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
              mock.patch("onboarding.urllib.request.urlopen", side_effect=_ollama_tags("bge-m3:latest")), \
