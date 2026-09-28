@@ -283,6 +283,31 @@ process (or not set) are expected: they go away once the terminal and agent rest
 
 ---
 
+## Step 8b — Project selection
+
+Step 6's `setup` already ran project discovery and, if it found sibling projects without vault
+notes, printed a "next step" line. If it did (or `doctor` warned `projects without notes`), run:
+```
+python "<projects folder>/vault-engine/tools/graph.py" projects --ask
+```
+This only reports candidates (name, README line, languages, last commit) plus instructions; it
+never writes notes itself. Then:
+1. Ask the user which of the listed projects should get vault notes, and whether there is a
+   project folder not in the list (not a git repo, or kept elsewhere) they want included too.
+2. For each project the user picks: read its README, top-level folder layout, and manifest files
+   (`package.json`, `pyproject.toml`, ...), plus recent commit metadata only — metadata, never
+   the code itself.
+3. Write real `projects/<name>/<name>-overview.md` and `projects/<name>/<name>-status.md` notes
+   (no skeleton/placeholder notes), run
+   `python "<projects folder>/vault-engine/tools/graph.py" lint`, and commit.
+4. For the rest, run `projects --skip <name> [<name> ...]` so this computer stops asking about
+   them (`projects --unskip <name>` undoes that later).
+
+If nothing was found, `projects --ask` prints a short "nothing to ask" line instead — nothing
+else to do here.
+
+---
+
 ## Step 9 — Summary for the user
 
 End with a short, plain-language summary covering:

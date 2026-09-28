@@ -24,5 +24,20 @@ If a `profile/` note still contains `<!-- vault:skeleton -->`, run onboarding be
 4. Run `python "$VAULT_ENGINE/tools/graph.py" onboard --answers <file> --data "$VAULT_DATA"` (it commits the profile notes it writes).
 5. Delete the temp file and continue with the normal task flow.
 
+## Project selection procedure
+If `context`'s output includes a comment about discovered projects without vault notes (for the
+current project, or for others found elsewhere), run `python "$VAULT_ENGINE/tools/graph.py"
+projects --ask` first: it only reports candidates and instructions, it never writes notes itself.
+1. Ask the user which of the listed projects should get vault notes, and whether there is a
+   project folder not in the list (not a git repo, or elsewhere) they want included too.
+2. For each project the user picks: read its README, top-level folder layout, and manifest files
+   (package.json, pyproject.toml, ...), plus recent commit metadata only -- never index code, per
+   `$VAULT_ENGINE/defaults/standards/data-policy.md`.
+3. Write real `projects/<name>/<name>-overview.md` and `projects/<name>/<name>-status.md` notes
+   (no skeleton/placeholder notes -- see `$VAULT_ENGINE/defaults/standards/vault-notes.md`), run
+   `python "$VAULT_ENGINE/tools/graph.py" lint`, and commit.
+4. For the projects the user does not want notes for, run `projects --skip <name> [<name> ...]`
+   (this computer only; `projects --unskip <name>` asks about it again later).
+
 ## If Python isn't available
 Read `profile/working-style.md` and `profile/language.md` in the vault, then the engine's `$VAULT_ENGINE/defaults/standards/vault-notes.md` and `$VAULT_ENGINE/defaults/standards/data-policy.md` (a vault note at the same relative path replaces the engine's copy).
