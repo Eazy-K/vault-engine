@@ -359,6 +359,10 @@ available, want me to check what changed?"). If they agree:
    A `doctor` `WARN` about uncommitted vault-engine files names what is left to commit.
 4. If a command refuses to run because the vault's data schema is newer than this
    computer's engine, run `update` on this computer too.
+5. If `context` output includes a line about Claude Code hooks or model settings being
+   out of date on this computer (only shown when `~/.claude` exists), ask the user once,
+   then run the `update` command it gives (`--claude-hooks --models`, which install/sync
+   both without further prompting; `update` alone offers each interactively instead).
 
 Only 0.3.0 and later check for new versions and have `update`. On 0.1.0 and 0.2.0 you
 get no update line, and `update` fails with `invalid choice: 'update'`; use the next

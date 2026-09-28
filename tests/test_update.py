@@ -875,3 +875,87 @@ class TestUpdateRunsClaudeHooksStep(UpdateTestCase):
         with mock.patch("update._claude_hooks_step") as step, redirect_stdout(StringIO()):
             update.cmd_update(Args(yes=True))
         step.assert_called_once()
+
+
+class TestUpdateModels(unittest.TestCase):
+    """update offers models --apply; --yes alone never writes settings.json or
+    the worker-*.md files."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.engine = self.tmp / "engine"
+        _write(self.engine / "tools" / "models.py", "")
+        self.home = self.tmp / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        home = mock.patch.object(update.Path, "home", return_value=self.home)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def _run(self, stale=True, interactive=False, answer="", **kw):
+        dry = subprocess.CompletedProcess(
+            args=[], returncode=0, stderr="",
+            stdout="  ~/.claude/settings.json: OUT OF DATE\n" if stale
+                   else "  ~/.claude/settings.json: matches\n")
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="applied:\n  x\n", stderr="")
+        with mock.patch("update.run_step", side_effect=[dry, done]) as m, \
+             mock.patch.object(update.g, "stdin_is_interactive", return_value=interactive), \
+             mock.patch("builtins.input", return_value=answer), redirect_stdout(StringIO()) as buf:
+            update._models_step(self.engine, self.tmp / "data", Args(**kw))
+        return [c.args[2] for c in m.call_args_list], buf.getvalue()
+
+    def test_yes_alone_only_prints_the_command(self):
+        calls, out = self._run(yes=True)
+        self.assertEqual(calls, [["models"]])
+        self.assertIn("models --apply", out)
+
+    def test_interactive_yes_applies(self):
+        calls, out = self._run(interactive=True, answer="y")
+        self.assertEqual(calls, [["models"], ["models", "--apply"]])
+        self.assertIn("applied:", out)
+
+    def test_interactive_no_does_not_apply(self):
+        calls, _ = self._run(interactive=True, answer="n")
+        self.assertEqual(calls, [["models"]])
+
+    def test_flag_applies_without_asking(self):
+        calls, _ = self._run(yes=True, models=True)
+        self.assertEqual(calls[-1], ["models", "--apply"])
+
+    def test_quiet_when_already_current(self):
+        calls, out = self._run(stale=False, models=True)
+        self.assertEqual(calls, [["models"]])
+        self.assertEqual(out, "")
+
+    def test_skipped_without_claude_code_or_command(self):
+        shutil.rmtree(self.home / ".claude")
+        calls, _ = self._run(models=True)
+        self.assertEqual(calls, [])
+        (self.home / ".claude").mkdir()
+        (self.engine / "tools" / "models.py").unlink()
+        calls, _ = self._run(models=True)
+        self.assertEqual(calls, [])
+
+
+class TestUpdateRunsModelsStep(UpdateTestCase):
+    def test_called_after_a_successful_upgrade(self):
+        fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=fake_ok), \
+             mock.patch("update._models_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_called_once()
+
+    def test_not_called_when_a_step_fails(self):
+        fake_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        with mock.patch("update.run_step", return_value=fake_fail), \
+             mock.patch("update._models_step") as step, redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                update.cmd_update(Args(to="v0.2.0", yes=True))
+        step.assert_not_called()
+
+    def test_called_when_already_up_to_date(self):
+        self.checkout("v0.10.0")
+        self.set_version("0.10.0")
+        with mock.patch("update._models_step") as step, redirect_stdout(StringIO()):
+            update.cmd_update(Args(yes=True))
+        step.assert_called_once()
