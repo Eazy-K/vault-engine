@@ -47,7 +47,7 @@ weights:
 - `context`, `query`: load and list context (`--seed`, `--threshold`, `--budget`, `--no-semantic`, `--no-log`)
 - `show`: shows a note's edges (`--body` prints its full text; `context` names this command for notes it truncated or left out)
 - `reinforce --task <id>`, `decay`: learning. `reinforce` also runs `decay` by itself when more than 7 days have passed since this computer's last decay (the timestamp is kept per computer, not committed), so running `decay` by hand is rarely needed
-- `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used
+- `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used, and (when the delegation hook has logged them) how often the orchestrator did multi-call work inline
 - `lint`: consistency check
 - `mv <note> <new path or name>`: moves or renames a note and updates `[[links]]`, `weights` and learned edges. Don't move notes by hand.
 - `index`: precomputes embeddings

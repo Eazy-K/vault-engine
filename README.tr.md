@@ -37,6 +37,8 @@ otomatik olarak arka planda kullanacaktır. Asistan öğrendiklerini zamanla not
 yazar (ör. bir proje için `projects/<proje>/` klasörü gerektiğinde oluşur). Tercihlerinizi
 elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara bakabilirsiniz.
 
+Claude Code delegasyon hook'u (`delegation-warn`), asistanın bir kullanıcı mesajında ana konuşmada kaç araç çağrısı yaptığını `.graph/usage.log` dosyasına yazar; `python tools/graph.py stats` bunu "orchestrator prompts" satırında özetler (ölçülen mesaj sayısı, eşiği aşanların yüzdesi, medyan çağrı sayısı). Bir oturumun son mesajı ölçülmez.
+
 Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
 delegasyon hook'larını ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
 `~/.codex` varsa hook ve worker dosyalarının eksik veya eski olup olmadığını; ayrıca
