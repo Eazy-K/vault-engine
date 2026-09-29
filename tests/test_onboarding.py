@@ -725,7 +725,9 @@ class TestSetup(unittest.TestCase):
 
     def test_user_level_append_once(self):
         args = self._args(user_level=True)
-        with mock.patch("pathlib.Path.home", return_value=self.home), redirect_stdout(StringIO()):
+        with mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch.dict(os.environ, {}, clear=True), \
+             redirect_stdout(StringIO()):
             onboarding.cmd_setup(args)
             onboarding.cmd_setup(args)  # second run must not duplicate the line
         line = f"@{self.data.as_posix()}/AGENTS.md"
@@ -733,6 +735,18 @@ class TestSetup(unittest.TestCase):
         self.assertEqual(claude_md_text.count(line), 1)
         codex_text = (self.home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
         self.assertEqual(codex_text.count(self.data.as_posix()), 1)
+
+    def test_user_level_uses_codex_home(self):
+        custom_codex_home = self.tmp / "custom-codex-home"
+        args = self._args(user_level=True)
+        with mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch.dict(os.environ, {"CODEX_HOME": str(custom_codex_home)}, clear=True), \
+             redirect_stdout(StringIO()):
+            onboarding.cmd_setup(args)
+            onboarding.cmd_setup(args)
+        codex_text = (custom_codex_home / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertEqual(codex_text.count(self.data.as_posix()), 1)
+        self.assertFalse((self.home / ".codex" / "AGENTS.md").exists())
 
     def test_env_uses_setx_when_unset(self):
         calls = []
