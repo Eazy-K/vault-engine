@@ -22,7 +22,8 @@ If you mostly work in short, conversational sessions rather than multi-step agen
 - For small or tightly coupled work, a single agent handles it. Splitting only adds token and coordination cost.
 
 ## Flow
-1. **Plan:** Present the user a short split plan and get approval: the pieces, the subagent for each, and the model/effort level.
+1. **Plan:** Present the user a short split plan (the pieces, the subagent for each, the model/effort level) and get approval only when the work is split across 2 or more agents, or when it touches the ask-first categories (architecture/data model/public API, new dependency, deletion or irreversible actions, cost/external services/publishing). A single-agent delegation with no split is launched without waiting for approval; the orchestrator states the scope and key assumptions in one or two lines when launching.
+   If the request's scope is ambiguous, confirm it with one short question before launching a subagent: tokens a subagent has spent are lost if it is redirected later (redirect with `SendMessage` rather than relaunching).
 2. **Task definition:** Give each subagent a self-contained task definition. A subagent starts with zero context, so pass along the goal, scope, file paths, acceptance criteria, and, if needed, the relevant rules from `context` output.
 3. **Worktree:** Parallel agents that change code work in separate git worktrees.
 4. **Verification:** The orchestrator verifies every result (tests, lint, guard, reading the diff). An unverified result is never presented to the user as correct.
