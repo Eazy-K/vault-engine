@@ -1292,6 +1292,25 @@ def read_usage(paths: Paths) -> list[dict]:
 
 # --- commands ----------------------------------------------------------------
 
+def truncate_body(body: str, room: int) -> str:
+    """Cut `body` to fit `room` chars at a `## ` section boundary and name the cut
+    sections; without a fitting boundary, at a line. The marker counts in `room`."""
+    def marker(cut: list[str]) -> str:
+        return f"\n<!-- truncated; cut sections: {', '.join(cut)} -->" if cut else "\n<!-- truncated -->"
+
+    pieces = re.split(r"(?m)^(?=## )", body)
+    if pieces[0] == "":
+        pieces = pieces[1:]
+    for keep in range(len(pieces) - 1, 0, -1):
+        cut = [piece.split("\n", 1)[0][3:].strip() for piece in pieces[keep:]]
+        text = "".join(pieces[:keep]).rstrip() + marker(cut)
+        if len(text) <= room:
+            return text
+    # Not even the first section fits: cut at a line, leaving space for the marker.
+    head = body[:max(room - 150, 0)].rsplit("\n", 1)[0]
+    return head + marker(re.findall(r"(?m)^## (.+?)\s*$", body[len(head):]))
+
+
 def cmd_query(args, content: bool) -> None:
     paths = default_paths()
     graph = Graph(paths)
@@ -1336,7 +1355,7 @@ def cmd_query(args, content: bool) -> None:
     # relevant small note never displaces a more relevant large one. If not even
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
-    used, omitted, loaded = 0, [], []
+    used, omitted, loaded, truncated = 0, [], [], []
     for r in results:
         note = graph.notes[r["id"]]
         if omitted:
@@ -1352,13 +1371,16 @@ def cmd_query(args, content: bool) -> None:
                 if used or room < 200:
                     omitted.append(note.id)
                     continue
-                body = body[:room].rsplit("\n", 1)[0] + "\n<!-- truncated -->"
+                body = truncate_body(body, room)
+                truncated.append(note.id)
             used += len(header) + len(body)
         if not r["core"]:
             loaded.append(note.id)
         print(header + body + "\n")
     if omitted:
         print(f"<!-- omitted over budget: {', '.join(omitted)} -->")
+    if omitted or truncated:
+        print(f"<!-- load a note: python \"{Path(__file__).resolve()}\" show --body <id> -->")
     if not args.no_log:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
@@ -1542,6 +1564,9 @@ def cmd_show(args) -> None:
     if error:
         sys.exit(f"[[{args.note}]] {error}")
     note = graph.notes[nid]
+    if args.body:
+        print(note.body.rstrip())
+        return
     print(f"{nid}  ({note.title}){'  [core]' if note.core else ''}")
     for other, w in sorted(graph.adjacency[nid].items(), key=lambda kv: -kv[1]):
         key = pair(nid, other)
@@ -1613,8 +1638,9 @@ def main() -> None:
     p = sub.add_parser("decay", help="weaken all learned edges")
     p.add_argument("--rate", type=float, default=DECAY_RATE)
 
-    p = sub.add_parser("show", help="show a note's edges")
+    p = sub.add_parser("show", help="show a note's edges (--body: its full text)")
     p.add_argument("note")
+    p.add_argument("--body", action="store_true", help="print the note's full text instead")
 
     sub.add_parser("lint", help="check broken links, orphans and learned state")
     sub.add_parser("index", help="embed changed notes ahead of time")

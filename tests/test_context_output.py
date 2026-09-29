@@ -112,5 +112,53 @@ class TestRetrievalHeader(_Ctx):
         self.assertNotIn("keyword-only", self.stats())
 
 
+class TestTruncation(unittest.TestCase):
+    def test_cuts_at_section_boundary_and_lists_cut_sections(self):
+        body = "intro\n\n" + section("One") + section("Two") + section("Three")
+        out = graph.truncate_body(body, 700)
+        self.assertIn("## One", out)
+        self.assertNotIn("## Three", out)
+        self.assertRegex(out, r"<!-- truncated; cut sections: (Two, )?Three -->$")
+        self.assertLessEqual(len(out), 700)
+
+    def test_falls_back_to_line_cut_when_first_section_does_not_fit(self):
+        body = "".join(f"line {i}\n" for i in range(200)) + "## Later\ntext\n"
+        out = graph.truncate_body(body, 400)
+        self.assertLessEqual(len(out), 400)
+        self.assertTrue(out.endswith("<!-- truncated; cut sections: Later -->"))
+
+    def test_plain_marker_without_sections(self):
+        out = graph.truncate_body("word\n" * 500, 400)
+        self.assertTrue(out.endswith("<!-- truncated -->"))
+        self.assertLessEqual(len(out), 400)
+
+
+class TestContextBudget(_Ctx):
+    def test_truncated_and_omitted_notes_get_hint(self):
+        self.note("big", "intro\n\n" + section("Rules") + section("History") + section("Extra"))
+        self.note("other", section("Big", 600))
+        out = self.run_context(seed=["big", "other"], budget=280)
+        self.assertIn("## Rules", out)
+        self.assertRegex(out, r"<!-- truncated; cut sections: .*Extra -->")
+        self.assertIn("omitted over budget: other", out)
+        self.assertIn(f'python "{GRAPH_PATH}" show --body <id>', out)
+
+    def test_no_hint_when_everything_fits(self):
+        self.note("a", "short")
+        out = self.run_context(seed=["a"])
+        self.assertNotIn("load a note", out)
+
+
+class TestShowBody(_Ctx):
+    def test_body_flag_prints_full_text(self):
+        self.note("a", "Full text here.\n\n## Sec\nmore")
+        out = StringIO()
+        with mock.patch.object(graph, "default_paths", return_value=self.paths), \
+             redirect_stdout(out):
+            graph.cmd_show(Namespace(note="a", body=True))
+        self.assertIn("Full text here.", out.getvalue())
+        self.assertIn("## Sec", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

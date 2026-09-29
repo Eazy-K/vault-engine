@@ -45,7 +45,7 @@ weights:
 ## Tool
 `python "$VAULT_ENGINE/tools/graph.py" <command>`, from any folder (`context` recognizes the project from the folder it runs in)
 - `context`, `query`: load and list context (`--seed`, `--threshold`, `--budget`, `--no-semantic`, `--no-log`)
-- `show`: shows a note's edges
+- `show`: shows a note's edges (`--body` prints its full text; `context` names this command for notes it truncated or left out)
 - `reinforce --task <id>`, `decay`: learning
 - `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used
 - `lint`: consistency check
