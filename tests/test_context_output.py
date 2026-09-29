@@ -111,6 +111,17 @@ class TestRetrievalHeader(_Ctx):
         graph.log_usage(self.paths, {"event": "context", "task": "old", "notes": []})
         self.assertNotIn("keyword-only", self.stats())
 
+    def test_orchestrator_prompt_summary(self):
+        for n, warned in ((1, False), (2, False), (5, True), (9, True)):
+            graph.log_usage(self.paths, {"event": "orchestrator_prompt", "inline_calls": n,
+                                         "warned": warned, "threshold": 3})
+        self.assertIn("orchestrator prompts: 4 measured, 2 over 3 inline calls (50%), "
+                      "median inline calls 3.5", self.stats())
+
+    def test_no_orchestrator_section_without_events(self):
+        graph.log_usage(self.paths, {"event": "context", "task": "old", "notes": []})
+        self.assertNotIn("orchestrator prompts", self.stats())
+
 
 class TestTruncation(unittest.TestCase):
     def test_cuts_at_section_boundary_and_lists_cut_sections(self):

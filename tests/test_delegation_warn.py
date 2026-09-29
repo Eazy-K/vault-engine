@@ -116,6 +116,48 @@ class TestDelegationWarn(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stderr.strip(), "")
 
+    def _data_env(self):
+        data = self.tmp / "data"
+        data.mkdir(exist_ok=True)
+        return data, {"VAULT_DATA": str(data)}
+
+    def _log(self, data):
+        log = data / ".graph" / "usage.log"
+        if not log.exists():
+            return []
+        return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+
+    def test_previous_prompt_is_logged_on_prompt_change(self):
+        data, env = self._data_env()
+        for _ in range(4):
+            self._run(prompt_id="p1", env_extra=env)
+        self.assertEqual(self._log(data), [])  # current prompt is not flushed
+        self._run(prompt_id="p2", env_extra=env)
+        events = self._log(data)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "orchestrator_prompt")
+        self.assertEqual(events[0]["inline_calls"], 4)
+        self.assertTrue(events[0]["warned"])
+        self.assertEqual(events[0]["session"], self.session_id)
+        self.assertIn("ts", events[0])
+
+    def test_no_log_without_data_dir(self):
+        missing = str(self.tmp / "nope")
+        for pid in ("p1", "p2"):
+            out = self._run(prompt_id=pid, env_extra={"VAULT_DATA": missing})
+            self.assertEqual(out.stderr.strip(), "")
+        self.assertFalse((self.tmp / "nope").exists())
+        env = {k: v for k, v in self.env.items() if k not in ("VAULT_DATA", "VAULT_HOME")}
+        self.env = env
+        self._run(prompt_id="p1")
+        self.assertEqual(self._run(prompt_id="p2").stderr.strip(), "")
+
+    def test_subagent_calls_are_not_logged(self):
+        data, env = self._data_env()
+        for pid in ("p1", "p2", "p3"):
+            self._run(prompt_id=pid, agent_id="sub-1", env_extra=env)
+        self.assertEqual(self._log(data), [])
+
 
 if __name__ == "__main__":
     unittest.main()

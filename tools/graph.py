@@ -21,6 +21,7 @@ import os
 import re
 import secrets
 import socket
+import statistics
 import subprocess
 import sys
 import urllib.error
@@ -1521,6 +1522,14 @@ def cmd_stats(args) -> None:
     if modes:
         fallback = sum(1 for m in modes if m == "keyword")
         print(f"keyword-only:        {fallback}/{len(modes)} ({fallback / len(modes):.0%})")
+    prompts = [e for e in events if e.get("event") == "orchestrator_prompt"]
+    if prompts:  # written by the delegation-warn hook; absent in older logs
+        over = sum(1 for e in prompts if e.get("warned"))
+        calls = sorted(int(e.get("inline_calls") or 0) for e in prompts)
+        limit = prompts[-1].get("threshold")
+        what = f"over {limit} inline calls" if limit is not None else "over the threshold"
+        print(f"orchestrator prompts: {len(prompts)} measured, {over} {what} "
+              f"({over / len(prompts):.0%}), median inline calls {statistics.median(calls):g}")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.
