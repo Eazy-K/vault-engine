@@ -1492,7 +1492,8 @@ def apply_decay(graph: "Graph", rate: float) -> tuple[int, int]:
 def write_decay_stamp(paths: "Paths", now: datetime | None = None) -> None:
     stamp = paths.decay_stamp
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text((now or datetime.now()).isoformat(timespec="seconds") + "\n", encoding="utf-8")
+    stamp.write_text((now or datetime.now()).isoformat(timespec="seconds") + "\n",
+                    encoding="utf-8", newline="\n")
 
 
 def read_decay_stamp(paths: "Paths") -> datetime | None:
