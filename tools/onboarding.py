@@ -752,7 +752,8 @@ def _setup_user_level(data: Path) -> None:
     for claude_dir in claude_dirs.targets():
         _append_if_missing(claude_dir / "CLAUDE.md", line)
     codex_line = USER_LEVEL_CODEX_LINE.format(agents=f"{data.as_posix()}/AGENTS.md")
-    _append_if_missing(Path.home() / ".codex" / "AGENTS.md", codex_line)
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    _append_if_missing(codex_home / "AGENTS.md", codex_line)
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
