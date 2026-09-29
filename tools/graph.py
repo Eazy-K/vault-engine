@@ -774,12 +774,36 @@ def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, li
     return cache, (vectors[-1] if query else None)
 
 
+# How the last seed() call retrieved: read by `context` for its header line and log.
+RETRIEVAL: dict = {"mode": "keyword", "reason": "not run"}
+
+
+def keyword_reason(exc: Exception, message: str) -> str:
+    """Short label for why embeddings were unavailable, as far as it can be told.
+    `message` is embed_error(exc), passed in because it reads the HTTP body once."""
+    if "Ollama has no" in message and "model" in message:
+        return "model missing"
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"ollama error, HTTP {exc.code}"
+    if isinstance(exc, (urllib.error.URLError, TimeoutError)) or "timed out" in str(exc):
+        return "ollama unreachable"
+    return "embedding failed"
+
+
+def retrieval_header() -> str:
+    if RETRIEVAL["mode"] == "semantic":
+        return f"<!-- retrieval: semantic ({EMBED_MODEL}) + keyword -->"
+    return f"<!-- retrieval: keyword-only ({RETRIEVAL['reason']}) -->"
+
+
 def semantic_scores(graph: Graph, text: str) -> dict[str, float] | None:
     """Sharpened cosine similarity per note, or None when Ollama is unavailable."""
     try:
         cache, qvec = refresh_embeddings(graph, text)
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
-        print(f"warning: semantic search unavailable ({embed_error(exc)}); keyword match only",
+        message = embed_error(exc)
+        RETRIEVAL.update(mode="keyword", reason=keyword_reason(exc, message))
+        print(f"warning: semantic search unavailable ({message}); keyword match only",
               file=sys.stderr)
         return None
     cosines = {nid: max(sum(a * b for a, b in zip(qvec, v))
@@ -800,7 +824,13 @@ def seed(graph: Graph, text: str, explicit: list[str], semantic: bool = True,
             sys.exit(f"seed [[{target}]] {error}")
         seeds[nid] = 1.0
     query = [t for t in tokenize(text) if len(t) >= 3 and t not in STOPWORDS]
+    if not semantic:
+        RETRIEVAL.update(mode="keyword", reason="disabled by --no-semantic")
+    elif not text.strip():
+        RETRIEVAL.update(mode="keyword", reason="no query text")
     sem = semantic_scores(graph, text) if semantic and text.strip() else None
+    if sem is not None:
+        RETRIEVAL.update(mode="semantic", reason="")
     lexical: dict[str, float] = {}
     if query:
         # Embeddings already cover note bodies; body keyword hits (e.g. "git" in
@@ -1267,6 +1297,25 @@ def read_usage(paths: Paths) -> list[dict]:
 
 # --- commands ----------------------------------------------------------------
 
+def truncate_body(body: str, room: int) -> str:
+    """Cut `body` to fit `room` chars at a `## ` section boundary and name the cut
+    sections; without a fitting boundary, at a line. The marker counts in `room`."""
+    def marker(cut: list[str]) -> str:
+        return f"\n<!-- truncated; cut sections: {', '.join(cut)} -->" if cut else "\n<!-- truncated -->"
+
+    pieces = re.split(r"(?m)^(?=## )", body)
+    if pieces[0] == "":
+        pieces = pieces[1:]
+    for keep in range(len(pieces) - 1, 0, -1):
+        cut = [piece.split("\n", 1)[0][3:].strip() for piece in pieces[keep:]]
+        text = "".join(pieces[:keep]).rstrip() + marker(cut)
+        if len(text) <= room:
+            return text
+    # Not even the first section fits: cut at a line, leaving space for the marker.
+    head = body[:max(room - 150, 0)].rsplit("\n", 1)[0]
+    return head + marker(re.findall(r"(?m)^## (.+?)\s*$", body[len(head):]))
+
+
 def cmd_query(args, content: bool) -> None:
     paths = default_paths()
     graph = Graph(paths)
@@ -1280,6 +1329,7 @@ def cmd_query(args, content: bool) -> None:
         print(json.dumps(results, indent=2, ensure_ascii=False))
         return
     if content:
+        print(retrieval_header())
         discovery = sys.modules.get("discovery")
         if project:
             skipped = discovery is not None and project in discovery.skip_list(paths)
@@ -1310,7 +1360,7 @@ def cmd_query(args, content: bool) -> None:
     # relevant small note never displaces a more relevant large one. If not even
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
-    used, omitted, loaded = 0, [], []
+    used, omitted, loaded, truncated = 0, [], [], []
     for r in results:
         note = graph.notes[r["id"]]
         if omitted:
@@ -1326,17 +1376,21 @@ def cmd_query(args, content: bool) -> None:
                 if used or room < 200:
                     omitted.append(note.id)
                     continue
-                body = body[:room].rsplit("\n", 1)[0] + "\n<!-- truncated -->"
+                body = truncate_body(body, room)
+                truncated.append(note.id)
             used += len(header) + len(body)
         if not r["core"]:
             loaded.append(note.id)
         print(header + body + "\n")
     if omitted:
         print(f"<!-- omitted over budget: {', '.join(omitted)} -->")
+    if omitted or truncated:
+        print(f"<!-- load a note: python \"{Path(__file__).resolve()}\" show --body <id> -->")
     if not args.no_log:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
-                          "notes": loaded, "omitted": omitted})
+                          "notes": loaded, "omitted": omitted,
+                          "retrieval": RETRIEVAL["mode"]})
         update = sys.modules.get("update")
         if update is not None:
             hint = update.context_hint(paths)
@@ -1463,6 +1517,10 @@ def cmd_stats(args) -> None:
         mine = [c for c in contexts if c.get("agent", "unknown") == agent]
         ok = sum(1 for c in mine if c.get("task") in closed)
         print(f"  {agent:<18} {ok}/{len(mine)} ({ok / len(mine):.0%})")
+    modes = [c["retrieval"] for c in contexts if "retrieval" in c]  # old events lack it
+    if modes:
+        fallback = sum(1 for m in modes if m == "keyword")
+        print(f"keyword-only:        {fallback}/{len(modes)} ({fallback / len(modes):.0%})")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.
@@ -1557,6 +1615,9 @@ def cmd_show(args) -> None:
     if error:
         sys.exit(f"[[{args.note}]] {error}")
     note = graph.notes[nid]
+    if args.body:
+        print(note.body.rstrip())
+        return
     print(f"{nid}  ({note.title}){'  [core]' if note.core else ''}")
     for other, w in sorted(graph.adjacency[nid].items(), key=lambda kv: -kv[1]):
         key = pair(nid, other)
@@ -1628,8 +1689,9 @@ def main() -> None:
     p = sub.add_parser("decay", help="weaken all learned edges")
     p.add_argument("--rate", type=float, default=DECAY_RATE)
 
-    p = sub.add_parser("show", help="show a note's edges")
+    p = sub.add_parser("show", help="show a note's edges (--body: its full text)")
     p.add_argument("note")
+    p.add_argument("--body", action="store_true", help="print the note's full text instead")
 
     sub.add_parser("lint", help="check broken links, orphans and learned state")
     sub.add_parser("index", help="embed changed notes ahead of time")
