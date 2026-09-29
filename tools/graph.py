@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
 
@@ -161,6 +161,10 @@ class Paths:
         return self.data / ".graph" / "usage.log"  # local JSON lines, not committed
 
     @property
+    def decay_stamp(self) -> Path:
+        return self.data / ".graph" / "last-decay"  # per machine, not committed
+
+    @property
     def config_file(self) -> Path:
         return self.data / "vault.config.json"
 
@@ -189,6 +193,7 @@ DEFAULT_LINK_WEIGHT = 0.7  # frontmatter link without an explicit weight
 BODY_LINK_WEIGHT = 0.5  # wikilink written in the note body
 LEARNING_RATE = 0.1
 DECAY_RATE = 0.05
+DECAY_INTERVAL_DAYS = 7  # `reinforce` decays on its own once more days than this have passed
 DEFAULT_THRESHOLD = 0.6  # 0.5 let two-hop neighbours of every seed in
 DEFAULT_DEPTH = 3
 SEED_RATIO = 0.3  # notes scoring below this share of the best match are not seeds
@@ -1418,6 +1423,8 @@ def cmd_reinforce(args) -> None:
     update = sys.modules.get("update")
     if update is not None:
         update.maybe_check(paths)
+    # Before the new edges are added, so this task's reinforcement is not decayed.
+    maybe_auto_decay(graph)
     if len(ids) < 2:
         print(f"recorded {len(ids)} used note(s); no edge to strengthen")
     else:
@@ -1467,19 +1474,62 @@ def cmd_stats(args) -> None:
             print(f"{nid:<34}{count:>9}{used.get(nid, 0):>6}")
 
 
+def apply_decay(graph: "Graph", rate: float) -> tuple[int, int]:
+    """Weaken this machine's learned edges by `rate`, drop the ones that fall below
+    MIN_LEARNED and restart the auto-decay interval. Returns (edges before, dropped)."""
+    kept = {}
+    for key, delta in graph.own_learned.items():
+        delta *= 1.0 - rate
+        if abs(delta) >= MIN_LEARNED:
+            kept[key] = delta
+    total, dropped = len(graph.own_learned), len(graph.own_learned) - len(kept)
+    graph.own_learned = kept
+    graph.save_learned()
+    write_decay_stamp(graph.paths)
+    return total, dropped
+
+
+def write_decay_stamp(paths: "Paths", now: datetime | None = None) -> None:
+    stamp = paths.decay_stamp
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text((now or datetime.now()).isoformat(timespec="seconds") + "\n", encoding="utf-8")
+
+
+def read_decay_stamp(paths: "Paths") -> datetime | None:
+    try:
+        return datetime.fromisoformat(paths.decay_stamp.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def maybe_auto_decay(graph: "Graph", now: datetime | None = None) -> bool:
+    """Run decay when more than DECAY_INTERVAL_DAYS have passed since this machine's
+    last one. With no timestamp yet (first run, e.g. after an upgrade) only record
+    now: no surprise decay. The caller commits the file change together with the
+    reinforcement. Returns True if decay ran."""
+    now = now or datetime.now()
+    last = read_decay_stamp(graph.paths)
+    if last is None:
+        write_decay_stamp(graph.paths, now)
+        return False
+    if (now - last).total_seconds() <= DECAY_INTERVAL_DAYS * 86400:
+        return False
+    try:
+        _require_writable(graph.paths)
+    except SystemExit:
+        return False  # engine older than the vault's schema: leave shared data alone
+    total, dropped = apply_decay(graph, DECAY_RATE)
+    print(f"auto-decay: weakened {total} learned edges on {graph.machine}, dropped {dropped}"
+          f" (last decay {last:%Y-%m-%d})")
+    return True
+
+
 def cmd_decay(args) -> None:
     # Each machine decays only its own file, so decay never causes merge conflicts.
     graph = Graph()
     _require_writable(graph.paths)
-    kept = {}
-    for key, delta in graph.own_learned.items():
-        delta *= 1.0 - args.rate
-        if abs(delta) >= MIN_LEARNED:
-            kept[key] = delta
-    dropped = len(graph.own_learned) - len(kept)
-    print(f"decayed {len(graph.own_learned)} learned edges on {graph.machine}, dropped {dropped}")
-    graph.own_learned = kept
-    graph.save_learned()
+    total, dropped = apply_decay(graph, args.rate)
+    print(f"decayed {total} learned edges on {graph.machine}, dropped {dropped}")
     graph.commit_learned("chore: decay learned links")
 
 

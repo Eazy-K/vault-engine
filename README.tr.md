@@ -44,6 +44,13 @@ delegasyon hook'larını ekler, eksik worker dosyalarını kurar. `doctor` ve `c
 edilen model kullanıcıya özel olduğundan motor onun değişip değişmediğini belirlemez.
 Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
 
+Öğrenilen bağlantılar kendiliğinden zayıflar (decay): `reinforce`, bu bilgisayardaki son
+zayıflatmadan bu yana 7 günden fazla geçtiğini görürse öğrenilen bağlantıları önce %5
+zayıflatır ve tek satır `auto-decay:` yazar; değişiklik aynı öğrenilen-bağlantılar
+commit'ine girer. Zaman damgası veri klasöründeki, commit'lenmeyen `.graph/last-decay`
+dosyasındadır; elle çalıştırılan `decay` de onu günceller. Güncellemeden sonraki ilk
+`reinforce` yalnızca damgayı kaydeder, hemen zayıflatma yapmaz.
+
 Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar içerir):
 [docs/agent-setup.md](docs/agent-setup.md)
 

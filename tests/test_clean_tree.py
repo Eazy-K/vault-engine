@@ -197,6 +197,60 @@ class TestReinforceCommits(RepoCase):
         self.assertEqual(porcelain(self.data), [])
         self.assertEqual(subject(self.data), "chore: decay learned links")
 
+    # --- automatic decay ---------------------------------------------------------
+
+    def _reinforce(self) -> str:
+        return self._run(graph.cmd_reinforce, Namespace(
+            notes=["alpha", "beta"], task="t", rate=graph.LEARNING_RATE))
+
+    def _stamp(self, days_ago: float) -> None:
+        when = graph.datetime.now() - graph.timedelta(days=days_ago)
+        graph.write_decay_stamp(self.paths, when)
+
+    def _learned(self) -> float:
+        path = self.data / ".graph" / "learned" / "pc-test.json"
+        (value,) = json.loads(path.read_text(encoding="utf-8")).values()
+        return value
+
+    def test_first_run_records_the_timestamp_without_decaying(self):
+        self.assertFalse(self.paths.decay_stamp.exists())
+        out = self._reinforce()
+        self.assertNotIn("auto-decay", out)
+        self.assertIsNotNone(graph.read_decay_stamp(self.paths))
+        self.assertAlmostEqual(self._learned(), 0.1, places=4)  # unlinked notes: 0.1 * (1 - 0), undecayed
+        self.assertEqual(porcelain(self.data), [])  # the stamp is gitignored
+
+    def test_interval_not_reached_does_not_decay(self):
+        self._reinforce()
+        self._stamp(days_ago=graph.DECAY_INTERVAL_DAYS - 1)
+        before = self._learned()
+        out = self._reinforce()
+        self.assertNotIn("auto-decay", out)
+        self.assertGreater(self._learned(), before)
+
+    def test_interval_reached_decays_in_the_same_commit(self):
+        self._reinforce()
+        self._stamp(days_ago=graph.DECAY_INTERVAL_DAYS + 1)
+        before = self._learned()
+        out = self._reinforce()
+        self.assertEqual(out.count("auto-decay"), 1)
+        # decayed first, then this task's reinforcement added
+        decayed = before * (1 - graph.DECAY_RATE)
+        self.assertAlmostEqual(
+            self._learned(), decayed + graph.LEARNING_RATE * (1 - decayed), places=2)
+        self.assertEqual(subject(self.data), "chore: update learned links")
+        self.assertEqual(porcelain(self.data), [])
+        age = graph.datetime.now() - graph.read_decay_stamp(self.paths)
+        self.assertLess(age.total_seconds(), 60)
+
+    def test_manual_decay_updates_the_timestamp(self):
+        self._reinforce()
+        self._stamp(days_ago=graph.DECAY_INTERVAL_DAYS + 1)
+        self._run(graph.cmd_decay, Namespace(rate=0.5))
+        age = graph.datetime.now() - graph.read_decay_stamp(self.paths)
+        self.assertLess(age.total_seconds(), 60)
+        self.assertNotIn("auto-decay", self._reinforce())
+
 
 class TestOnboardCommits(RepoCase):
     def setUp(self):
