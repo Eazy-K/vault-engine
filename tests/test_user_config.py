@@ -543,13 +543,24 @@ class TestWorkspace(Base):
         self.assertTrue(self.target.read_text(encoding="utf-8").startswith(
             "hand written\n\n" + uc.WS_BEGIN))
 
-    def test_identical_unmarked_file_is_adopted_without_rewrite(self):
+    def test_identical_unmarked_file_is_adopted_by_wrapping(self):
         self.put(self.ws, "AGENTS.md", self.expanded + "\n")
         items = self.items()
-        self.assertEqual(items[0].status, "ok")
-        self.assertEqual(uc.install(items), [])
-        self.assertEqual(self.target.read_text(encoding="utf-8"), self.expanded + "\n")
-        self.assertEqual(self.backups(self.ws), [])
+        self.assertEqual(items[0].status, "drift")
+        self.assertIn("unmanaged", items[0].message)
+        self.assertIn("unmanaged", uc.statuses(self.paths)[0][1])
+        self.assertEqual(len(uc.install(items)), 1)
+        self.assertEqual(self.target.read_text(encoding="utf-8"),
+                         f"{uc.WS_BEGIN}\n{self.expanded}\n{uc.WS_END}\n")
+        self.assertEqual(len(self.backups(self.ws)), 1)
+        self.assertEqual(uc.install(self.items()), [])
+        # a later source change replaces the block instead of appending
+        self.put(self.data, "config/workspace/AGENTS.md", "New {VAULT_DATA}")
+        uc.install(self.items())
+        text = self.target.read_text(encoding="utf-8")
+        self.assertEqual(text.count(uc.WS_BEGIN), 1)
+        self.assertNotIn(self.expanded, text)
+        self.assertIn("New ", text)
 
     def test_drift_reported_only_when_source_exists(self):
         self.assertTrue(uc.has_drift(self.paths))

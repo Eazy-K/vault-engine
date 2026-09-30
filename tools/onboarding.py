@@ -1152,6 +1152,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             result = models.status(data, settings, claude_dir / "agents")
             if result is not None:
                 check(*result)
+    gone = claude_dirs.missing(data)
+    if gone:
+        graph_py = g.ENGINE / "tools" / "graph.py"
+        check("INFO", f"registered Claude config dirs no longer exist (skipped): "
+                      f"{', '.join(str(d) for d in gone)}; remove with `python \"{graph_py}\" "
+                      "claude-dirs --remove <path>`")
     unconfirmed = claude_dirs.candidates(data)
     if unconfirmed:
         graph_py = g.ENGINE / "tools" / "graph.py"
@@ -1164,6 +1170,18 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if codex_hooks is not None and codex_home.is_dir():
         for result in codex_hooks.statuses():
             check(*result)
+
+    if codex_hooks is not None and found.get("codex"):
+        try:
+            retest = codex_hooks.deny_retest_status(found["codex"], data)
+        except Exception:  # must not hide the other checks
+            retest = None
+        if retest:
+            check(*retest)
+
+    if sys.version_info < (3, 11):
+        check("WARN", f"Python {sys.version.split()[0]}: Codex config.toml user-config items "
+                      "need Python 3.11+ (tomllib)")
 
     user_config = sys.modules.get("user_config")
     if user_config is not None and data is not None:

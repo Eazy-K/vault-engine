@@ -651,13 +651,23 @@ def plan_workspace(paths: g.Paths, filename: str) -> Item | None:
         return None
     target = paths.data.resolve().parent / filename
 
+    block = f"{WS_BEGIN}\n{source}\n{WS_END}"
+    adopt = False
+
     def merge(text: str) -> str:
+        nonlocal adopt
         has_markers = any(line.strip() in (WS_BEGIN, WS_END) for line in text.split("\n"))
         if not has_markers and text.strip() == source.strip():
-            return text  # already holds exactly this content: adopt it as is
-        return splice(text, f"{WS_BEGIN}\n{source}\n{WS_END}", WS_BEGIN, WS_END)
+            # Holds exactly this content but unmanaged: wrap it (replace, never
+            # append) so later source changes replace the block.
+            adopt = True
+            return block + "\n"
+        return splice(text, block, WS_BEGIN, WS_END)
 
-    return _plan_text(f"workspace {filename}", target, merge)
+    item = _plan_text(f"workspace {filename}", target, merge)
+    if adopt and item.status == "drift":
+        item.message = "unmanaged (no vault-engine markers), run --install to adopt"
+    return item
 
 
 # --- claude settings ---------------------------------------------------------------------
@@ -766,8 +776,8 @@ def statuses(paths: g.Paths) -> list[tuple[str, str]]:
         if item.status == "ok":
             out.append(("OK", f"{item.name} matches the config template ({item.target})"))
         elif item.status == "drift":
-            out.append(("WARN", f"{item.name} differs from the config template ({item.target}); "
-                                f"run: {INSTALL_HINT}"))
+            detail = item.message or "differs from the config template"
+            out.append(("WARN", f"{item.name}: {detail} ({item.target}); run: {INSTALL_HINT}"))
         else:
             out.append(("WARN", f"{item.name}: {item.message}"))
     return out

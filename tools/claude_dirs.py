@@ -7,7 +7,9 @@ a registry of the ones it manages in this computer's gitignored
 
 - ~/.claude is always implicitly included (when it exists).
 - A dir is recorded when an engine command runs with CLAUDE_CONFIG_DIR pointing
-  at it (observed, not guessed), or when the user adds it (`--add`).
+  at it (observed, not guessed; not when it lies in the system temp folder), or
+  when the user adds it (`--add`). Registered dirs that no longer exist are
+  skipped (doctor says so once).
 - Other `.claude*` dirs under the home folder that look like a Claude config
   dir (settings.json or projects/) are only *candidates*: they are never added
   on their own. `--ask` prints them as a question for the agent to put to the
@@ -26,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import graph as g
@@ -93,6 +96,8 @@ def sources(data: Path | None = None) -> list[tuple[Path, str]]:
         seen.append(implicit())
         result.append((implicit(), "default"))
     for path in _saved(data):
+        if not path.is_dir():
+            continue  # deleted since it was registered: see missing()
         if not any(_same(path, d) for d in seen):
             seen.append(path)
             result.append((path, "registered"))
@@ -102,6 +107,21 @@ def sources(data: Path | None = None) -> list[tuple[Path, str]]:
             seen.append(active)
             result.append((active, "environment"))
     return result
+
+
+def missing(data: Path | None = None) -> list[Path]:
+    """Registered dirs that no longer exist (e.g. a deleted temporary
+    CLAUDE_CONFIG_DIR). They are skipped everywhere; `claude-dirs --remove`
+    drops them from the registry."""
+    return [p for p in _saved(_data(data)) if not p.is_dir()]
+
+
+def _in_temp(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def registered(data: Path | None = None) -> list[Path]:
@@ -153,8 +173,8 @@ def record_env() -> bool:
         if not os.environ.get("CLAUDE_CONFIG_DIR", "").strip():
             return False
         active = g.claude_config_dir()
-        if not active.is_dir():
-            return False
+        if not active.is_dir() or _in_temp(active):
+            return False  # a throwaway dir in the temp folder is used, never remembered
         return add(active)
     except (OSError, SystemExit):
         return False
@@ -249,6 +269,11 @@ def _print_list() -> None:
             print(f"  {path}  ({source})")
     else:
         print("No Claude Code config dir registered (and no ~/.claude).")
+    gone = missing()
+    if gone:
+        print("Registered but missing (skipped; drop with --remove <path>):")
+        for path in gone:
+            print(f"  {path}")
     cands = candidates()
     if cands:
         print("Unconfirmed candidates (not changed until added):")

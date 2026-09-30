@@ -882,6 +882,31 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("Codex model and reasoning effort are explicitly configured", output)
         self.assertIn("Codex worker profiles match engine templates", output)
 
+    def _doctor_with_agents(self) -> str:
+        with mock.patch.dict(os.environ, self._env(), clear=True), \
+             mock.patch("pathlib.Path.home", return_value=self.home), \
+             mock.patch.object(onboarding, "_which", side_effect=lambda t: f"/bin/{t}"), \
+             mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
+             redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        return buf.getvalue()
+
+    def test_codex_version_change_prints_retest_info(self):
+        (self.data / ".graph").mkdir(exist_ok=True)
+        hooks = sys.modules["codex_hooks"]  # the module doctor looks up
+        with mock.patch.object(hooks, "codex_version", return_value="codex-cli 9.9.9"):
+            self.assertIn("run codex-hooks --probe-deny", self._doctor_with_agents())
+            hooks.record_tested_version("codex-cli 9.9.9", self.data)
+            self.assertNotIn("--probe-deny", self._doctor_with_agents())
+
+    def test_python_below_311_warns_about_codex_toml(self):
+        with mock.patch.object(onboarding.sys, "version_info", (3, 10, 0, "final", 0)):
+            out = self._doctor_with_agents()
+        self.assertIn("need Python 3.11+ (tomllib)", out)
+        with mock.patch.object(onboarding.sys, "version_info", (3, 12, 0, "final", 0)):
+            self.assertNotIn("need Python 3.11+", self._doctor_with_agents())
+
     def test_fail_missing_agents_md(self):
         (self.data / "AGENTS.md").unlink()
         with mock.patch.dict(os.environ, self._env(), clear=True), \

@@ -453,7 +453,7 @@ after step 2.
    numbers, booleans and arrays of them are supported; anything else is reported as an
    error and nothing is written. Workspace files use `<!-- vault-engine:begin -->` /
    `<!-- vault-engine:end -->` markers; an existing file that already holds exactly the
-   expanded content is adopted unchanged. Placeholders: `{VAULT_DATA}`,
+   expanded content is reported as unmanaged drift; `--install` wraps it in the markers (with a backup) so later source changes replace the block. Placeholders: `{VAULT_DATA}`,
    `{VAULT_ENGINE}`, `{WORKSPACE}` (forward slashes) and `{VAULT_DATA_NATIVE}`,
    `{VAULT_ENGINE_NATIVE}`, `{WORKSPACE_NATIVE}` (OS separators, e.g. for Codex rules
    that must match both spellings); values are escaped for the target format.
