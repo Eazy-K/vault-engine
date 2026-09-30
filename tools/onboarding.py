@@ -1165,6 +1165,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         for result in codex_hooks.statuses():
             check(*result)
 
+    user_config = sys.modules.get("user_config")
+    if user_config is not None and data is not None:
+        try:
+            for result in user_config.statuses(g.Paths(g.ENGINE, data)):
+                check(*result)
+        except Exception as exc:  # must not hide the other checks
+            check("WARN", f"user-config check failed ({exc})")
+
     if data is not None:
         paths = g.Paths(g.ENGINE, data)
         for root in g.project_roots(paths):

@@ -218,7 +218,7 @@ MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
-              "claude_dirs", "claude_hooks", "codex_hooks", "models")  # optional modules in tools/
+              "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
 
 
 def sanitize_machine_name(raw: str) -> str:
@@ -399,6 +399,8 @@ def _load_notes_from(root: Path, source: str) -> dict[str, Note]:
             continue
         if len(rel.parts) == 1 and rel.name in SKIP_ROOT_FILES:
             continue
+        if len(rel.parts) > 1 and rel.parts[0] == "config":
+            continue  # config templates for `user-config`, not notes
         if rel.name.startswith("_"):
             continue
         meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -1430,6 +1432,12 @@ def cmd_query(args, content: bool) -> None:
                     print(f"<!-- Codex hooks/model/worker settings are missing or out of "
                           f"date on this computer: ask the user once, then run python "
                           f"\"{graph_py}\" codex-hooks --install -->")
+            user_config = sys.modules.get("user_config")
+            if user_config is not None and user_config.has_drift(paths):
+                graph_py = Path(__file__).resolve()
+                print(f"<!-- User-level Codex/Claude config differs from the vault templates: "
+                      f"ask the user once, then run python \"{graph_py}\" user-config "
+                      f"--install -->")
         except Exception:
             pass
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
