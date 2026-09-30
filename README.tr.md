@@ -39,6 +39,8 @@ elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara 
 
 Claude Code delegasyon hook'u (`delegation-warn`), asistanın bir kullanıcı mesajında ana konuşmada kaç araç çağrısı yaptığını `.graph/usage.log` dosyasına yazar; `python tools/graph.py stats` bunu "orchestrator prompts" satırında özetler (ölçülen mesaj sayısı, eşiği aşanların yüzdesi, medyan çağrı sayısı). Bir oturumun son mesajı ölçülmez.
 
+Kullanıcı düzeyi ayarlar (`user-config`): `defaults/config/` şablonları (veri klasöründe `config/` altında aynı yolda bir dosya varsa onun yerini alır) `$CODEX_HOME` (varsayılan `~/.codex`) ve `$CLAUDE_CONFIG_DIR` (varsayılan `~/.claude`) içine, kullanıcının kendi eklediklerini silmeden birleştirilir: Codex `developer_instructions` ve `rules/default.rules` içinde `# vault-engine:begin` / `# vault-engine:end` işaretli blok, Claude `settings.json` içinde derin birleştirme. Yer tutucular: `{VAULT_DATA}`, `{VAULT_ENGINE}`, `{WORKSPACE}`. `python tools/graph.py user-config` farkı bildirir, `--install` uygular (her dosyayı ilk değişiklikten önce `<ad>.bak-<TarihSaat>` olarak yedekler; ikinci çalıştırma hiçbir şey değiştirmez). Başka bilgisayarda: `git pull`, `doctor`, `user-config --install`.
+
 Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
 delegasyon hook'larını ve `agent-guard` (`PreToolUse`, `Agent|spawn_agent`; yalnızca `worker-*` profillerine ve kendi model/eforlarına izin verir) hook'unu ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
 `~/.codex` varsa hook ve worker dosyalarının eksik veya eski olup olmadığını; ayrıca

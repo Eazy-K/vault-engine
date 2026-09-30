@@ -426,6 +426,12 @@ after step 2.
    computer already pushed `main`): pull it first, `git pull --rebase origin main`, then
    push, or just follow the exact command `doctor` prints there, which includes the pull
    when it can tell `main` already exists on the remote.
+9. On another computer, after `git pull` in the engine and the data repo and a clean
+   `doctor`, run `python "<projects folder>/vault-engine/tools/graph.py" user-config` to
+   compare the Codex/Claude user-level config with the vault's `config/` templates and,
+   after the user agrees, `user-config --install`. It backs up every file it changes and
+   never removes the user's own entries; a second run changes nothing. `doctor` and
+   `context` warn when it is needed.
 
 ---
 
