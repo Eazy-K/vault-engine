@@ -885,7 +885,7 @@ class TestDoctor(unittest.TestCase):
     def _doctor_out(self) -> str:
         with mock.patch.dict(os.environ, self._env(), clear=True), \
              mock.patch("pathlib.Path.home", return_value=self.home), \
-             mock.patch("onboarding._which", side_effect=lambda t: f"/bin/{t}"), \
+             mock.patch.object(onboarding, "_which", side_effect=lambda t: f"/bin/{t}"), \
              mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")), \
              redirect_stdout(StringIO()) as buf:
             with self.assertRaises(SystemExit):
@@ -894,9 +894,10 @@ class TestDoctor(unittest.TestCase):
 
     def test_codex_version_change_prints_retest_info(self):
         (self.data / ".graph").mkdir(exist_ok=True)
-        with mock.patch("codex_hooks.codex_version", return_value="codex-cli 9.9.9"):
+        hooks = sys.modules["codex_hooks"]  # the module doctor looks up
+        with mock.patch.object(hooks, "codex_version", return_value="codex-cli 9.9.9"):
             self.assertIn("run codex-hooks --probe-deny", self._doctor_out())
-            codex_hooks.record_tested_version("codex-cli 9.9.9", self.data)
+            hooks.record_tested_version("codex-cli 9.9.9", self.data)
             self.assertNotIn("--probe-deny", self._doctor_out())
 
     def test_python_below_311_warns_about_codex_toml(self):
