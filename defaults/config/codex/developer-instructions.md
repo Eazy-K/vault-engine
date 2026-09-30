@@ -6,3 +6,4 @@ Orchestration rules:
 - After approval, delegate the work to worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research) subagents.
 - Make at most 3 inline tool calls yourself; longer work is delegated.
 - Stay within the approved scope.
+- When delegating, always set agent_type to worker-low or worker-medium; never use default or general-purpose.
