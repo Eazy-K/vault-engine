@@ -43,6 +43,11 @@ class OrchestrationRules(unittest.TestCase):
         self.assertLessEqual(len([l for l in body.splitlines() if l.strip()]), 15)
         self.assertLessEqual(len(body.split()), 250)
 
+    def test_details_do_not_exempt_single_agent_from_approval(self):
+        text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()
+        for phrase in ("may launch after stating scope", "without approval"):
+            self.assertNotIn(phrase, text)
+
 
 if __name__ == "__main__":
     unittest.main()

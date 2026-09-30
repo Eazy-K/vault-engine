@@ -20,7 +20,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - Small or tightly coupled work stays with one agent; splitting only adds token and coordination cost.
 
 ## Flow
-1. **Plan:** short split plan (pieces, subagent, model/effort), approval before acting. A single-agent delegation with no split may launch after stating scope and key assumptions in one or two lines, unless it touches an ask-first category (architecture/data model/public API, new dependency, irreversible actions, cost/external services/publishing).
+1. **Plan:** short plan (pieces, subagent, model/effort) and explicit user approval before acting, also for a single-agent delegation with no split. Only the small-task exception in the core note (a single short tool call) skips it.
 2. **Task definition:** a subagent starts with zero context: give goal, scope, file paths, acceptance criteria and relevant rules from `context`.
 3. **Worktree:** parallel agents that change code use separate git worktrees.
 4. **Verification:** tests, lint, guard, reading the diff. Nothing unverified is presented as correct.
