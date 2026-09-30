@@ -8,18 +8,27 @@ them into the user's home config without removing anything the user added:
   config/codex/developer-instructions.md  -> block inside the top-level
       `developer_instructions` string of <CODEX_HOME>/config.toml
   config/codex/default.rules              -> block inside <CODEX_HOME>/rules/default.rules
+  config/codex/config.toml                -> keys/tables upserted into <CODEX_HOME>/config.toml
+      (plus config/codex/config.<windows|linux|darwin>.toml for this platform)
   config/claude/settings.json             -> deep-merged into <CLAUDE_CONFIG_DIR>/settings.json
+  config/workspace/{AGENTS,CLAUDE}.md     -> `<!-- vault-engine:begin/end -->` block in the
+      same-named file in {WORKSPACE}
 
 Blocks sit between `# vault-engine:begin` and `# vault-engine:end`; text outside
 is never touched. Every file is backed up before its first change.
 Placeholders in templates: {VAULT_DATA}, {VAULT_ENGINE}, {WORKSPACE} (the parent
-folder of the data repo), expanded to absolute paths with forward slashes.
+folder of the data repo), expanded to absolute paths with forward slashes, and the
+same with a `_NATIVE` suffix using the OS separator (backslashes on Windows). Values
+are escaped for the target format: Starlark strings in .rules, JSON strings in
+settings.json; the TOML fragment is expanded after parsing, so any quoting works.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -41,6 +50,10 @@ KEY = "developer_instructions"
 INSTRUCTIONS_SRC = "config/codex/developer-instructions.md"
 RULES_SRC = "config/codex/default.rules"
 SETTINGS_SRC = "config/claude/settings.json"
+CONFIG_SRC = "config/codex/config.toml"
+WS_BEGIN = "<!-- vault-engine:begin -->"
+WS_END = "<!-- vault-engine:end -->"
+WS_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
 class ConfigError(Exception):
@@ -72,19 +85,32 @@ def resolve_source(paths: g.Paths, rel: str) -> Path | None:
 
 
 def placeholders(paths: g.Paths) -> dict[str, str]:
-    return {"{VAULT_DATA}": paths.data.resolve().as_posix(),
-            "{VAULT_ENGINE}": paths.engine.resolve().as_posix(),
-            "{WORKSPACE}": paths.data.resolve().parent.as_posix()}
+    """Forward-slash values, and `_NATIVE` variants with the OS separator."""
+    data, engine = paths.data.resolve(), paths.engine.resolve()
+    return {"{VAULT_DATA}": data.as_posix(),
+            "{VAULT_ENGINE}": engine.as_posix(),
+            "{WORKSPACE}": data.parent.as_posix(),
+            "{VAULT_DATA_NATIVE}": os.fspath(data),
+            "{VAULT_ENGINE_NATIVE}": os.fspath(engine),
+            "{WORKSPACE_NATIVE}": os.fspath(data.parent)}
 
 
-def expand(text: str, values: dict[str, str]) -> str:
+def starlark_escape(value: str) -> str:
+    """Make value safe inside a "..." string of a Codex .rules file."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def expand(text: str, values: dict[str, str], escape=None) -> str:
+    """Replace placeholder tokens; escape (optional) is applied to each value so it
+    is safe in the target's string syntax."""
     for token, value in values.items():
-        text = text.replace(token, value)
+        text = text.replace(token, escape(value) if escape else value)
     return text
 
 
-def _read_source(paths: g.Paths, rel: str) -> str | None:
-    """Expanded, newline-normalized source text; None if absent or blank."""
+def _read_source(paths: g.Paths, rel: str, escape=None, expand_text: bool = True) -> str | None:
+    """Expanded, newline-normalized source text; None if absent or blank.
+    escape: see expand(); expand_text=False leaves placeholders for the caller."""
     path = resolve_source(paths, rel)
     if path is None:
         return None
@@ -92,7 +118,9 @@ def _read_source(paths: g.Paths, rel: str) -> str | None:
         text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
-    text = expand(text, placeholders(paths)).replace("\r\n", "\n").strip("\n")
+    if expand_text:
+        text = expand(text, placeholders(paths), escape)
+    text = text.replace("\r\n", "\n").strip("\n")
     return text if text.strip() else None
 
 
@@ -116,18 +144,18 @@ def _encode(text: str, eol: str, bom: bool) -> bytes:
     return b"\xef\xbb\xbf" + data if bom else data
 
 
-def splice(body: str, block: str) -> str:
+def splice(body: str, block: str, begin: str = BEGIN, end: str = END) -> str:
     """Replace the marked block in body with block, or append it. Text outside
     the markers is kept exactly."""
     lines = body.split("\n")
-    begins = [i for i, line in enumerate(lines) if line.strip() == BEGIN]
+    begins = [i for i, line in enumerate(lines) if line.strip() == begin]
     if begins:
         start = begins[0]
-        ends = [i for i in range(start + 1, len(lines)) if lines[i].strip() == END]
+        ends = [i for i in range(start + 1, len(lines)) if lines[i].strip() == end]
         if not ends or len(begins) > 1:
             raise ConfigError("unbalanced vault-engine markers; fix them by hand")
         return "\n".join(lines[:start] + block.split("\n") + lines[ends[0] + 1:])
-    if any(line.strip() == END for line in lines):
+    if any(line.strip() == end for line in lines):
         raise ConfigError("unbalanced vault-engine markers; fix them by hand")
     base = body.rstrip("\n")
     return (base + "\n\n" if base.strip() else "") + block + "\n"
@@ -249,7 +277,7 @@ def plan_instructions(paths: g.Paths, home: Path) -> Item | None:
 # --- codex rules -----------------------------------------------------------------------
 
 def plan_rules(paths: g.Paths, home: Path) -> Item | None:
-    source = _read_source(paths, RULES_SRC)
+    source = _read_source(paths, RULES_SRC, escape=starlark_escape)
     if source is None:
         return None
     return _plan_text("codex rules", home / "rules" / "default.rules",
@@ -265,6 +293,371 @@ def _plan_text(name: str, target: Path, merge) -> Item:
     if merged == text and target.exists():
         return Item(name, target, "ok")
     return Item(name, target, "drift", new_bytes=_encode(merged, eol, bom))
+
+
+# --- codex config.toml fragment (upsert keys and tables) -----------------------------------
+
+_BARE = re.compile(r"[A-Za-z0-9_-]+")
+_KEY_PART = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')"""
+_KEY_RE = re.compile(rf"[ \t]*({_KEY_PART}(?:[ \t]*\.[ \t]*{_KEY_PART})*)[ \t]*=[ \t]*")
+
+
+def _norm(key: str) -> str:
+    """Comparison form of a key: path-like keys ignore slash style, a trailing
+    slash and (on Windows) case."""
+    if "/" in key or "\\" in key:
+        key = key.replace("\\", "/").rstrip("/")
+        if sys.platform == "win32":
+            key = key.casefold()
+    return key
+
+
+def _lookup(container: dict, key: str) -> str | None:
+    """The key of container that is equivalent to key, if any."""
+    if key in container:
+        return key
+    wanted = _norm(key)
+    return next((k for k in container if _norm(k) == wanted), None)
+
+
+def _same(a, b) -> bool:
+    """Equality that does not treat True as 1."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
+
+
+def _check_scalar(value, where: str) -> None:
+    if isinstance(value, list):
+        for item in value:
+            _check_scalar(item, where)
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ConfigError(f"{where}: inf/nan is not supported")
+    elif not isinstance(value, (str, bool, int)):
+        raise ConfigError(f"{where}: unsupported value type {type(value).__name__} "
+                          "(only strings, numbers, booleans and arrays of them)")
+
+
+def _validate_fragment(fragment: dict, prefix: str = "") -> None:
+    for key, value in fragment.items():
+        if isinstance(value, dict):
+            _validate_fragment(value, f"{prefix}{key}.")
+        else:
+            _check_scalar(value, f"{prefix}{key}")
+
+
+def _deep_update(base: dict, other: dict) -> dict:
+    for key, value in other.items():
+        found = _lookup(base, key)
+        if found is not None and isinstance(base[found], dict) and isinstance(value, dict):
+            _deep_update(base[found], value)
+        else:
+            base[found if found is not None else key] = value
+    return base
+
+
+def _toml_str(value: str) -> str:
+    """Literal '...' string when possible (Windows paths stay readable)."""
+    if "'" not in value and not any((ord(c) < 32 and c != "\t") or ord(c) == 127 for c in value):
+        return f"'{value}'"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, str):
+        return _toml_str(value)
+    return repr(value)
+
+
+def _toml_key(key: str) -> str:
+    return key if _BARE.fullmatch(key) else _toml_str(key)
+
+
+@dataclass
+class _Section:
+    path: tuple
+    aot: bool  # [[array of tables]]
+    header_start: int
+    body_start: int
+    stmts: list  # (key path, value start, value end, offset after the statement's last line)
+
+
+def _value_extent(text: str, i: int) -> tuple[int, int]:
+    """(end of the value, offset after its last line) for a value starting at i."""
+    n, depth, last = len(text), 0, i
+    while i < n:
+        c = text[i]
+        triple = text[i:i + 3]
+        if triple in ('"""', "'''"):
+            j = i + 3
+            while j < n and not text.startswith(triple, j):
+                j += 2 if triple == '"""' and text[j] == "\\" else 1
+            if j >= n:
+                raise ConfigError("unterminated multi-line string in config.toml")
+            j += 3
+            for _ in range(2):
+                if text.startswith(triple[0], j):
+                    j += 1
+            last = i = j
+        elif c in "\"'":
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if c == '"' and text[j] == "\\" else 1
+            if j >= n or text[j] != c:
+                raise ConfigError("unterminated string in config.toml")
+            last = i = j + 1
+        elif c == "#":
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c == "\n":
+            if depth <= 0:
+                break
+            i += 1
+        else:
+            if c in "[{":
+                depth += 1
+            elif c in "]}":
+                depth -= 1
+            if not c.isspace():
+                last = i + 1
+            i += 1
+    return last, min(i + 1, n)
+
+
+def _walk_path(tree) -> tuple:
+    path = []
+    while isinstance(tree, dict) and len(tree) == 1:
+        (key, tree), = tree.items()
+        path.append(key)
+    return tuple(path)
+
+
+def _header(line: str) -> tuple[tuple, bool] | None:
+    """(path, is array of tables) if the line is a table header."""
+    stripped = line.lstrip(" \t")
+    if not stripped.startswith("["):
+        return None
+    aot = stripped.startswith("[[")
+    start = 2 if aot else 1
+    i, quote = start, ""
+    while i < len(stripped):
+        c = stripped[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            elif c == "\\" and quote == '"':
+                i += 1
+        elif c in "\"'":
+            quote = c
+        elif c == "]":
+            break
+        i += 1
+    try:
+        return _walk_path(tomllib.loads(f"[{stripped[start:i]}]\n")), aot
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def _scan(text: str) -> list[_Section]:
+    """The root section plus one per table header, each with its key statements."""
+    sections = [_Section((), False, 0, 0, [])]
+    pos, n = 0, len(text)
+    while pos < n:
+        nl = text.find("\n", pos)
+        line_end = n if nl < 0 else nl + 1
+        line = text[pos:line_end].rstrip("\n")
+        head = _header(line)
+        if head:
+            sections.append(_Section(head[0], head[1], pos, line_end, []))
+        else:
+            match = _KEY_RE.match(line)
+            if match:
+                vend, line_end = _value_extent(text, pos + match.end())
+                try:
+                    kpath = _walk_path(tomllib.loads(f"{match.group(1)} = 0\n"))
+                except tomllib.TOMLDecodeError:
+                    kpath = ()
+                sections[-1].stmts.append((kpath, pos + match.end(), vend, line_end))
+        pos = line_end
+    return sections
+
+
+def _flatten(fragment: dict, prefix: tuple = ()) -> list[tuple[tuple, dict]]:
+    """[(table path, {key: value})] for the root and every table worth writing."""
+    own = {k: v for k, v in fragment.items() if not isinstance(v, dict)}
+    subs = {k: v for k, v in fragment.items() if isinstance(v, dict)}
+    out = [(prefix, own)] if own or not subs else []
+    for key, value in subs.items():
+        out += _flatten(value, prefix + (key,))
+    return out
+
+
+def _find_section(sections: list[_Section], path: tuple) -> _Section | None:
+    wanted = tuple(_norm(p) for p in path)
+    for sec in sections:
+        if not sec.aot and tuple(_norm(p) for p in sec.path) == wanted:
+            return sec
+    return None
+
+
+def _dig(tree: dict, path: tuple, create: bool = False):
+    for part in path:
+        found = _lookup(tree, part)
+        if found is None:
+            if not create:
+                return None
+            found = part
+            tree[found] = {}
+        tree = tree[found]
+        if not isinstance(tree, dict):
+            raise ConfigError(f"config.toml: {'.'.join(path)} is not a table; fix it by hand")
+    return tree
+
+
+def _insert_point(text: str, sections: list[_Section], sec: _Section) -> tuple[int, str]:
+    """(offset, text to add after the inserted lines) for new keys in sec."""
+    if sec.stmts:
+        return sec.stmts[-1][3], ""
+    if sec.path:
+        return sec.body_start, ""
+    if len(sections) == 1:
+        return len(text), ""
+    # new top-level keys go before the first table (and the comments above it)
+    at = sections[1].header_start
+    above = text[:at].split("\n")[:-1]
+    while above and above[-1].lstrip().startswith("#"):
+        at -= len(above.pop()) + 1
+    return at, "\n"
+
+
+def merge_fragment(text: str, fragment: dict) -> str:
+    """config.toml text (\\n newlines) with every fragment key set to the fragment's
+    value. Nothing is deleted; untouched text stays byte-identical."""
+    _validate_fragment(fragment)
+    try:
+        before = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"config.toml is not valid TOML: {exc}") from exc
+    sections = _scan(text)
+    edits: list[tuple[int, int, str]] = []
+    inserts: dict[int, str] = {}
+    new_tables: list[str] = []
+    expected = copy.deepcopy(before)
+    for path, entries in _flatten(fragment):
+        table = _dig(expected, path, create=True)
+        live = _dig(before, path)
+        sec = _find_section(sections, path)
+        if sec is None:
+            body = "".join(f"{_toml_key(k)} = {_toml_value(v)}\n" for k, v in entries.items())
+            new_tables.append("[" + ".".join(_toml_key(p) for p in path) + "]\n" + body)
+            table.update(entries)
+            continue
+        fresh = ""
+        for key, value in entries.items():
+            stmt = next((s for s in sec.stmts
+                         if len(s[0]) == 1 and _norm(s[0][0]) == _norm(key)), None)
+            if stmt is None:
+                fresh += f"{_toml_key(key)} = {_toml_value(value)}\n"
+            elif live is not None and not _same(live.get(_lookup(live, stmt[0][0])), value):
+                edits.append((stmt[1], stmt[2], _toml_value(value)))
+            table[_lookup(table, key) or key] = value
+        if fresh:
+            at, tail = _insert_point(text, sections, sec)
+            if at == len(text) and text and not text.endswith("\n"):
+                fresh = "\n" + fresh
+            inserts[at] = inserts.get(at, "") + fresh + tail
+    if not edits and not inserts and not new_tables:
+        return text
+    changes = edits + [(at, at, ins) for at, ins in inserts.items()]
+    result = text
+    for start, end, replacement in sorted(changes, key=lambda c: (c[0], c[1]), reverse=True):
+        result = result[:start] + replacement + result[end:]
+    if new_tables:
+        if result and not result.endswith("\n"):
+            result += "\n"
+        result += ("\n" if result.strip() else "") + "\n".join(new_tables)
+    try:
+        after = tomllib.loads(result)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"refusing to write invalid TOML: {exc}") from exc
+    if not _same(after, expected):
+        raise ConfigError("config.toml would change beyond the fragment; not written")
+    return result
+
+
+def _platform_name() -> str:
+    plat = sys.platform
+    return "windows" if plat.startswith("win") else "darwin" if plat == "darwin" else "linux"
+
+
+def _config_sources() -> tuple[str, str]:
+    return CONFIG_SRC, f"config/codex/config.{_platform_name()}.toml"
+
+
+def _fragment(paths: g.Paths) -> dict | None:
+    """The base fragment with this platform's overlay applied, placeholders expanded
+    in keys and values after parsing (so any quoting style is safe); None if no source."""
+    result: dict | None = None
+    for rel in _config_sources():
+        source = _read_source(paths, rel, expand_text=False)
+        if source is None:
+            continue
+        try:
+            part = tomllib.loads(source)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{rel} is not valid TOML: {exc}") from exc
+        result = _deep_update(result or {}, _expand_json(part, placeholders(paths)))
+    if result is not None:
+        _validate_fragment(result)
+    return result
+
+
+def plan_config_toml(paths: g.Paths, home: Path, prior: Item | None = None) -> Item | None:
+    """Fragment item for config.toml. If prior (developer_instructions) has pending
+    changes to the same file, the result includes them."""
+    name, target = "codex config.toml", home / "config.toml"
+    if tomllib is None:
+        if not any(resolve_source(paths, rel) for rel in _config_sources()):
+            return None
+        return Item(name, target, "error", "needs Python 3.11+ (tomllib) to edit config.toml safely")
+    try:
+        fragment = _fragment(paths)
+        if fragment is None:
+            return None
+        disk, eol, bom = _read_target(target)
+        start = disk
+        if prior is not None and prior.status == "drift" and prior.new_bytes is not None:
+            start = prior.new_bytes.decode("utf-8-sig").replace("\r\n", "\n")
+        merged = merge_fragment(start, fragment)
+    except ConfigError as exc:
+        return Item(name, target, "error", str(exc))
+    if merged == disk and target.exists():
+        return Item(name, target, "ok")
+    return Item(name, target, "drift", new_bytes=_encode(merged, eol, bom))
+
+
+# --- workspace files -----------------------------------------------------------------------
+
+def plan_workspace(paths: g.Paths, filename: str) -> Item | None:
+    source = _read_source(paths, f"config/workspace/{filename}")
+    if source is None:
+        return None
+    target = paths.data.resolve().parent / filename
+
+    def merge(text: str) -> str:
+        has_markers = any(line.strip() in (WS_BEGIN, WS_END) for line in text.split("\n"))
+        if not has_markers and text.strip() == source.strip():
+            return text  # already holds exactly this content: adopt it as is
+        return splice(text, f"{WS_BEGIN}\n{source}\n{WS_END}", WS_BEGIN, WS_END)
+
+    return _plan_text(f"workspace {filename}", target, merge)
 
 
 # --- claude settings ---------------------------------------------------------------------
@@ -328,9 +721,16 @@ def evaluate(paths: g.Paths, home: Path | None = None, claude_dir: Path | None =
     claude_dir = claude_dir or g.claude_config_dir()
     items: list[Item | None] = []
     if not only_existing_homes or home.is_dir():
-        items += [plan_instructions(paths, home), plan_rules(paths, home)]
+        inst = plan_instructions(paths, home)
+        frag = plan_config_toml(paths, home, inst)
+        if frag is not None and inst is not None and inst.status == "drift" \
+                and frag.status == "drift":
+            inst = None  # the fragment item already carries the instructions change
+        items += [inst, frag, plan_rules(paths, home)]
     if not only_existing_homes or claude_dir.is_dir():
         items.append(plan_settings(paths, claude_dir))
+    if not only_existing_homes or paths.data.resolve().parent.is_dir():
+        items += [plan_workspace(paths, name) for name in WS_FILES]
     return [item for item in items if item is not None]
 
 
