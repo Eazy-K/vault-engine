@@ -2,6 +2,33 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.11.0] - 2026-10-01
+
+### Added
+- `codex-hooks --probe-deny` records `codex_deny_tested_version` in `machine.json` only for conclusive results (enforced or not enforced); `doctor` prints an INFO line when the Codex version changed since the last test. (#80, #82)
+- `agent-guard` appends an `agent_guard` event (decision, agent type, deny reason; no message text) to `.graph/usage.log` for each spawn evaluation, failing open, so it is visible whether Codex runs the hook. `stats` ignores unknown events. (#84)
+- `doctor` warns on Python older than 3.11, which Codex `config.toml` handling in `user-config` needs. (#80)
+- The orchestration note is split into a short always-loaded, tool-neutral core note and `orchestration-details` (Claude Code and Codex mapping). Codex developer instructions carry the same rules, and a test keeps the two in sync. (#81)
+
+### Changed
+- `user-config --install` adopts identical unmarked workspace files by wrapping them in managed markers (with a backup), so later source changes replace the block. (#80)
+- A temp-directory `CLAUDE_CONFIG_DIR` is no longer recorded in `claude-dirs`; registered Claude directories that no longer exist are skipped, and `doctor` prints one INFO line (`claude-dirs --remove`). (#80)
+- Codex hook matchers cover the real Codex 0.159 tool names (PostToolUse: `exec_command`, `shell_command`, `shell`, `local_shell`; PreToolUse: namespaced `spawn_agent`). Plain `exec` is intentionally not matched to avoid double counting. (#82)
+- Delegating to a single agent also needs approval, as in the core note. (#83)
+- `usage.log` entries older than 90 days are trimmed by `graph.py` (atomic rewrite; hooks never trim). (#85)
+
+### Fixed
+- Codex hook output is ASCII-escaped so it is safe on Windows code page 1252; a regression test runs all hooks with cp1252 output. (#72, #79)
+- On Windows `codex-hooks` no longer emits a quoted leading executable; paths with spaces use the 8.3 short path, falling back to quoting. Stale quoted entries and stale `commandWindows` overrides are detected and rewritten by `--install`. (#73, #79)
+- `context-warn` and `delegation-warn` skip Codex subagent sessions, detected from the rollout `session_meta` (fail open). (#79)
+- Hook tests no longer write into a real vault's `usage.log`: they run with `VAULT_DATA`/`VAULT_HOME` scrubbed. (#85)
+
+### Known limitations
+- A live test on Codex CLI 0.159.2 showed the PreToolUse hook is not invoked for `spawn_agent`, so `agent-guard` cannot block spawns in Codex; compliance relies on `developer_instructions`. The worker profile's effort is still applied by Codex.
+
+### Upgrade notes
+- Run `git pull` (or `update`), then `python tools/graph.py doctor`. If it reports drift, run `python tools/graph.py user-config --install` and `python tools/graph.py codex-hooks --install` (Codex may ask you to re-trust the hooks).
+
 ## [0.10.0] - 2026-09-30
 
 ### Added
