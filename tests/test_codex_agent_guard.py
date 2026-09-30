@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -66,6 +67,49 @@ class TestCodexAgentGuard(unittest.TestCase):
         env = dict(os.environ, VAULT_AGENT_GUARD="off")
         self.assertIsNone(invoke({"tool_name": "spawn_agent",
                                   "tool_input": {"agent_type": "default"}}, env=env))
+
+
+class TestAgentGuardLog(unittest.TestCase):
+    def run_guard(self, payload, data, **extra):
+        env = {**os.environ, "VAULT_DATA": str(data)}
+        env.pop("VAULT_AGENT_GUARD", None)
+        env.update(extra)
+        return invoke(payload, env=env)
+
+    def entries(self, data):
+        log = Path(data) / ".graph" / "usage.log"
+        if not log.exists():
+            return []
+        return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+
+    def test_deny_and_allow_are_logged_without_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = self.run_guard({"tool_name": "spawn_agent", "tool_input": {
+                "agent_type": "default", "message": "SECRET"}}, d)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIsNone(self.run_guard({"tool_name": "spawn_agent", "tool_input": {
+                "agent_type": "worker-low", "message": "SECRET"}}, d))
+            deny, allow = self.entries(d)
+            self.assertEqual((deny["event"], deny["agent"], deny["decision"], deny["agent_type"]),
+                             ("agent_guard", "codex", "deny", "default"))
+            self.assertIn("reason", deny)
+            self.assertEqual((allow["decision"], allow["agent_type"]), ("allow", "worker-low"))
+            self.assertNotIn("reason", allow)
+            self.assertNotIn("SECRET", (Path(d) / ".graph" / "usage.log").read_text(encoding="utf-8"))
+
+    def test_non_spawn_and_off_switch_log_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_guard({"tool_name": "exec", "tool_input": {}}, d)
+            self.run_guard({"tool_name": "spawn_agent", "tool_input": {"agent_type": "x"}}, d,
+                           VAULT_AGENT_GUARD="off")
+            self.assertEqual(self.entries(d), [])
+
+    def test_logging_failure_keeps_deny_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".graph").write_text("not a dir", encoding="utf-8")
+            out = self.run_guard({"tool_name": "spawn_agent",
+                                  "tool_input": {"agent_type": "default"}}, d)
+            self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

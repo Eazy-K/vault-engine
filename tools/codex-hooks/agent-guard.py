@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 AGENTS_DIR = Path(__file__).resolve().parent.parent / "codex-agents"
@@ -79,11 +80,39 @@ def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:
     return None
 
 
+def _log(payload: object, reason: str | None) -> None:
+    """Record one spawn evaluation in the vault usage log (no message text)."""
+    try:
+        if not isinstance(payload, dict) or not _is_spawn(payload.get("tool_name")):
+            return
+        raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+        if not raw:
+            return
+        data_dir = Path(raw).expanduser()
+        if not data_dir.is_dir():
+            return
+        args = payload.get("tool_input")
+        role = args.get("agent_type") if isinstance(args, dict) else None
+        event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "codex",
+                 "event": "agent_guard", "decision": "deny" if reason else "allow",
+                 "agent_type": role if isinstance(role, str) else None}
+        if reason:
+            event["reason"] = reason
+        graph_dir = data_dir / ".graph"
+        graph_dir.mkdir(exist_ok=True)
+        with (graph_dir / "usage.log").open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def main() -> None:
     try:
         if os.environ.get("VAULT_AGENT_GUARD") == "off":
             return
-        reason = decide(json.load(sys.stdin), _profiles())
+        payload = json.load(sys.stdin)
+        reason = decide(payload, _profiles())
+        _log(payload, reason)
         if reason:
             _deny(reason)
     except Exception:
