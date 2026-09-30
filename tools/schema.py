@@ -122,10 +122,16 @@ class Plan:
     roots: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    gitignore_add: list[str] = field(default_factory=list)  # template lines the vault lacks
+
+    @property
+    def config_empty(self) -> bool:
+        """Nothing to do for vault.config.json and the schema steps."""
+        return not (self.steps or self.record_field or self.roots_action in ("move", "drop"))
 
     @property
     def empty(self) -> bool:
-        return not (self.steps or self.record_field or self.roots_action in ("move", "drop"))
+        return self.config_empty and not self.gitignore_add
 
     def commit_message(self) -> str:
         parts = []
@@ -149,6 +155,10 @@ class MigrationResult:
     written: bool = False
     committed: str | None = None  # commit subject, if a commit was made
     uncommitted_reason: str = ""
+    # The .gitignore sync is a separate step with its own commit (see _sync_gitignore).
+    gitignore_added: list[str] = field(default_factory=list)  # lines written this run
+    gitignore_committed: str | None = None  # commit subject, if a commit was made
+    gitignore_warning: str = ""  # why the step was skipped or not committed
 
 
 def _load_config(paths: "g.Paths") -> dict:
@@ -224,6 +234,41 @@ def _load_json(path: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+GITIGNORE_COMMIT = "chore: sync .gitignore with engine template"
+
+
+def _ignore_key(line: str) -> str:
+    """A .gitignore line for comparison: no surrounding whitespace, and a leading
+    or trailing `/` does not matter (`.graph/feedback` == `/.graph/feedback/`)."""
+    neg = line.strip().startswith("!")
+    return ("!" if neg else "") + line.strip().lstrip("!").strip("/")
+
+
+def missing_gitignore_lines(paths: "g.Paths") -> list[str]:
+    """Lines of the engine's templates/.gitignore that <data>/.gitignore lacks.
+    Blank lines and comments are skipped; a `!X` line in the vault means the
+    user un-ignored X on purpose, so X is not proposed."""
+    try:
+        template = (g.ENGINE / "templates" / ".gitignore").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    try:
+        have = (paths.data / ".gitignore").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        have = []
+    keys = {_ignore_key(x) for x in have}
+    missing: list[str] = []
+    for line in template.splitlines():
+        line = line.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key = _ignore_key(line)
+        if key in keys or "!" + key in keys or line in missing:
+            continue
+        missing.append(line)
+    return missing
+
+
 def plan_migration(paths: "g.Paths", raw: dict | None = None) -> Plan:
     """The work migrate() would do for `raw` (default: the vault.config.json on
     disk). Raises SystemExit if a needed schema step is not registered."""
@@ -243,6 +288,10 @@ def plan_migration(paths: "g.Paths", raw: dict | None = None) -> Plan:
         plan.actions.append(f'record "schema": {SCHEMA_VERSION} in {CONFIG_NAME} '
                             "(missing, so far implicit)")
     _plan_roots(paths, raw, plan)
+    plan.gitignore_add = missing_gitignore_lines(paths)
+    if plan.gitignore_add:
+        plan.actions.append(f"add {len(plan.gitignore_add)} missing line(s) to .gitignore: "
+                            + ", ".join(plan.gitignore_add))
     return plan
 
 
@@ -289,6 +338,43 @@ def _head_config(data: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _sync_gitignore(paths: "g.Paths", plan: Plan, result: MigrationResult, *,
+                    can_commit: bool, dry_run: bool) -> None:
+    """Append the template lines the vault's .gitignore lacks, in a commit of
+    its own. Never raises: problems go to result.gitignore_warning. A .gitignore
+    with uncommitted edits is left alone (its commit would take them along)."""
+    if not plan.gitignore_add:
+        return
+    data = paths.data
+    if g.git_status(data, [".gitignore"]):
+        result.gitignore_warning = (".gitignore has uncommitted changes, so it was not "
+                                    "synced; commit or discard them, then rerun migrate")
+        return
+    if dry_run:
+        return
+    target = data / ".gitignore"
+    try:
+        text = target.read_bytes().decode("utf-8") if target.exists() else ""
+        eol = "\r\n" if "\r\n" in text else "\n"
+        add = eol.join(plan.gitignore_add) + eol
+        if text and not text.endswith("\n"):
+            add = eol + add
+        with target.open("a", encoding="utf-8", newline="") as f:
+            f.write(add)
+    except (OSError, UnicodeError) as e:
+        result.gitignore_warning = f".gitignore could not be updated: {e}"
+        return
+    result.gitignore_added = list(plan.gitignore_add)
+    if not can_commit:
+        return
+    status, detail = g.commit_own_files(data, [".gitignore"], GITIGNORE_COMMIT)
+    if status == "committed":
+        result.gitignore_committed = GITIGNORE_COMMIT
+    elif status in ("failed", "skipped"):
+        result.gitignore_warning = (f".gitignore is written but not committed ({detail}); "
+                                    "commit it yourself")
+
+
 def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> MigrationResult:
     """Bring the data repo up to this engine: schema steps plus config fixups.
 
@@ -297,7 +383,9 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
     of the commit. If vault.config.json holds uncommitted edits that migrate
     itself would not make, nothing is written (SystemExit). Uncommitted edits
     that are exactly an earlier migrate's result are committed now, so a rerun
-    after `--no-commit` or a failed commit converges on one migration commit."""
+    after `--no-commit` or a failed commit converges on one migration commit.
+    The .gitignore sync runs first and on its own (own commit, never raises,
+    not blocked by config edits)."""
     require_writable(paths)
     data = paths.data
     raw = _load_config(paths)
@@ -310,19 +398,21 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
                                      else "the data repo has no commits yet")
     elif not commit:
         result.uncommitted_reason = "--no-commit"
+    _sync_gitignore(paths, plan, result, can_commit=can_commit, dry_run=dry_run)
+
     if can_commit and _config_pending(data):
         head_raw = _head_config(data)
         head_plan = plan_migration(paths, head_raw)
         if _final_config(head_raw, head_plan) != _final_config(raw, plan):
-            if plan.empty:
+            if plan.config_empty:
                 return result  # up to date; the pending edits are the user's own
             raise SystemExit(f"migrate: {CONFIG_NAME} has uncommitted changes that migrate "
                              "would not make; commit or discard them, then rerun migrate "
-                             "(nothing was written)")
-        if not head_plan.empty:
+                             f"({CONFIG_NAME} was not written)")
+        if not head_plan.config_empty:
             result.leftover = head_plan
 
-    if dry_run or (plan.empty and result.leftover is None):
+    if dry_run or (plan.config_empty and result.leftover is None):
         return result
 
     touched: set[Path] = set()
@@ -344,7 +434,7 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
         raw["schema"] = SCHEMA_VERSION
     if fixups or plan.record_field:
         _write_config(paths, raw)
-    result.written = not plan.empty
+    result.written = not plan.config_empty
 
     if not can_commit:
         return result
@@ -376,7 +466,10 @@ def cmd_migrate(args) -> None:
     for note in plan.notes:
         print(f"note: {note}")
 
-    if plan.empty:
+    if preview.gitignore_warning:
+        print(f"warning: {preview.gitignore_warning}")
+    # A .gitignore left alone (uncommitted edits) is no work for this run.
+    if plan.config_empty and (not plan.gitignore_add or preview.gitignore_warning):
         if preview.leftover is None:
             print("nothing to migrate")
             return
@@ -408,6 +501,16 @@ def cmd_migrate(args) -> None:
             return
 
     result = migrate(paths, commit=commit)
+    if result.gitignore_added:
+        print(f".gitignore: added {', '.join(result.gitignore_added)}")
+        if result.gitignore_committed:
+            print(f"committed: {result.gitignore_committed}")
+        elif not result.gitignore_warning:
+            print(f".gitignore written, not committed ({result.uncommitted_reason})")
+    if result.gitignore_warning and result.gitignore_warning != preview.gitignore_warning:
+        print(f"warning: {result.gitignore_warning}")
+    if plan.config_empty:
+        return
     if result.committed:
         print(f"committed: {result.committed}")
     else:

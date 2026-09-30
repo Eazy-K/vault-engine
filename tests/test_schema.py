@@ -136,8 +136,10 @@ class MigrateRepoCase(SchemaTestCase):
 
     def commit_config(self, data: dict) -> None:
         write_config(self.paths, data)
+        # Like a current vault: its .gitignore already has the engine template.
+        shutil.copyfile(graph.ENGINE / "templates" / ".gitignore", self.data / ".gitignore")
         init_repo(self.data)
-        git(["add", "vault.config.json"], self.data)
+        git(["add", "vault.config.json", ".gitignore"], self.data)
         git(["commit", "-q", "-m", "initial"], self.data)
 
     def log(self) -> list[str]:
@@ -247,6 +249,131 @@ class TestMigrate(MigrateRepoCase):
         self.assertEqual(self.log(), ["initial"])
 
 
+class TestMigrateGitignore(MigrateRepoCase):
+    """The .gitignore sync: append-only, its own commit, independent of the config."""
+
+    def setUp(self):
+        super().setUp()
+        tpl = (graph.ENGINE / "templates" / ".gitignore").read_text(encoding="utf-8")
+        self.template = [x for x in tpl.splitlines() if x and not x.startswith("#")]
+
+    def repo(self, gitignore: bytes | None, config: dict | None = None) -> None:
+        """Commit a vault whose .gitignore holds `gitignore` (None: no file)."""
+        self.commit_config(config if config is not None else {"schema": 1})
+        if gitignore is None:
+            git(["rm", "-q", ".gitignore"], self.data)
+        else:
+            (self.data / ".gitignore").write_bytes(gitignore)
+            git(["add", ".gitignore"], self.data)
+        git(["commit", "-q", "-m", "gitignore"], self.data)
+
+    def text(self) -> bytes:
+        return (self.data / ".gitignore").read_bytes()
+
+    def test_missing_lines_are_appended_and_committed_alone(self):
+        self.repo(b"mine\n" + self.template[0].encode() + b"\nother\n")
+        result = schema.migrate(self.paths)
+        want = self.template[1:]
+        self.assertEqual(result.gitignore_added, want)
+        self.assertEqual(result.gitignore_committed, schema.GITIGNORE_COMMIT)
+        self.assertEqual(self.log()[0], schema.GITIGNORE_COMMIT)
+        self.assertEqual(self.head_files(), [".gitignore"])
+        lines = self.text().decode().splitlines()
+        self.assertEqual(lines[:3], ["mine", self.template[0], "other"])  # order kept
+        self.assertEqual(lines[3:], want)
+        self.assertEqual(git(["status", "--porcelain"], self.data).stdout, "")
+
+    def test_rerun_is_idempotent(self):
+        self.repo(b"mine\n")
+        schema.migrate(self.paths)
+        count = len(self.log())
+        self.assertTrue(schema.plan_migration(self.paths).empty)
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.gitignore_added, [])
+        self.assertEqual(len(self.log()), count)
+
+    def test_negation_prevents_adding(self):
+        gone = self.template[0]
+        self.repo(f"!{gone}\n".encode())
+        result = schema.migrate(self.paths)
+        self.assertNotIn(gone, result.gitignore_added)
+        self.assertNotIn(gone, self.text().decode().splitlines())
+
+    def test_slashes_are_equivalent(self):
+        self.repo(b"/.graph/feedback\n.graph/machine.json/\n")
+        missing = schema.missing_gitignore_lines(self.paths)
+        self.assertNotIn(".graph/feedback/", missing)
+        self.assertNotIn(".graph/machine.json", missing)
+        self.assertIn(".graph/last-decay", missing)
+
+    def test_crlf_file_stays_crlf(self):
+        self.repo(b"mine\r\n")
+        schema.migrate(self.paths)
+        raw = self.text()
+        self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))
+        self.assertTrue(raw.endswith(b"\r\n"))
+        self.assertIn(self.template[-1].encode(), raw)
+
+    def test_file_without_trailing_newline(self):
+        self.repo(b"mine")
+        schema.migrate(self.paths)
+        self.assertEqual(self.text().decode().splitlines()[:2], ["mine", self.template[0]])
+
+    def test_missing_file_is_created(self):
+        self.repo(None)
+        result = schema.migrate(self.paths)
+        self.assertEqual(self.text().decode().splitlines(), self.template)
+        self.assertEqual(result.gitignore_committed, schema.GITIGNORE_COMMIT)
+
+    def test_dirty_gitignore_is_skipped_with_warning(self):
+        self.repo(b"mine\n")
+        (self.data / ".gitignore").write_bytes(b"mine\nmy edit\n")
+        result = schema.migrate(self.paths)
+        self.assertIn("uncommitted", result.gitignore_warning)
+        self.assertEqual(self.text(), b"mine\nmy edit\n")
+        self.assertEqual(self.log()[0], "gitignore")
+
+    def test_pending_config_edit_neither_blocks_nor_joins_the_commit(self):
+        self.repo(b"mine\n")
+        write_config(self.paths, {"schema": 1, "exclude": ["tmp"]})
+        result = schema.migrate(self.paths)
+        self.assertEqual(result.gitignore_committed, schema.GITIGNORE_COMMIT)
+        self.assertEqual(self.head_files(), [".gitignore"])
+        self.assertIn("vault.config.json", git(["status", "--porcelain"], self.data).stdout)
+
+    def test_no_commit_writes_but_does_not_commit(self):
+        self.repo(b"mine\n")
+        result = schema.migrate(self.paths, commit=False)
+        self.assertEqual(result.gitignore_added, self.template)
+        self.assertIsNone(result.gitignore_committed)
+        self.assertEqual(self.log()[0], "gitignore")
+        self.assertIn(".gitignore", git(["status", "--porcelain"], self.data).stdout)
+
+    def test_dry_run_writes_nothing(self):
+        self.repo(b"mine\n")
+        result = schema.migrate(self.paths, dry_run=True)
+        self.assertEqual(result.plan.gitignore_add, self.template)
+        self.assertFalse(result.plan.empty)
+        self.assertEqual(result.gitignore_added, [])
+        self.assertEqual(self.text(), b"mine\n")
+
+    def test_not_a_git_repo_still_writes(self):
+        write_config(self.paths, {"schema": 1})
+        result = schema.migrate(self.paths)
+        self.assertEqual(self.text().decode().splitlines(), self.template)
+        self.assertIsNone(result.gitignore_committed)
+
+    def test_cmd_migrate_reports_it(self):
+        self.repo(b"mine\n")
+        args = Namespace(yes=True, no_commit=False, dry_run=False)
+        with mock.patch.object(graph, "default_paths", return_value=self.paths), \
+             redirect_stdout(StringIO()) as buf:
+            schema.cmd_migrate(args)
+        self.assertIn(".gitignore: added", buf.getvalue())
+        self.assertIn(f"committed: {schema.GITIGNORE_COMMIT}", buf.getvalue())
+        self.assertNotIn("nothing to migrate", buf.getvalue())
+
+
 class TestMigrateStagedChanges(MigrateRepoCase):
     def test_unrelated_staged_changes_stay_staged_and_out_of_the_commit(self):
         self.commit_config({"feedback": {"level": "off"}})
@@ -278,7 +405,7 @@ class TestMigrateStagedChanges(MigrateRepoCase):
         with self.assertRaises(SystemExit) as ctx:
             schema.migrate(self.paths)
         self.assertIn("uncommitted changes", str(ctx.exception))
-        self.assertIn("nothing was written", str(ctx.exception))
+        self.assertIn("vault.config.json was not written", str(ctx.exception))
         self.assertEqual(self.paths.config_file.read_bytes(), before)
         self.assertEqual(self.log(), ["initial"])
 

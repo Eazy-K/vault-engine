@@ -978,6 +978,30 @@ def _uncommitted_checks(data: Path) -> list[tuple[str, str]]:
     return found
 
 
+def _gitignore_checks(data: Path) -> list[tuple[str, str]]:
+    """Template .gitignore lines the vault lacks, and files git tracks although
+    .gitignore now ignores them (a later ignore rule never untracks a file)."""
+    found: list[tuple[str, str]] = []
+    schema = sys.modules.get("schema")
+    if schema is not None:
+        missing = schema.missing_gitignore_lines(g.Paths(g.ENGINE, data))
+        if missing:
+            found.append(("WARN", f".gitignore lacks {len(missing)} line(s) of the engine "
+                                  f"template ({', '.join(missing)}): run "
+                                  "`python \"$VAULT_ENGINE/tools/graph.py\" migrate`"))
+    try:
+        out = subprocess.run(["git", "ls-files", "-ci", "--exclude-standard", "-z"], cwd=data,
+                             capture_output=True, text=True, encoding="utf-8")
+    except OSError:
+        return found
+    tracked = [f for f in out.stdout.split("\0") if f] if out.returncode == 0 else []
+    if tracked:
+        shown = ", ".join(tracked[:10]) + (f" and {len(tracked) - 10} more" if len(tracked) > 10 else "")
+        found.append(("WARN", f"tracked by git although ignored: {shown}: untrack with "
+                              f"`git -C \"{data}\" rm --cached <file>` and commit"))
+    return found
+
+
 def _doctor_data_dir(data_arg: str | None,
                      rc_path: Path) -> tuple[Path | None, list[tuple[str, str]]]:
     """The data dir doctor checks and the VAULT_DATA lines to report. --data wins;
@@ -1209,6 +1233,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(ci_status, msg)
         for git_status, msg in _uncommitted_checks(data):
             check(git_status, msg)
+        for ignore_status, msg in _gitignore_checks(data):
+            check(ignore_status, msg)
 
     for status, msg in checks:
         print(f"{status:<4} {msg}")

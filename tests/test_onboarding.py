@@ -931,6 +931,43 @@ class TestDoctor(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         self.assertIn("set for the user but not in this process", buf.getvalue())
 
+    def _doctor_out(self) -> str:
+        # doctor reaches schema.py through sys.modules; import it only for this run,
+        # so test_schema.py still loads it first, bound to its own graph instance.
+        with mock.patch.dict(sys.modules):
+            import schema  # noqa: F401
+            return self._doctor_run()
+
+    def _doctor_run(self) -> str:
+        with mock.patch.dict(os.environ, self._env(), clear=True),              mock.patch("pathlib.Path.home", return_value=self.home),              mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")),              redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        return buf.getvalue()
+
+    def test_warns_when_gitignore_lacks_template_lines(self):
+        (self.data / ".gitignore").write_text("mine\n", encoding="utf-8")
+        out = self._doctor_out()
+        self.assertIn("WARN .gitignore lacks", out)
+        self.assertIn(".graph/last-decay", out)
+        self.assertIn('python "$VAULT_ENGINE/tools/graph.py" migrate', out)
+
+    def test_no_gitignore_warning_when_synced(self):
+        shutil.copyfile(graph.ENGINE / "templates" / ".gitignore", self.data / ".gitignore")
+        self.assertNotIn(".gitignore lacks", self._doctor_out())
+
+    def test_warns_about_files_tracked_though_ignored(self):
+        (self.data / "secret.log").write_text("x\n", encoding="utf-8")
+        git(["add", "-f", "secret.log"], self.data)
+        (self.data / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        out = self._doctor_out()
+        self.assertIn("tracked by git although ignored: secret.log", out)
+        self.assertIn("rm --cached", out)
+
+    def test_no_tracked_ignored_warning_when_clean(self):
+        (self.data / "note.md").write_text("x\n", encoding="utf-8")
+        git(["add", "note.md"], self.data)
+        self.assertNotIn("tracked by git although ignored", self._doctor_out())
+
     def test_user_env_var_is_none_off_windows(self):
         with mock.patch("onboarding._is_windows", return_value=False):
             self.assertIsNone(onboarding._user_env_var("VAULT_ENGINE"))
