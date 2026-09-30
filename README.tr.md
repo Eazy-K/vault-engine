@@ -39,7 +39,7 @@ elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara 
 
 Claude Code delegasyon hook'u (`delegation-warn`), asistanın bir kullanıcı mesajında ana konuşmada kaç araç çağrısı yaptığını `.graph/usage.log` dosyasına yazar; `python tools/graph.py stats` bunu "orchestrator prompts" satırında özetler (ölçülen mesaj sayısı, eşiği aşanların yüzdesi, medyan çağrı sayısı). Bir oturumun son mesajı ölçülmez. `usage.log` içinde 90 günden eski kayıtlar (`tools/graph.py` içindeki `USAGE_LOG_KEEP_DAYS`) otomatik temizlenir: `graph.py` kendi kullanım olayını yazdıktan sonra en eski kayıt eşiği geçmişse (yaklaşık günde bir, ek durum dosyası yok) dosyayı atomik olarak yeniden yazar, `ts` değeri ayrıştırılamayan satırları korur. Hook'lar asla temizlik yapmaz.
 
-Kullanıcı düzeyi ayarlar (`user-config`): `defaults/config/` şablonları (veri klasöründe `config/` altında aynı yolda bir dosya varsa onun yerini alır) `$CODEX_HOME` (varsayılan `~/.codex`) ve `$CLAUDE_CONFIG_DIR` (varsayılan `~/.claude`) içine, kullanıcının kendi eklediklerini silmeden birleştirilir: Codex `developer_instructions` ve `rules/default.rules` içinde `# vault-engine:begin` / `# vault-engine:end` işaretli blok, Claude `settings.json` içinde derin birleştirme. Ayrıca: `codex/config.toml` (ve o platform için `config.windows.toml` / `.linux` / `.darwin`) anahtarları ve tabloları `config.toml` içine başka hiçbir şeyi silmeden ya da biçimini değiştirmeden eklenir/güncellenir (eşdeğer Windows yol anahtarları yinelenmez); `workspace/AGENTS.md` ve `workspace/CLAUDE.md` çalışma alanı klasörüne (veri deposunun üst klasörü) `<!-- vault-engine:begin -->` / `<!-- vault-engine:end -->` bloğu olarak yazılır. Örnek düzen: `config/codex/{developer-instructions.md,default.rules,config.toml,config.windows.toml}`, `config/claude/settings.json`, `config/workspace/{AGENTS.md,CLAUDE.md}`. Yer tutucular: `{VAULT_DATA}`, `{VAULT_ENGINE}`, `{WORKSPACE}` (eğik çizgili) ve işletim sistemi ayracıyla `{VAULT_DATA_NATIVE}`, `{VAULT_ENGINE_NATIVE}`, `{WORKSPACE_NATIVE}`. `python tools/graph.py user-config` farkı bildirir, `--install` uygular (her dosyayı ilk değişiklikten önce `<ad>.bak-<TarihSaat>` olarak yedekler; ikinci çalıştırma hiçbir şey değiştirmez). Başka bilgisayarda: `git pull`, `doctor`, `user-config --install`.
+Kullanıcı düzeyi ayarlar (`user-config`): `defaults/config/` şablonları (veri klasöründe `config/` altında aynı yolda bir dosya varsa onun yerini alır) `$CODEX_HOME` (varsayılan `~/.codex`) ve `$CLAUDE_CONFIG_DIR` (varsayılan `~/.claude`) içine, kullanıcının kendi eklediklerini silmeden birleştirilir: Codex `developer_instructions` ve `rules/default.rules` içinde `# vault-engine:begin` / `# vault-engine:end` işaretli blok, Claude `settings.json` içinde derin birleştirme. Ayrıca: `codex/config.toml` (ve o platform için `config.windows.toml` / `.linux` / `.darwin`) anahtarları ve tabloları `config.toml` içine başka hiçbir şeyi silmeden ya da biçimini değiştirmeden eklenir/güncellenir (eşdeğer Windows yol anahtarları yinelenmez); `workspace/AGENTS.md` ve `workspace/CLAUDE.md` çalışma alanı klasörüne (veri deposunun üst klasörü) `<!-- vault-engine:begin -->` / `<!-- vault-engine:end -->` bloğu olarak yazılır. Örnek düzen: `config/codex/{developer-instructions.md,default.rules,config.toml,config.windows.toml}`, `config/claude/settings.json`, `config/workspace/{AGENTS.md,CLAUDE.md}`. Yer tutucular: `{VAULT_DATA}`, `{VAULT_ENGINE}`, `{WORKSPACE}` (eğik çizgili) ve işletim sistemi ayracıyla `{VAULT_DATA_NATIVE}`, `{VAULT_ENGINE_NATIVE}`, `{WORKSPACE_NATIVE}`. `python tools/graph.py user-config` farkı bildirir, `--install` uygular (her dosyayı ilk değişiklikten önce `<ad>.bak-<TarihSaat>` olarak yedekler; ikinci çalıştırma hiçbir şey değiştirmez). Bkz. [Başka bir bilgisayarı güncelleme](#başka-bir-bilgisayarı-güncelleme).
 
 Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
 delegasyon hook'larını ve `agent-guard` (`PreToolUse`, `Agent|spawn_agent`; yalnızca `worker-*` profillerine ve kendi model/eforlarına izin verir) hook'unu ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
@@ -88,5 +88,20 @@ unutmayın. 0.3.0 ve sonrası, veri düzeni kendisinden yeni bir vault'a yazmay�
 sizden o bilgisayarda da güncellemenizi ister. 0.1.0 ve 0.2.0 bu kontrolü yapmaz; bu
 yüzden bütün bilgisayarlar en az 0.3.0'a geçmeden, Upgrade notes'unda veri düzenini
 (schema) yükselttiğini söyleyen bir sürüme geçmeyin.
+
+## Başka bir bilgisayarı güncelleme
+
+Bir bilgisayarda yapılan değişikliklerden sonra, veri deposunu paylaşan her diğer bilgisayarda:
+
+```
+git -C <engine> pull          # veya: python tools/graph.py update (kararlı kanal)
+git -C <data repo> pull --rebase --autostash
+python <engine>/tools/graph.py doctor
+python <engine>/tools/graph.py user-config --install   # doctor ayar farkı bildirirse
+python <engine>/tools/graph.py codex-hooks --install   # doctor Codex hook'larının eskidiğini bildirirse
+python <engine>/tools/graph.py update --claude-hooks --models --agents   # doctor Claude hook'larının eskidiğini bildirirse (kararlı kanal; geliştirme kanalında bunun yerine `claude-hooks --install` ve `models --apply` çalıştırın)
+```
+
+Her kurulum komutu bir dosyayı değiştirmeden önce yedeğini alır ve ikinci çalıştırmada hiçbir şey yapmaz.
 
 Sorularınız veya sorun yaşarsanız, tam İngilizce referansa bakın: [README.md](README.md)
