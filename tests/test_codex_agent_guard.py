@@ -8,6 +8,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import sys as _sys
+from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent))
+import _isolation  # noqa: E402,F401  (scrubs VAULT_DATA/VAULT_HOME)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "tools" / "codex-hooks" / "agent-guard.py"

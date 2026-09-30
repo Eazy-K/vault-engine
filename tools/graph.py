@@ -166,6 +166,10 @@ class Paths:
         return self.data / ".graph" / "last-decay"  # per machine, not committed
 
     @property
+    def usage_trim_stamp(self) -> Path:
+        return self.data / ".graph" / "last-usage-trim"  # per machine, not committed
+
+    @property
     def config_file(self) -> Path:
         return self.data / "vault.config.json"
 
@@ -194,6 +198,7 @@ DEFAULT_LINK_WEIGHT = 0.7  # frontmatter link without an explicit weight
 BODY_LINK_WEIGHT = 0.5  # wikilink written in the note body
 LEARNING_RATE = 0.1
 DECAY_RATE = 0.05
+USAGE_LOG_KEEP_DAYS = 90  # usage.log entries older than this are trimmed (at most once a day)
 DECAY_INTERVAL_DAYS = 7  # `reinforce` decays on its own once more days than this have passed
 DEFAULT_THRESHOLD = 0.6  # 0.5 let two-hop neighbours of every seed in
 DEFAULT_DEPTH = 3
@@ -1281,8 +1286,45 @@ def log_usage(paths: Paths, event: dict) -> None:
         usage_log.parent.mkdir(exist_ok=True)
         with usage_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        trim_usage_log(paths)
     except OSError:
         pass
+
+
+def trim_usage_log(paths: Paths, now: datetime | None = None) -> int:
+    """Drop usage.log lines older than USAGE_LOG_KEEP_DAYS; return how many were
+    removed. Runs at most once a day (stamp file); lines whose ts can't be parsed
+    are kept. Best effort: the rewrite is atomic (temp file + os.replace) and any
+    OSError is swallowed. Only graph.py trims, never the hooks."""
+    now = now or datetime.now()
+    try:
+        stamp, usage_log = paths.usage_trim_stamp, paths.usage_log
+        if stamp.exists() and now.timestamp() - stamp.stat().st_mtime < 86400:
+            return 0
+        if not usage_log.exists():
+            return 0
+        cutoff = now - timedelta(days=USAGE_LOG_KEEP_DAYS)
+        kept, dropped = [], 0
+        for line in usage_log.read_text(encoding="utf-8").splitlines(keepends=True):
+            try:
+                ts = datetime.fromisoformat(str(json.loads(line)["ts"]))
+                if ts.tzinfo is not None:
+                    ts = ts.astimezone().replace(tzinfo=None)
+                old = ts < cutoff
+            except (ValueError, KeyError, TypeError):
+                old = False
+            if old:
+                dropped += 1
+            else:
+                kept.append(line)
+        if dropped:
+            tmp = usage_log.with_name(usage_log.name + ".tmp")
+            tmp.write_text("".join(kept), encoding="utf-8", newline="\n")
+            os.replace(tmp, usage_log)
+        stamp.write_text(now.isoformat(timespec="seconds"), encoding="utf-8")
+        return dropped
+    except OSError:
+        return 0
 
 
 def read_usage(paths: Paths) -> list[dict]:
