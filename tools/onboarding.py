@@ -1152,6 +1152,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             result = models.status(data, settings, claude_dir / "agents")
             if result is not None:
                 check(*result)
+    gone = claude_dirs.missing(data)
+    if gone:
+        graph_py = g.ENGINE / "tools" / "graph.py"
+        check("INFO", f"registered Claude config dirs no longer exist (skipped): "
+                      f"{', '.join(str(d) for d in gone)}; remove with `python \"{graph_py}\" "
+                      "claude-dirs --remove <path>`")
     unconfirmed = claude_dirs.candidates(data)
     if unconfirmed:
         graph_py = g.ENGINE / "tools" / "graph.py"

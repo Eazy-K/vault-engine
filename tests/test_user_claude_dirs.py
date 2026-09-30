@@ -73,6 +73,14 @@ class ConfigDirCase(unittest.TestCase):
         home = mock.patch("pathlib.Path.home", return_value=self.home)
         home.start()
         self.addCleanup(home.stop)
+        # the test dirs live in the temp folder, which record_env ignores; tests
+        # of that rule use ConfigDirCase.real_temp_rule()
+        self.temp_rule = mock.patch.object(claude_dirs, "_in_temp", return_value=False)
+        self.temp_rule.start()
+        self.addCleanup(self.temp_rule.stop)
+
+    def real_temp_rule(self):
+        self.temp_rule.stop()
 
     def _env_without(self, *names):
         return {k: v for k, v in os.environ.items() if k not in names}
@@ -234,6 +242,23 @@ class TestRegistry(ConfigDirCase):
         with mock.patch.dict(os.environ, self._env_without("CLAUDE_CONFIG_DIR"), clear=True):
             self.assertIn(self.cfg, claude_dirs.registered())  # remembered without the env var
 
+    def test_env_dir_in_temp_folder_is_not_recorded(self):
+        self.real_temp_rule()
+        self.assertFalse(claude_dirs.record_env())
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+        self.assertIn(self.cfg, claude_dirs.registered())  # still used while the env var is set
+
+    def test_deleted_registered_dir_is_skipped_and_listed_missing(self):
+        gone = self.tmp / "gone"
+        gone.mkdir()
+        self.assertTrue(claude_dirs.add(gone))
+        shutil.rmtree(gone)
+        self.assertNotIn(gone, claude_dirs.registered())
+        self.assertEqual(claude_dirs.missing(), [gone])
+        self.assertNotIn(gone, claude_dirs.targets())
+        self.assertTrue(claude_dirs.remove(gone))
+        self.assertEqual(claude_dirs.missing(), [])
+
     def test_record_env_without_data_dir_is_quiet(self):
         env = self._env_without("VAULT_DATA", "VAULT_HOME")
         with mock.patch.dict(os.environ, env, clear=True), \
@@ -326,6 +351,16 @@ class TestDoctor(ConfigDirCase):
         self.assertIn(f"Claude config dir: {home_claude} (default)", out)
         self.assertIn(f"claude-agents out of date in {self.cfg / 'agents'}", out)
         self.assertIn(f"claude-agents out of date in {home_claude / 'agents'}", out)
+
+    def test_missing_registered_dir_gets_one_info_line(self):
+        gone = self.tmp / "gone"
+        gone.mkdir()
+        claude_dirs.add(gone)
+        shutil.rmtree(gone)
+        out = self._doctor()
+        self.assertEqual(out.count(str(gone)), 1)
+        self.assertRegex(out, r"INFO.*no longer exist.*claude-dirs --remove")
+        self.assertNotIn(f"Claude config dir: {gone}", out)
 
     def test_warns_about_unconfirmed_candidates(self):
         d = self.home / ".claude-corp" / "claude-config"
