@@ -408,7 +408,7 @@ def migrate(paths: "g.Paths", *, commit: bool = True, dry_run: bool = False) -> 
                 return result  # up to date; the pending edits are the user's own
             raise SystemExit(f"migrate: {CONFIG_NAME} has uncommitted changes that migrate "
                              "would not make; commit or discard them, then rerun migrate "
-                             "(nothing was written)")
+                             f"({CONFIG_NAME} was not written)")
         if not head_plan.config_empty:
             result.leftover = head_plan
 

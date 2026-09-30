@@ -405,7 +405,7 @@ class TestMigrateStagedChanges(MigrateRepoCase):
         with self.assertRaises(SystemExit) as ctx:
             schema.migrate(self.paths)
         self.assertIn("uncommitted changes", str(ctx.exception))
-        self.assertIn("nothing was written", str(ctx.exception))
+        self.assertIn("vault.config.json was not written", str(ctx.exception))
         self.assertEqual(self.paths.config_file.read_bytes(), before)
         self.assertEqual(self.log(), ["initial"])
 
