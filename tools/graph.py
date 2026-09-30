@@ -1502,7 +1502,7 @@ def cmd_stats(args) -> None:
                         else claude_config_dir() / "projects")
         codex_dir = Path(args.codex_dir).expanduser()
         since = date.fromisoformat(args.since) if args.since else None
-        if args.session:
+        if getattr(args, "session", None):
             if since:
                 print("note: --since is ignored with --session", file=sys.stderr)
             try:
