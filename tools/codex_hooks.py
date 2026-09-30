@@ -26,6 +26,7 @@ HOOKS_DIR = g.ENGINE / "tools" / "codex-hooks"
 AGENTS_DIR = g.ENGINE / "tools" / "codex-agents"
 HOOKS = {
     "UserPromptSubmit": ("context-warn.py", None),
+    "PreToolUse": ("agent-guard.py", "^(Agent|spawn_agent)$"),
     "PostToolUse": ("delegation-warn.py", "^(Bash|Read|Edit|Write|apply_patch)$"),
 }
 EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
