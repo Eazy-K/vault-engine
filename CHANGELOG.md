@@ -2,20 +2,32 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
-## Unreleased
+## [0.9.0] - 2026-09-30
 
 ### Added
-- PR #67 adds Codex token, call, and estimated API list-price cost shares by model, linked subagent breakdowns, and per-subagent-run details.
-- `codex-hooks [--install]` installs the Codex context/delegation hooks and missing worker profiles. Existing hooks are merged and backed up before changes; customized worker TOMLs are kept. `doctor` and `context` report missing/stale hooks and worker profiles and check for explicit, valid top-level Codex model/effort values when `~/.codex` exists. They do not enforce a preferred model because that is user-specific.
-- `stats --tokens --session <id|current>`: per-session token breakdown by model with call/token/cost shares, main session vs subagents, and one row per subagent run. `current` reads `CLAUDE_CODE_SESSION_ID` (Claude Code) or `CODEX_SESSION_ID` (Codex); without either it shows the most recent session for the working directory and says it is a guess.
-- The Claude Code status line shows the session's model shares by tokens (main session + subagents), e.g. `Opus 62%·Sonnet 38%`, parsed incrementally with a cache.
+- `codex-hooks [--install]` installs the Codex context/delegation hooks and missing worker profiles. Existing hooks are merged and backed up before changes; customized worker TOMLs are kept. `doctor` and `context` report missing/stale hooks and worker profiles and check for explicit, valid top-level Codex model/effort values when `~/.codex` exists. They do not enforce a preferred model because that is user-specific. (#48)
+- `reinforce` runs decay automatically after seven days and records the per-machine timestamp in `.graph/last-decay`. (#60)
+- `context` reports the retrieval mode and semantic fallback reason; over-budget notes are cut at `##` section boundaries, `show --body` prints the full note, and `stats` reports the keyword-only fallback rate. (#61)
+- `delegation-warn` records each orchestrator prompt's inline call count in `usage.log`, and `stats` reports the share exceeding the threshold. The session's final prompt is not logged. (#63)
+- `stats --tokens --session <id|current>` reports per-session usage by model, main session and subagents, and individual subagent runs. `current` reads the Claude Code or Codex session ID and otherwise guesses from the most recent session in the working directory. (#66)
+- The Claude Code status line shows the session's model shares by tokens (main session + subagents), e.g. `Opus 62%·Sonnet 38%`, parsed incrementally with a cache. (#66)
+- `stats --tokens` reports Codex token, call, and estimated API list-price cost shares by model, with linked subagent usage and per-run details. These cost estimates are not Codex subscription charges. (#67)
 
 ### Changed
-- For `stats --tokens --session <codex id>`, JSON `totals` now includes the main session and linked subagents; the main session's totals are available in `main_totals`.
-- `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields.
+- `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields. (#66)
+- For `stats --tokens --session <codex id>`, JSON `totals` now includes the main session and linked subagents; the main session's totals are available in `main_totals`. (#67)
+- Orchestration guidance clarifies when plan approval is needed: splits across two or more agents or ask-first categories require approval; ambiguous scope gets one clarifying question. (#62)
 
 ### Fixed
-- PR #67 Codex cost estimates now clamp regular input tokens at zero when cached input exceeds input, while retaining the unverified assumption that cache-write tokens are not included in input; partial cost shares use only priced models.
+- Codex cost estimates subtract cached input from the regular input rate; when a model has no listed price, totals and shares are marked partial and use priced models only. (#68)
+- Claude Code configuration paths respect `CLAUDE_CONFIG_DIR`, including hooks, models, setup, and statistics. (#49)
+- User-level setup honors `CODEX_HOME`, falling back to `~/.codex` when it is unset. (#59)
+- `migrate` adds missing `.gitignore` template lines to an existing vault in a separate commit; `doctor` warns about missing lines and tracked files ignored by `.gitignore`. (#65)
+- Codex cost estimates clamp regular input to zero when cached input exceeds reported input. (#69)
+- Regular input is `max(0, input - cached - cache_write)`: OpenAI documents that input usage includes cache-write tokens and that regular input excludes cached and cache-write tokens ([prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching), [Usage API reference](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/web_search_calls)). (release PR)
+
+### Upgrade notes
+- If `doctor` reports tracked files that `.gitignore` excludes (for example, `.graph/last-decay` or `.graph/machine.json`), untrack each once with `git rm --cached <file>` and commit. `migrate` does not untrack them because that would delete the files on other computers. (#64)
 
 ## [0.8.0] - 2026-09-28
 

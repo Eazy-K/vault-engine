@@ -101,9 +101,13 @@ def estimate_codex_cost_usd(usage: dict, model: str | None) -> float | None:
     input_price, cached_price, write_price, output_price = rates
     input_tokens = int(usage.get("input_tokens") or 0)
     cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
-    # Assumption: cache writes are not included in input_tokens; unverified.
     cache_write_input_tokens = int(usage.get("cache_write_input_tokens") or 0)
-    regular_input_tokens = max(0, input_tokens - cached_input_tokens)
+    # OpenAI's prompt-caching formula subtracts both cached and cache-write
+    # tokens from input; the Usage API defines input_tokens as including cache:
+    # https://developers.openai.com/api/docs/guides/prompt-caching
+    # https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/web_search_calls
+    regular_input_tokens = max(
+        0, input_tokens - cached_input_tokens - cache_write_input_tokens)
     return (regular_input_tokens * input_price
             + cached_input_tokens * cached_price
             + cache_write_input_tokens * write_price
