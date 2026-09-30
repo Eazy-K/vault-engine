@@ -84,6 +84,14 @@ def make_rollout(root: Path, y, m, d, name, lines):
 
 
 class TestParseCodexRollout(unittest.TestCase):
+    def test_cached_input_is_removed_from_regular_input_price(self):
+        usage = {"input_tokens": 100, "cached_input_tokens": 20,
+                 "cache_write_input_tokens": 10, "output_tokens": 5}
+        # (100 - 20) * $0.10 + 20 * $0.01 + 10 * $0.125 + 5 * $0.50
+        self.assertAlmostEqual(
+            token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
+            11.95 / 1_000_000)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -296,24 +304,36 @@ class TestParseCodexRollout(unittest.TestCase):
         self.assertEqual(session.model_attribution, "unknown")
         self.assertIsNone(session.model_usage)
 
-    def test_unknown_model_has_no_fabricated_cost_share(self):
+    def test_unpriced_model_keeps_partial_priced_total_and_shares(self):
         usage = {"input_tokens": 100, "cached_input_tokens": 10,
                  "cache_write_input_tokens": 0, "output_tokens": 20,
                  "reasoning_output_tokens": 5, "total_tokens": 130}
+        known_usage = {"input_tokens": 200, "cached_input_tokens": 20,
+                       "cache_write_input_tokens": 0, "output_tokens": 30,
+                       "reasoning_output_tokens": 5, "total_tokens": 235}
         path = self.tmp / "rollout.jsonl"
         path.write_text("\n".join([
             session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
             turn_context_line("custom-unpriced-model", "medium", turn_id="turn-1"),
             token_usage_record_line("resp-1", usage, turn_id="turn-1"),
-            token_count_line(usage),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-2"),
+            token_usage_record_line("resp-2", known_usage, turn_id="turn-2"),
+            token_count_line({key: usage[key] + known_usage[key] for key in usage}),
         ]), encoding="utf-8")
         session = token_stats.parse_codex_rollout(path)
         report = token_stats.build_codex_report([session])
-        row = report["by_model"][0]
-        self.assertEqual(row["calls"], 1)
-        self.assertIsNone(row["est_usd"])
-        self.assertIsNone(row["cost_pct"])
-        self.assertIsNone(report["est_total_usd"])
+        rows = {row["model"]: row for row in report["by_model"]}
+        self.assertEqual(rows["custom-unpriced-model"]["calls"], 1)
+        self.assertIsNone(rows["custom-unpriced-model"]["est_usd"])
+        self.assertIsNone(rows["custom-unpriced-model"]["cost_pct"])
+        self.assertIsNotNone(rows["gpt-6-luna"]["est_usd"])
+        self.assertEqual(rows["gpt-6-luna"]["cost_pct"], 100.0)
+        expected = token_stats.estimate_codex_cost_usd(known_usage, "gpt-6-luna")
+        self.assertEqual(report["est_total_usd"], round(expected, 4))
+        self.assertEqual(report["cost_estimate_status"], "partial")
+        self.assertEqual(report["cost_basis"], "partial_api_list_estimate")
+        text = "\n".join(token_stats.format_codex_section(report, self.tmp))
+        self.assertIn("Cost estimate is partial", text)
 
 
 class TestCollectAndReport(unittest.TestCase):

@@ -99,8 +99,10 @@ def estimate_codex_cost_usd(usage: dict, model: str | None) -> float | None:
     if rates is None:
         return None
     input_price, cached_price, write_price, output_price = rates
-    return (int(usage.get("input_tokens") or 0) * input_price
-            + int(usage.get("cached_input_tokens") or 0) * cached_price
+    input_tokens = int(usage.get("input_tokens") or 0)
+    cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
+    return ((input_tokens - cached_input_tokens) * input_price
+            + cached_input_tokens * cached_price
             + int(usage.get("cache_write_input_tokens") or 0) * write_price
             + int(usage.get("output_tokens") or 0) * output_price) / 1_000_000
 
@@ -602,7 +604,7 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
             "total_pct": pct(row["total"], totals["total"]),
             "calls_pct": pct(row["calls"], total_calls) if calls_known else None,
             "est_usd": round(float(row["_cost"] or 0), 4) if row["_priced"] else None,
-            "cost_pct": pct(row["_cost"], total_cost) if all_priced else None,
+            "cost_pct": pct(row["_cost"], total_cost) if row["_priced"] else None,
         })
 
     rate_limits = None
@@ -624,8 +626,9 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
         "sessions": len(sessions),
         "totals": totals,
         "calls": total_calls if calls_known else None,
-        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_or_unavailable",
-        "est_total_usd": round(total_cost, 4) if all_priced else None,
+        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_api_list_estimate",
+        "cost_estimate_status": "complete" if all_priced else "partial",
+        "est_total_usd": round(total_cost, 4),
         "model_attribution": "verified" if all(
             s.model_attribution != "unknown" for s in sessions) else "partial_or_unknown",
         "agent_split_status": "verified" if split_known else "partial_or_unknown",
@@ -660,6 +663,8 @@ def format_codex_section(codex: dict | None, codex_dir: Path) -> list[str]:
                       f"{fmt_pct(row['total_pct']):>6}  {cost_text:>10}  "
                       f"{fmt_pct(row['cost_pct']):>6}")
     lines.append("  * Standard API list-price estimate; actual subscription billing may differ.")
+    if codex["cost_estimate_status"] == "partial":
+        lines.append("  Cost estimate is partial; total and shares include priced models only.")
     lines.append(f"  Main/subagent attribution: {codex['agent_split_status']}")
     if codex["agent_split_status"] == "verified":
         main_calls = "-" if codex["main"]["calls"] is None else str(codex["main"]["calls"])
@@ -962,9 +967,8 @@ def build_claude_session_report(found: list) -> dict:
 
 def _codex_cost_for_usage(by_model: dict[str, dict]) -> tuple[float | None, bool]:
     costs = [estimate_codex_cost_usd(usage, model) for model, usage in by_model.items()]
-    if any(cost is None for cost in costs):
-        return None, False
-    return sum(costs), True
+    return sum(cost for cost in costs if cost is not None), all(
+        cost is not None for cost in costs)
 
 
 def build_codex_session_report(session: CodexSession,
@@ -1062,7 +1066,7 @@ def build_codex_session_report(session: CodexSession,
             "main_tokens_pct": pct(row["main_tokens"], main_tokens),
             "subagent_tokens_pct": pct(row["subagent_tokens"], subagent_tokens),
             "est_usd": round(row["cost"], 4) if row["priced"] else None,
-            "cost_pct": pct(row["cost"], total_cost) if all_priced and total_cost else None,
+            "cost_pct": pct(row["cost"], total_cost) if row["priced"] else None,
         })
     child_costs = [(_codex_cost_for_usage(child.model_usage or {
         "unknown": child.total_token_usage or {}})) for child in children]
@@ -1105,8 +1109,9 @@ def build_codex_session_report(session: CodexSession,
                                else "verified" if all_models_attributed
                                else "partial_or_unknown"),
         "calls": total_calls if all_calls_known else None,
-        "est_total_usd": round(total_cost, 4) if all_priced and total_cost is not None else None,
-        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_or_unavailable",
+        "est_total_usd": round(total_cost, 4),
+        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_api_list_estimate",
+        "cost_estimate_status": "complete" if all_priced else "partial",
         "main": {"calls": main_calls, "total_tokens": total,
                  "tokens_pct": pct(total, all_tokens),
                  "est_usd": round(parent_cost, 4) if parent_priced and parent_cost is not None else None},
@@ -1169,7 +1174,9 @@ def format_session_text(report: dict) -> str:
             lines.append("  Subagent breakdown: unknown (linkage metadata unavailable)")
         total_cost = report["est_total_usd"]
         lines.append("  Estimated standard API cost: "
-                     + (f"${total_cost:,.4f}" if total_cost is not None else "unavailable"))
+                     + (f"${total_cost:,.4f}" if total_cost is not None else "unavailable")
+                     + (" (partial; priced models only)"
+                        if report["cost_estimate_status"] == "partial" else ""))
         lines.append("  * Standard API list-price estimate; subscription billing may differ.")
         return "\n".join(lines)
     lines.append(f"Claude session {report['session_id']}")
