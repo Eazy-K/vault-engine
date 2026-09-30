@@ -40,11 +40,11 @@ elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara 
 Claude Code delegasyon hook'u (`delegation-warn`), asistanın bir kullanıcı mesajında ana konuşmada kaç araç çağrısı yaptığını `.graph/usage.log` dosyasına yazar; `python tools/graph.py stats` bunu "orchestrator prompts" satırında özetler (ölçülen mesaj sayısı, eşiği aşanların yüzdesi, medyan çağrı sayısı). Bir oturumun son mesajı ölçülmez.
 
 Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
-delegasyon hook'larını ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
+delegasyon hook'larını ve `agent-guard` (`PreToolUse`, `Agent|spawn_agent`; yalnızca `worker-*` profillerine ve kendi model/eforlarına izin verir) hook'unu ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
 `~/.codex` varsa hook ve worker dosyalarının eksik veya eski olup olmadığını; ayrıca
 `config.toml` içindeki model ve eforun açıkça ayarlanıp ayarlanmadığını denetler. Tercih
 edilen model kullanıcıya özel olduğundan motor onun değişip değişmediğini belirlemez.
-Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
+Dürüst not: Codex CLI 0.159.2 üzerindeki deney, PreToolUse deny kararının uygulandığını göstermedi; koruma, CLI bunu desteklediğinde çalışsın diye kurulur. Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
 
 `python tools/graph.py stats --tokens`, model bazında çağrı, token ve tahmini maliyet paylarını gösterir. Codex için `stats --tokens --session <id|current>` ana oturum ile alt ajan kullanımını ayırır ve her alt ajan için ayrı satır verir. JSON çıktısı da çağrı, token ve maliyet paylarını ve ana oturum/alt ajan dökümünü içerir. Codex JSON'undaki `cost_pct`, fiyatı bilinen modellerin maliyet ara toplamındaki model payıdır. `cost_basis` değeri `partial_api_list_estimate` ve `cost_estimate_status` değeri `partial` olduğunda bu ara toplam fiyatsız modellerin kullanım maliyetini içermez. Tahmini USD, standart OpenAI API liste fiyatlarına göre hesaplanır; Codex veya ChatGPT abonelik ücreti değildir. Model ya da ajan ilişkilendirmesi belirsizse rapor bunu kısmi/bilinmiyor olarak işaretler ve ilgili alanlara tahmin yerine `null` yazar.
 

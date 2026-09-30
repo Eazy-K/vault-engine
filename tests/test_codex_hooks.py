@@ -146,6 +146,21 @@ class TestStatus(unittest.TestCase):
                                                agents_dir=str(self.tmp / "agents")))
         self.assertEqual(codex_hooks.hooks_status(hooks)[0], "OK")
 
+    def test_agent_guard_registered_and_missing_guard_is_stale(self):
+        merged, _ = codex_hooks.merge({})
+        pre = merged["hooks"]["PreToolUse"][0]
+        self.assertEqual(pre["matcher"], "^(Agent|spawn_agent)$")
+        self.assertIn("agent-guard.py", pre["hooks"][0]["command"])
+        hooks = self.tmp / "hooks.json"
+        codex_hooks.cmd_codex_hooks(Namespace(install=True, hooks=str(hooks),
+                                               agents_dir=str(self.tmp / "agents")))
+        data = json.loads(hooks.read_text(encoding="utf-8"))
+        del data["hooks"]["PreToolUse"]
+        hooks.write_text(json.dumps(data), encoding="utf-8")
+        status, message = codex_hooks.hooks_status(hooks)
+        self.assertEqual(status, "WARN")
+        self.assertIn("agent-guard.py", message)
+
     def test_hooks_status_flags_stale_matcher(self):
         hooks = self.tmp / "hooks.json"
         codex_hooks.cmd_codex_hooks(Namespace(install=True, hooks=str(hooks),
