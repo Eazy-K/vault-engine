@@ -57,6 +57,17 @@ PRICES = {
 }
 CACHE_READ_MULTIPLIER = 0.1
 CACHE_WRITE_MULTIPLIER = 1.25
+# Standard API list rates, USD per million tokens, verified from the official
+# model pages. These produce an API-equivalent estimate, never a billing claim.
+# Batch/Flex/Fast rates and long-context surcharges can differ.
+CODEX_STANDARD_RATES = {
+    "gpt-6-sol": (2.0, 0.20, 2.50, 10.0),
+    "gpt-6-luna": (0.10, 0.01, 0.125, 0.50),
+    "gpt-6-astra": (10.0, 1.0, 12.50, 50.0),
+}
+# Sources: https://developers.openai.com/api/docs/models/gpt-6-sol
+#          https://developers.openai.com/api/docs/models/gpt-6-luna
+#          https://developers.openai.com/api/docs/models/gpt-6-astra
 PEAK_CONTEXT_ALERT = 150_000
 
 
@@ -79,6 +90,19 @@ def estimate_cost_usd(input_tokens: int, cache_creation: int, cache_read: int,
             + cache_creation * in_price * CACHE_WRITE_MULTIPLIER
             + cache_read * in_price * CACHE_READ_MULTIPLIER
             + output_tokens * out_price) / 1_000_000
+
+
+def estimate_codex_cost_usd(usage: dict, model: str | None) -> float | None:
+    """Standard-rate API-equivalent estimate; None for an unpriced model."""
+    name = (model or "").lower()
+    rates = CODEX_STANDARD_RATES.get(name)
+    if rates is None:
+        return None
+    input_price, cached_price, write_price, output_price = rates
+    return (int(usage.get("input_tokens") or 0) * input_price
+            + int(usage.get("cached_input_tokens") or 0) * cached_price
+            + int(usage.get("cache_write_input_tokens") or 0) * write_price
+            + int(usage.get("output_tokens") or 0) * output_price) / 1_000_000
 
 
 def pct(part: float, total: float) -> float | None:
@@ -244,6 +268,16 @@ class CodexSession:
     effort: str | None
     total_token_usage: dict | None
     rate_limits: dict | None
+    model_usage: dict[str, dict] | None = None
+    model_attribution: str = "unknown"
+    observed_models: list[str] = field(default_factory=list)
+    calls: int | None = None
+    model_calls: dict[str, int] | None = None
+    parent_thread_id: str | None = None
+    agent_role: str | None = None
+    agent_nickname: str | None = None
+    thread_ids: set[str] = field(default_factory=set)
+    parent_link_known: bool = False
 
 
 def _read_jsonl_records(path: Path):
@@ -280,14 +314,23 @@ def parse_codex_rollout(path: Path) -> CodexSession | None:
     delta), de-duplicated by ``payload.response_id`` (last one per id wins).
     """
     session_id = None
+    parent_thread_id = None
+    agent_role = None
+    agent_nickname = None
+    thread_ids: set[str] = set()
+    parent_link_known = False
     start = None
     model = None
     effort = None
     total_token_usage = None
     rate_limits = None
     usage_by_response_id: dict[str, dict] = {}
+    response_models: dict[str, str | None] = {}
     usage_order: list[str] = []
     unkeyed_usages: list[dict] = []
+    unkeyed_models: list[str | None] = []
+    model_by_turn: dict[str, set[str]] = {}
+    observed_models: list[str] = []
     for rec in _read_jsonl_records(path):
         if not isinstance(rec, dict):
             continue
@@ -297,11 +340,26 @@ def parse_codex_rollout(path: Path) -> CodexSession | None:
             continue
         if rec_type == "session_meta":
             session_id = payload.get("id") or session_id
+            parent_thread_id = payload.get("parent_thread_id") or parent_thread_id
+            parent_link_known = "parent_thread_id" in payload
+            agent_role = payload.get("agent_role") or agent_role
+            agent_nickname = payload.get("agent_nickname") or agent_nickname
+            for identity in (payload.get("id"), payload.get("session_id")):
+                if identity:
+                    thread_ids.add(str(identity))
             start = _parse_timestamp(payload.get("timestamp")) or start
             model = model or payload.get("model")
         elif rec_type == "turn_context":
             model = payload.get("model") or model
             effort = payload.get("effort") or effort
+            context_model = payload.get("model")
+            root_turn_id = payload.get("root_turn_id")
+            turn_id = payload.get("turn_id")
+            if context_model:
+                if context_model not in observed_models:
+                    observed_models.append(context_model)
+                if turn_id is not None:
+                    model_by_turn.setdefault(str(turn_id), set()).add(context_model)
         elif rec_type == "event_msg" and payload.get("type") == "token_count":
             info = payload.get("info")
             if isinstance(info, dict):
@@ -312,16 +370,22 @@ def parse_codex_rollout(path: Path) -> CodexSession | None:
             if isinstance(rl, dict):
                 rate_limits = rl
         elif rec_type == "token_usage_record":
+            if payload.get("thread_id"):
+                thread_ids.add(str(payload["thread_id"]))
             usage = payload.get("usage")
             if isinstance(usage, dict):
                 response_id = payload.get("response_id")
+                turn_models = model_by_turn.get(str(payload.get("turn_id")), set())
+                turn_model = next(iter(turn_models)) if len(turn_models) == 1 else None
                 if response_id:
                     if response_id not in usage_by_response_id:
                         usage_order.append(response_id)
                     usage_by_response_id[response_id] = usage
+                    response_models[response_id] = turn_model
                 else:
                     # No id to de-dupe by: keep every record so nothing is lost.
                     unkeyed_usages.append(usage)
+                    unkeyed_models.append(turn_model)
     if session_id is None:
         # Fall back to the filename so a session with a missing/malformed
         # session_meta record is still counted (its timestamp stays unknown).
@@ -338,9 +402,51 @@ def parse_codex_rollout(path: Path) -> CodexSession | None:
             for field in _USAGE_FIELDS:
                 summed[field] += int(usage.get(field) or 0)
         total_token_usage = summed
+    # Per-model allocation is reliable only when each usage record joins to a
+    # turn_context by both ids and its aggregate agrees with the authoritative
+    # session total. Otherwise retain the total, but report model attribution
+    # as unknown instead of assigning the whole session to the last model seen.
+    model_usage = None
+    calls = None
+    model_calls = None
+    attribution = "unknown"
+    response_usages = [(usage_by_response_id[rid], response_models.get(rid))
+                       for rid in usage_order]
+    response_usages.extend(zip(unkeyed_usages, unkeyed_models))
+    if response_usages and all(m for _, m in response_usages):
+        candidate: dict[str, dict[str, int]] = {}
+        for usage, response_model in response_usages:
+            row = candidate.setdefault(response_model, {field: 0 for field in _USAGE_FIELDS})
+            for field in _USAGE_FIELDS:
+                row[field] += int(usage.get(field) or 0)
+        candidate_total = {field: sum(row[field] for row in candidate.values())
+                           for field in _USAGE_FIELDS}
+        if total_token_usage is None or all(
+                candidate_total[field] == int(total_token_usage.get(field) or 0)
+                for field in _USAGE_FIELDS):
+            model_usage = candidate
+            calls = len(usage_order) if not unkeyed_usages else None
+            if not unkeyed_usages:
+                model_calls = {}
+                for response_id in usage_order:
+                    response_model = response_models[response_id]
+                    model_calls[response_model] = model_calls.get(response_model, 0) + 1
+            attribution = "per_response"
+    elif (not response_usages and total_token_usage is not None
+          and len(observed_models) == 1):
+        # A single observed model can safely label the complete cumulative
+        # total even when this rollout format omits per-response usage.
+        model_usage = {observed_models[0]: {
+            field: int(total_token_usage.get(field) or 0) for field in _USAGE_FIELDS}}
+        attribution = "single_model_session"
     return CodexSession(session_id=session_id, path=path, start=start, model=model,
                          effort=effort, total_token_usage=total_token_usage,
-                         rate_limits=rate_limits)
+                         rate_limits=rate_limits, model_usage=model_usage,
+                         model_attribution=attribution, observed_models=observed_models,
+                         calls=calls, model_calls=model_calls,
+                         parent_thread_id=parent_thread_id,
+                         agent_role=agent_role, agent_nickname=agent_nickname,
+                         thread_ids=thread_ids, parent_link_known=parent_link_known)
 
 
 def discover_codex_rollouts(sessions_root: Path):
@@ -374,36 +480,130 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
     if not sessions:
         return None
 
-    totals = {"input": 0, "cached_input": 0, "output": 0, "reasoning_output": 0, "total": 0}
-    by_model: dict[str, dict[str, int]] = {}
+    totals = {"input": 0, "cached_input": 0, "cache_write_input": 0,
+              "output": 0, "reasoning_output": 0, "total": 0}
+    by_model: dict[str, dict[str, int | None]] = {}
+    calls_known = True
+    total_calls = 0
+    split_known = True
+    split_calls_known = True
+    main_total_tokens = 0
+    subagent_total_tokens = 0
+    main_total_calls = 0
+    subagent_total_calls = 0
     for s in sessions:
         usage = s.total_token_usage or {}
-        model = s.model or "unknown"
-        row = by_model.setdefault(model, {"sessions": 0, "input": 0, "cached_input": 0,
-                                           "output": 0, "reasoning_output": 0, "total": 0})
         input_t = int(usage.get("input_tokens") or 0)
         cached_t = int(usage.get("cached_input_tokens") or 0)
+        cache_write_t = int(usage.get("cache_write_input_tokens") or 0)
         output_t = int(usage.get("output_tokens") or 0)
         reasoning_t = int(usage.get("reasoning_output_tokens") or 0)
         total_t = int(usage.get("total_tokens") or 0)
 
-        row["sessions"] += 1
-        row["input"] += input_t
-        row["cached_input"] += cached_t
-        row["output"] += output_t
-        row["reasoning_output"] += reasoning_t
-        row["total"] += total_t
-
         totals["input"] += input_t
         totals["cached_input"] += cached_t
+        totals["cache_write_input"] += cache_write_t
         totals["output"] += output_t
         totals["reasoning_output"] += reasoning_t
         totals["total"] += total_t
 
-    model_rows = [{"model": m, **row,
-                   "sessions_pct": pct(row["sessions"], len(sessions)),
-                   "total_pct": pct(row["total"], totals["total"])}
-                  for m, row in sorted(by_model.items())]
+        model_usage = s.model_usage or {"unknown": usage}
+        for model, model_totals in model_usage.items():
+            row = by_model.setdefault(model, {"sessions": 0, "calls": 0,
+                                               "input": 0, "cached_input": 0,
+                                               "cache_write_input": 0,
+                                               "output": 0, "reasoning_output": 0,
+                                               "total": 0, "_cost": 0.0,
+                                               "_priced": True})
+            row["sessions"] = int(row["sessions"] or 0) + 1
+            for out_key, usage_key in (("input", "input_tokens"),
+                                       ("cached_input", "cached_input_tokens"),
+                                       ("cache_write_input", "cache_write_input_tokens"),
+                                       ("output", "output_tokens"),
+                                       ("reasoning_output", "reasoning_output_tokens"),
+                                       ("total", "total_tokens")):
+                row[out_key] = int(row[out_key] or 0) + int(model_totals.get(usage_key) or 0)
+            model_cost = estimate_codex_cost_usd(model_totals, model)
+            if model_cost is None:
+                row["_priced"] = False
+            elif row["_priced"]:
+                row["_cost"] = float(row["_cost"] or 0) + model_cost
+            model_call_count = ((s.model_calls or {}).get(model)
+                                if s.model_calls is not None else None)
+            if model_call_count is None:
+                calls_known = False
+                row["calls"] = None
+            elif row["calls"] is not None:
+                row["calls"] = int(row["calls"] or 0) + model_call_count
+        if s.calls is None or s.model_calls is None:
+            calls_known = False
+        else:
+            total_calls += s.calls
+        if not s.parent_link_known:
+            split_known = False
+            split_calls_known = False
+        elif s.parent_thread_id:
+            subagent_total_tokens += total_t
+            if s.calls is None:
+                split_calls_known = False
+            else:
+                subagent_total_calls += s.calls
+        else:
+            main_total_tokens += total_t
+            if s.calls is None:
+                split_calls_known = False
+            else:
+                main_total_calls += s.calls
+
+        for model, model_totals in model_usage.items():
+            row = by_model[model]
+            model_token_count = int(model_totals.get("total_tokens") or 0)
+            model_call_count = ((s.model_calls or {}).get(model)
+                                if s.model_calls is not None else None)
+            if not s.parent_link_known:
+                row.setdefault("main_calls", None)
+                row.setdefault("subagent_calls", None)
+                row.setdefault("main_tokens", None)
+                row.setdefault("subagent_tokens", None)
+                row["main_calls"] = row["subagent_calls"] = None
+                row["main_tokens"] = row["subagent_tokens"] = None
+            elif s.parent_thread_id:
+                for key, amount in (("subagent_calls", model_call_count),
+                                    ("subagent_tokens", model_token_count)):
+                    if row.get(key) is None and key in row:
+                        continue
+                    row[key] = int(row.get(key) or 0) + amount if amount is not None else None
+            else:
+                for key, amount in (("main_calls", model_call_count),
+                                    ("main_tokens", model_token_count)):
+                    if row.get(key) is None and key in row:
+                        continue
+                    row[key] = int(row.get(key) or 0) + amount if amount is not None else None
+
+    total_cost = sum(float(row["_cost"] or 0) for row in by_model.values()
+                     if row["_priced"])
+    all_priced = all(row["_priced"] for row in by_model.values())
+    model_rows = []
+    for model, row in sorted(by_model.items()):
+        for key in ("main_calls", "subagent_calls", "main_tokens", "subagent_tokens"):
+            row.setdefault(key, 0)
+        row["subagent_calls_pct"] = (pct(row["subagent_calls"], subagent_total_calls)
+                                     if split_known and row.get("subagent_calls") is not None else None)
+        row["main_calls_pct"] = (pct(row["main_calls"], main_total_calls)
+                                 if split_known and row.get("main_calls") is not None else None)
+        row["subagent_tokens_pct"] = (pct(row["subagent_tokens"], subagent_total_tokens)
+                                      if split_known and row.get("subagent_tokens") is not None else None)
+        row["main_tokens_pct"] = (pct(row["main_tokens"], main_total_tokens)
+                                  if split_known and row.get("main_tokens") is not None else None)
+        model_rows.append({
+            "model": model,
+            **{key: value for key, value in row.items() if not key.startswith("_")},
+            "sessions_pct": pct(row["sessions"], len(sessions)),
+            "total_pct": pct(row["total"], totals["total"]),
+            "calls_pct": pct(row["calls"], total_calls) if calls_known else None,
+            "est_usd": round(float(row["_cost"] or 0), 4) if row["_priced"] else None,
+            "cost_pct": pct(row["_cost"], total_cost) if all_priced else None,
+        })
 
     rate_limits = None
     dated_with_rl = [s for s in sessions if s.start is not None and s.rate_limits]
@@ -423,6 +623,16 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
     return {
         "sessions": len(sessions),
         "totals": totals,
+        "calls": total_calls if calls_known else None,
+        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_or_unavailable",
+        "est_total_usd": round(total_cost, 4) if all_priced else None,
+        "model_attribution": "verified" if all(
+            s.model_attribution != "unknown" for s in sessions) else "partial_or_unknown",
+        "agent_split_status": "verified" if split_known else "partial_or_unknown",
+        "main": {"calls": main_total_calls if split_known and split_calls_known else None,
+                 "total_tokens": main_total_tokens if split_known else None},
+        "subagents_total": {"calls": subagent_total_calls if split_known and split_calls_known else None,
+                            "total_tokens": subagent_total_tokens if split_known else None},
         "by_model": model_rows,
         "rate_limits": rate_limits,
     }
@@ -435,14 +645,37 @@ def format_codex_section(codex: dict | None, codex_dir: Path) -> list[str]:
     t = codex["totals"]
     lines.append(f"  {codex['sessions']} sessions, {t['total']:,} tokens total "
                  f"(input {t['input']:,}, cached input {t['cached_input']:,}, "
+                 f"cache write {t['cache_write_input']:,}, "
                  f"output {t['output']:,}, reasoning {t['reasoning_output']:,})")
-    lines.append("  By model (sessions, input, cached input, output, reasoning, total, "
-                 "session %, token %):")
+    lines.append("  By model (sessions, calls, input, cached, output, reasoning, total, "
+                 "session %, call %, token %, est. API USD*, cost %):")
     for row in codex["by_model"]:
-        lines.append(f"    {row['model']:<20} {row['sessions']:>6}  {row['input']:>12,}  "
-                      f"{row['cached_input']:>12,}  {row['output']:>10,}  "
+        calls_text = "-" if row["calls"] is None else f"{row['calls']:,}"
+        cost_text = "-" if row["est_usd"] is None else f"${row['est_usd']:,.4f}"
+        lines.append(f"    {row['model']:<20} {row['sessions']:>6}  {calls_text:>7}  {row['input']:>12,}  "
+                      f"{row['cached_input']:>12,}  {row['cache_write_input']:>12,}  "
+                      f"{row['output']:>10,}  "
                       f"{row['reasoning_output']:>10,}  {row['total']:>14,}  "
-                      f"{fmt_pct(row['sessions_pct']):>6}  {fmt_pct(row['total_pct']):>6}")
+                      f"{fmt_pct(row['sessions_pct']):>6}  {fmt_pct(row['calls_pct']):>6}  "
+                      f"{fmt_pct(row['total_pct']):>6}  {cost_text:>10}  "
+                      f"{fmt_pct(row['cost_pct']):>6}")
+    lines.append("  * Standard API list-price estimate; actual subscription billing may differ.")
+    lines.append(f"  Main/subagent attribution: {codex['agent_split_status']}")
+    if codex["agent_split_status"] == "verified":
+        main_calls = "-" if codex["main"]["calls"] is None else str(codex["main"]["calls"])
+        sub_calls = "-" if codex["subagents_total"]["calls"] is None else str(
+            codex["subagents_total"]["calls"])
+        lines.append(f"    Main: {main_calls} calls, "
+                     f"{codex['main']['total_tokens']:,} tokens; "
+                     f"subagents: {sub_calls} calls, "
+                     f"{codex['subagents_total']['total_tokens']:,} tokens")
+        for row in codex["by_model"]:
+            main_calls = "-" if row["main_calls"] is None else str(row["main_calls"])
+            sub_calls = "-" if row["subagent_calls"] is None else str(row["subagent_calls"])
+            main_tokens = "-" if row["main_tokens"] is None else f"{row['main_tokens']:,}"
+            sub_tokens = "-" if row["subagent_tokens"] is None else f"{row['subagent_tokens']:,}"
+            lines.append(f"    {row['model']}: main {main_calls} calls/{main_tokens} tokens, "
+                         f"subagent {sub_calls} calls/{sub_tokens} tokens")
     rl = codex["rate_limits"]
     if rl:
         p, s = rl["primary"], rl["secondary"]
@@ -727,24 +960,165 @@ def build_claude_session_report(found: list) -> dict:
     }
 
 
-def build_codex_session_report(session: CodexSession) -> dict:
+def _codex_cost_for_usage(by_model: dict[str, dict]) -> tuple[float | None, bool]:
+    costs = [estimate_codex_cost_usd(usage, model) for model, usage in by_model.items()]
+    if any(cost is None for cost in costs):
+        return None, False
+    return sum(costs), True
+
+
+def build_codex_session_report(session: CodexSession,
+                               subagents: list[CodexSession] | None = None) -> dict:
     usage = session.total_token_usage or {}
-    row = {
-        "model": session.model or "unknown",
-        "input": int(usage.get("input_tokens") or 0),
-        "cached_input": int(usage.get("cached_input_tokens") or 0),
-        "output": int(usage.get("output_tokens") or 0),
-        "reasoning_output": int(usage.get("reasoning_output_tokens") or 0),
-        "total": int(usage.get("total_tokens") or 0),
+    total = int(usage.get("total_tokens") or 0)
+    main_calls = session.calls
+    children = subagents or []
+    participants = [(session, "main")] + [(child, "subagent") for child in children]
+    child_tokens = [int((child.total_token_usage or {}).get("total_tokens") or 0)
+                    for child in children]
+    child_calls = [child.calls for child in children]
+    child_known_calls = all(value is not None for value in child_calls)
+    all_tokens = total + sum(child_tokens)
+    aggregate: dict[str, dict] = {}
+    all_calls_known = True
+    total_calls = 0
+    scope_totals = {"input": 0, "cached_input": 0, "cache_write_input": 0,
+                    "output": 0, "reasoning_output": 0, "total": 0}
+    main_tokens = total
+    subagent_tokens = sum(child_tokens)
+    main_calls_total = session.calls or 0
+    subagent_calls_total = 0
+    all_models_attributed = True
+    attribution_values = []
+    for participant, group in participants:
+        participant_usage = participant.total_token_usage or {}
+        for total_key, usage_key in (("input", "input_tokens"),
+                                     ("cached_input", "cached_input_tokens"),
+                                     ("cache_write_input", "cache_write_input_tokens"),
+                                     ("output", "output_tokens"),
+                                     ("reasoning_output", "reasoning_output_tokens"),
+                                     ("total", "total_tokens")):
+            scope_totals[total_key] += int(participant_usage.get(usage_key) or 0)
+        participant_models = participant.model_usage or {"unknown": participant_usage}
+        attribution_values.append(participant.model_attribution)
+        if participant.model_attribution == "unknown":
+            all_models_attributed = False
+        if participant.calls is None or participant.model_calls is None:
+            all_calls_known = False
+        else:
+            total_calls += participant.calls
+            if group == "subagent":
+                subagent_calls_total += participant.calls
+        for model, model_usage in participant_models.items():
+            row = aggregate.setdefault(model, {
+                "input": 0, "cached_input": 0, "cache_write_input": 0,
+                "output": 0, "reasoning_output": 0, "total": 0,
+                "calls": 0, "main_calls": 0, "subagent_calls": 0,
+                "main_tokens": 0, "subagent_tokens": 0,
+                "calls_known": True, "main_calls_known": True,
+                "subagent_calls_known": True, "priced": True, "cost": 0.0,
+            })
+            for out_key, usage_key in (("input", "input_tokens"),
+                                       ("cached_input", "cached_input_tokens"),
+                                       ("cache_write_input", "cache_write_input_tokens"),
+                                       ("output", "output_tokens"),
+                                       ("reasoning_output", "reasoning_output_tokens"),
+                                       ("total", "total_tokens")):
+                row[out_key] += int(model_usage.get(usage_key) or 0)
+            row["main_tokens" if group == "main" else "subagent_tokens"] += int(
+                model_usage.get("total_tokens") or 0)
+            model_call_count = ((participant.model_calls or {}).get(model)
+                                if participant.model_calls is not None else None)
+            if model_call_count is None:
+                row["calls_known"] = False
+                row[f"{group}_calls_known"] = False
+            else:
+                row["calls"] += model_call_count
+                row[f"{group}_calls"] += model_call_count
+            cost = estimate_codex_cost_usd(model_usage, model)
+            if cost is None:
+                row["priced"] = False
+            elif row["priced"]:
+                row["cost"] += cost
+    total_cost = sum(row["cost"] for row in aggregate.values() if row["priced"])
+    all_priced = all(row["priced"] for row in aggregate.values())
+    model_rows = []
+    for model, row in sorted(aggregate.items()):
+        model_rows.append({
+            "model": model,
+            **{key: row[key] for key in ("input", "cached_input", "cache_write_input",
+                                         "output", "reasoning_output", "total")},
+            "calls": row["calls"] if row["calls_known"] else None,
+            "calls_pct": pct(row["calls"], total_calls) if all_calls_known else None,
+            "total_pct": pct(row["total"], all_tokens),
+            "main_calls": row["main_calls"] if row["main_calls_known"] else None,
+            "subagent_calls": row["subagent_calls"] if row["subagent_calls_known"] else None,
+            "main_calls_pct": pct(row["main_calls"], main_calls_total)
+            if row["main_calls_known"] and main_calls_total else None,
+            "subagent_calls_pct": pct(row["subagent_calls"], subagent_calls_total)
+            if row["subagent_calls_known"] and subagent_calls_total else None,
+            "main_tokens": row["main_tokens"],
+            "subagent_tokens": row["subagent_tokens"],
+            "main_tokens_pct": pct(row["main_tokens"], main_tokens),
+            "subagent_tokens_pct": pct(row["subagent_tokens"], subagent_tokens),
+            "est_usd": round(row["cost"], 4) if row["priced"] else None,
+            "cost_pct": pct(row["cost"], total_cost) if all_priced and total_cost else None,
+        })
+    child_costs = [(_codex_cost_for_usage(child.model_usage or {
+        "unknown": child.total_token_usage or {}})) for child in children]
+    children_priced = all(priced for _, priced in child_costs)
+    parent_usage_models = session.model_usage or {"unknown": usage}
+    parent_cost, parent_priced = _codex_cost_for_usage(parent_usage_models)
+    linked = bool(children) or session.parent_link_known
+    agent_breakdown = {
+        "status": "verified" if linked else "unknown",
+        "reason": None if linked else "parent linkage metadata unavailable",
     }
-    row["total_pct"] = pct(row["total"], row["total"])
+    sub_rows = []
+    for child, child_total, child_call_count, (child_cost, child_priced) in zip(
+            children, child_tokens, child_calls, child_costs):
+        child_model_values = child.model_usage or {"unknown": child.total_token_usage or {}}
+        sub_rows.append({
+            "session_id": child.session_id,
+            "agent_role": child.agent_role or "unknown",
+            "agent_nickname": child.agent_nickname,
+            "models": sorted(child_model_values),
+            "calls": child_call_count,
+            "total_tokens": child_total,
+            "tokens_pct": pct(child_total, all_tokens),
+            "est_usd": round(child_cost, 4) if child_priced and child_cost is not None else None,
+        })
     return {
         "kind": "codex",
         "session_id": session.session_id,
         "start": session.start.isoformat() if session.start else None,
-        "models": [row],
-        "totals": {k: row[k] for k in ("input", "cached_input", "output",
-                                        "reasoning_output", "total")},
+        "models": model_rows,
+        "totals": scope_totals,
+        "main_totals": {"input": int(usage.get("input_tokens") or 0),
+                        "cached_input": int(usage.get("cached_input_tokens") or 0),
+                        "cache_write_input": int(usage.get("cache_write_input_tokens") or 0),
+                        "output": int(usage.get("output_tokens") or 0),
+                        "reasoning_output": int(usage.get("reasoning_output_tokens") or 0),
+                        "total": total},
+        "model_attribution": (attribution_values[0]
+                               if all_models_attributed and len(set(attribution_values)) == 1
+                               else "verified" if all_models_attributed
+                               else "partial_or_unknown"),
+        "calls": total_calls if all_calls_known else None,
+        "est_total_usd": round(total_cost, 4) if all_priced and total_cost is not None else None,
+        "cost_basis": "standard_api_list_estimate" if all_priced else "partial_or_unavailable",
+        "main": {"calls": main_calls, "total_tokens": total,
+                 "tokens_pct": pct(total, all_tokens),
+                 "est_usd": round(parent_cost, 4) if parent_priced and parent_cost is not None else None},
+        "subagents_total": {"runs": len(children),
+                            "calls": sum(v for v in child_calls if v is not None)
+                            if child_known_calls else None,
+                            "total_tokens": sum(child_tokens),
+                            "tokens_pct": pct(sum(child_tokens), all_tokens),
+                            "est_usd": round(sum(cost or 0 for cost, _ in child_costs), 4)
+                            if children_priced else None},
+        "subagents": sub_rows,
+        "agent_breakdown": agent_breakdown,
     }
 
 
@@ -763,11 +1137,40 @@ def format_session_text(report: dict) -> str:
     if report["kind"] == "codex":
         lines.append(f"Codex session {report['session_id']} (experimental)")
         lines.append(f"  start: {report['start'] or '-'}")
-        lines.append("  By model (input, cached input, output, reasoning, total, token %):")
+        lines.append(f"  model attribution: {report['model_attribution']}")
+        lines.append("  By model (calls, input, cached, cache-write, output, reasoning, total, "
+                     "call %, token %, est. API USD*, cost %):")
         for r in report["models"]:
-            lines.append(f"    {r['model']:<20} {r['input']:>12,}  {r['cached_input']:>12,}  "
+            calls = "-" if r["calls"] is None else f"{r['calls']:,}"
+            cost = "-" if r["est_usd"] is None else f"${r['est_usd']:,.4f}"
+            lines.append(f"    {r['model']:<20} {calls:>7}  {r['input']:>12,}  "
+                         f"{r['cached_input']:>12,}  {r['cache_write_input']:>12,}  "
                          f"{r['output']:>10,}  {r['reasoning_output']:>10,}  "
-                         f"{r['total']:>14,}  {fmt_pct(r['total_pct']):>6}")
+                         f"{r['total']:>14,}  {fmt_pct(r['calls_pct']):>6}  "
+                         f"{fmt_pct(r['total_pct']):>6}  {cost:>10}  "
+                         f"{fmt_pct(r['cost_pct']):>6}")
+        main, agents = report["main"], report["subagents_total"]
+        main_calls = "-" if main["calls"] is None else str(main["calls"])
+        agent_calls = "-" if agents["calls"] is None else str(agents["calls"])
+        lines.append(f"  Main session: {main_calls} calls, {main['total_tokens']:,} tokens "
+                     f"({fmt_pct(main['tokens_pct'])})")
+        if report["agent_breakdown"]["status"] == "verified":
+            lines.append(f"  Subagents: {agents['runs']} runs, {agent_calls} calls, "
+                         f"{agents['total_tokens']:,} tokens ({fmt_pct(agents['tokens_pct'])})")
+            if report["subagents"]:
+                lines.append("  Subagent runs (role, model, calls, tokens, token %):")
+                for sub in report["subagents"]:
+                    calls = "-" if sub["calls"] is None else str(sub["calls"])
+                    model_list = ",".join(sub["models"])
+                    lines.append(f"    {sub['session_id']} {sub['agent_role']:<12} "
+                                 f"{model_list:<22} {calls:>6}  "
+                                 f"{sub['total_tokens']:>14,}  {fmt_pct(sub['tokens_pct']):>6}")
+        else:
+            lines.append("  Subagent breakdown: unknown (linkage metadata unavailable)")
+        total_cost = report["est_total_usd"]
+        lines.append("  Estimated standard API cost: "
+                     + (f"${total_cost:,.4f}" if total_cost is not None else "unavailable"))
+        lines.append("  * Standard API list-price estimate; subscription billing may differ.")
         return "\n".join(lines)
     lines.append(f"Claude session {report['session_id']}")
     lines.append(f"  project:  {report['project']}")
@@ -828,7 +1231,24 @@ def run_session(projects_dir: Path, codex_dir: Path, session: str, cwd: Path | N
         if parsed is None:
             raise SessionNotFound(f"session {session!r} not found under {projects_dir} "
                                   f"or {codex_dir}")
-        report = build_codex_session_report(parsed)
+        children = []
+        if parsed.thread_ids:
+            candidates = [child for child_path in discover_codex_rollouts(codex_dir)
+                          if child_path != parsed.path
+                          and (child := parse_codex_rollout(child_path)) is not None]
+            known_parent_ids = set(parsed.thread_ids)
+            included_paths = {parsed.path}
+            while True:
+                linked = [child for child in candidates
+                          if child.path not in included_paths
+                          and child.parent_thread_id in known_parent_ids]
+                if not linked:
+                    break
+                children.extend(linked)
+                for child in linked:
+                    included_paths.add(child.path)
+                    known_parent_ids.update(child.thread_ids)
+        report = build_codex_session_report(parsed, children)
     if note:
         report["note"] = note
     if as_json:

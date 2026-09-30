@@ -25,19 +25,24 @@ sys.modules["token_stats"] = token_stats
 _spec.loader.exec_module(token_stats)
 
 
-def session_meta_line(session_id, ts):
+def session_meta_line(session_id, ts, **extra):
+    payload = {"id": session_id, "timestamp": ts, "cwd": "/x",
+               "originator": "codex_cli", **extra}
     return json.dumps({
         "timestamp": ts,
         "type": "session_meta",
-        "payload": {"id": session_id, "timestamp": ts, "cwd": "/x", "originator": "codex_cli"},
+        "payload": payload,
     })
 
 
-def turn_context_line(model, effort):
+def turn_context_line(model, effort, turn_id="tu1"):
+    payload = {"model": model, "effort": effort}
+    if turn_id is not None:
+        payload["turn_id"] = turn_id
     return json.dumps({
         "timestamp": "2026-09-27T14:12:51.000Z",
         "type": "turn_context",
-        "payload": {"model": model, "effort": effort},
+        "payload": payload,
     })
 
 
@@ -53,14 +58,15 @@ def token_count_line(total_token_usage, rate_limits=None, info_null=False):
     })
 
 
-def token_usage_record_line(response_id, usage, ts="2026-09-25T10:48:28.946Z"):
+def token_usage_record_line(response_id, usage, ts="2026-09-25T10:48:28.946Z",
+                            turn_id="tu1", thread_id="t1"):
     return json.dumps({
         "timestamp": ts,
         "ordinal": 15,
         "type": "token_usage_record",
         "payload": {
-            "thread_id": "t1",
-            "turn_id": "tu1",
+            "thread_id": thread_id,
+            "turn_id": turn_id,
             "session_id": "s1",
             "response_id": response_id,
             "usage": usage,
@@ -168,6 +174,9 @@ class TestParseCodexRollout(unittest.TestCase):
         self.assertEqual(usage["output_tokens"], 30)
         self.assertEqual(usage["reasoning_output_tokens"], 7)
         self.assertEqual(usage["total_tokens"], 197)
+        self.assertEqual(session.model_attribution, "per_response")
+        self.assertEqual(session.calls, 2)
+        self.assertEqual(session.model_calls, {"gpt-6-astra": 2})
 
     def test_both_formats_uses_token_count_only(self):
         """A file with both token_usage_record lines and a usable token_count
@@ -186,6 +195,125 @@ class TestParseCodexRollout(unittest.TestCase):
         ]), encoding="utf-8")
         session = token_stats.parse_codex_rollout(path)
         self.assertEqual(session.total_token_usage["total_tokens"], 135)
+
+    def test_response_usage_is_attributed_to_model_for_its_turn(self):
+        path = self.tmp / "rollout.jsonl"
+        luna = {"input_tokens": 100, "cached_input_tokens": 10,
+                "cache_write_input_tokens": 0, "output_tokens": 20,
+                "reasoning_output_tokens": 5, "total_tokens": 130}
+        sol = {"input_tokens": 50, "cached_input_tokens": 5,
+               "cache_write_input_tokens": 2, "output_tokens": 10,
+               "reasoning_output_tokens": 1, "total_tokens": 60}
+        total = {key: luna[key] + sol[key] for key in luna}
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-luna"),
+            token_usage_record_line("resp-luna", luna, turn_id="turn-luna"),
+            turn_context_line("gpt-6-sol", "high", turn_id="turn-sol"),
+            token_usage_record_line("resp-sol", sol, turn_id="turn-sol"),
+            token_count_line(total),
+        ]), encoding="utf-8")
+
+        session = token_stats.parse_codex_rollout(path)
+        self.assertEqual(session.model_attribution, "per_response")
+        self.assertEqual(session.calls, 2)
+        self.assertEqual(session.model_calls, {"gpt-6-luna": 1, "gpt-6-sol": 1})
+        self.assertEqual(session.model_usage["gpt-6-luna"]["total_tokens"], 130)
+        self.assertEqual(session.model_usage["gpt-6-sol"]["total_tokens"], 60)
+        report = token_stats.build_codex_report([session])
+        rows = {row["model"]: row for row in report["by_model"]}
+        self.assertEqual(report["calls"], 2)
+        self.assertEqual(rows["gpt-6-luna"]["calls"], 1)
+        self.assertEqual(rows["gpt-6-sol"]["calls"], 1)
+        self.assertAlmostEqual(sum(row["calls_pct"] for row in rows.values()), 100.0)
+        self.assertAlmostEqual(sum(row["total_pct"] for row in rows.values()), 100.0)
+        self.assertTrue(all(row["est_usd"] is not None for row in rows.values()))
+        self.assertAlmostEqual(sum(row["cost_pct"] for row in rows.values()), 100.0)
+
+    def test_multiple_responses_in_one_turn_each_count_as_calls(self):
+        path = self.tmp / "rollout.jsonl"
+        first = {"input_tokens": 100, "cached_input_tokens": 10,
+                 "cache_write_input_tokens": 0, "output_tokens": 20,
+                 "reasoning_output_tokens": 5, "total_tokens": 130}
+        second = {"input_tokens": 60, "cached_input_tokens": 5,
+                  "cache_write_input_tokens": 0, "output_tokens": 10,
+                  "reasoning_output_tokens": 2, "total_tokens": 72}
+        total = {key: first[key] + second[key] for key in first}
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-1"),
+            token_usage_record_line("resp-1", first, turn_id="turn-1"),
+            token_usage_record_line("resp-2", second, turn_id="turn-1"),
+            token_count_line(total),
+        ]), encoding="utf-8")
+
+        session = token_stats.parse_codex_rollout(path)
+        self.assertEqual(session.calls, 2)
+        self.assertEqual(session.model_calls, {"gpt-6-luna": 2})
+        self.assertEqual(session.model_usage["gpt-6-luna"]["total_tokens"], 202)
+
+    def test_mixed_models_without_turn_link_are_unknown(self):
+        path = self.tmp / "rollout.jsonl"
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-1"),
+            turn_context_line("gpt-6-sol", "high", turn_id="turn-2"),
+            token_count_line({"input_tokens": 100, "cached_input_tokens": 10,
+                               "cache_write_input_tokens": 0, "output_tokens": 20,
+                               "reasoning_output_tokens": 5, "total_tokens": 130}),
+        ]), encoding="utf-8")
+
+        session = token_stats.parse_codex_rollout(path)
+        self.assertEqual(session.model_attribution, "unknown")
+        self.assertIsNone(session.model_usage)
+        self.assertIsNone(session.calls)
+
+    def test_unlinked_response_or_mismatched_total_is_unknown(self):
+        usage = {"input_tokens": 100, "cached_input_tokens": 10,
+                 "cache_write_input_tokens": 0, "output_tokens": 20,
+                 "reasoning_output_tokens": 5, "total_tokens": 130}
+        path = self.tmp / "rollout.jsonl"
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-1"),
+            token_usage_record_line("resp-1", usage, turn_id="missing-turn"),
+            token_count_line(usage),
+        ]), encoding="utf-8")
+        session = token_stats.parse_codex_rollout(path)
+        self.assertEqual(session.model_attribution, "unknown")
+        self.assertIsNone(session.calls)
+        self.assertIsNone(session.model_usage)
+
+        # A correctly linked response whose sum disagrees with the authoritative
+        # cumulative snapshot must also lose model attribution.
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-1"),
+            token_usage_record_line("resp-1", usage, turn_id="turn-1"),
+            token_count_line({**usage, "total_tokens": 131}),
+        ]), encoding="utf-8")
+        session = token_stats.parse_codex_rollout(path)
+        self.assertEqual(session.model_attribution, "unknown")
+        self.assertIsNone(session.model_usage)
+
+    def test_unknown_model_has_no_fabricated_cost_share(self):
+        usage = {"input_tokens": 100, "cached_input_tokens": 10,
+                 "cache_write_input_tokens": 0, "output_tokens": 20,
+                 "reasoning_output_tokens": 5, "total_tokens": 130}
+        path = self.tmp / "rollout.jsonl"
+        path.write_text("\n".join([
+            session_meta_line("s1", "2026-09-25T10:48:00.000Z"),
+            turn_context_line("custom-unpriced-model", "medium", turn_id="turn-1"),
+            token_usage_record_line("resp-1", usage, turn_id="turn-1"),
+            token_count_line(usage),
+        ]), encoding="utf-8")
+        session = token_stats.parse_codex_rollout(path)
+        report = token_stats.build_codex_report([session])
+        row = report["by_model"][0]
+        self.assertEqual(row["calls"], 1)
+        self.assertIsNone(row["est_usd"])
+        self.assertIsNone(row["cost_pct"])
+        self.assertIsNone(report["est_total_usd"])
 
 
 class TestCollectAndReport(unittest.TestCase):
