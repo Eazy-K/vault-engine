@@ -34,6 +34,12 @@ class TestCodexDelegationWarn(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
                               capture_output=True, text=True, env=self.env)
 
+    def test_code_mode_inner_tool_names_count_but_outer_exec_does_not(self):
+        outs = [self._run(turn_id="t2", tool_name="exec") for _ in range(6)]
+        self.assertTrue(all(not o.stdout.strip() for o in outs))
+        outs = [self._run(turn_id="t3", tool_name="exec_command") for _ in range(4)]
+        self.assertTrue(outs[3].stdout.strip())
+
     def test_warns_at_four_and_then_every_two_calls_with_stronger_language(self):
         outputs = [self._run() for _ in range(8)]
         self.assertEqual([i + 1 for i, out in enumerate(outputs) if out.stdout.strip()],

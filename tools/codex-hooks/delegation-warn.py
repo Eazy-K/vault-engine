@@ -22,7 +22,10 @@ from typing import Iterator
 from datetime import datetime
 
 THRESHOLD = 4
-MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch"}
+# Codex code mode: inner tools.exec_command calls arrive as "Bash"; the outer
+# `exec` wrapper is not counted (it would double count its inner calls).
+MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch", "exec_command",
+                 "shell_command", "shell", "local_shell"}
 MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
 REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
 REPEAT_EVERY = 2

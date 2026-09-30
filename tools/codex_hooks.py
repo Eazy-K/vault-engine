@@ -23,10 +23,18 @@ from user_config import codex_home
 
 HOOKS_DIR = g.ENGINE / "tools" / "codex-hooks"
 AGENTS_DIR = g.ENGINE / "tools" / "codex-agents"
+# Codex 0.159 "code mode" exposes one top-level `exec` tool whose script calls
+# tools.exec_command / tools.apply_patch; PostToolUse fires per inner call (as
+# "Bash"/"apply_patch"), so `exec` itself is deliberately NOT matched (it would
+# double count). Sub-agent spawns are a top-level `spawn_agent` function call in
+# the `collaboration` namespace, so the guard also accepts namespaced spellings.
+SPAWN_MATCHER = "^(Agent|(.*[._:/])?spawn_agent)$"
+INLINE_MATCHER = ("^(Bash|Read|Edit|Write|apply_patch|exec_command|shell_command"
+                  "|shell|local_shell)$")
 HOOKS = {
     "UserPromptSubmit": ("context-warn.py", None),
-    "PreToolUse": ("agent-guard.py", "^(Agent|spawn_agent)$"),
-    "PostToolUse": ("delegation-warn.py", "^(Bash|Read|Edit|Write|apply_patch)$"),
+    "PreToolUse": ("agent-guard.py", SPAWN_MATCHER),
+    "PostToolUse": ("delegation-warn.py", INLINE_MATCHER),
 }
 EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 _SAFE_ARG = re.compile(r"[A-Za-z0-9_./:~+-]+")
@@ -271,6 +279,8 @@ def statuses(hooks_path: Path | None = None, config_path: Path | None = None,
 
 TESTED_KEY = "codex_deny_tested_version"  # in <data>/.graph/machine.json (gitignored)
 PROBE_TIMEOUT = 240
+PROBE_MATCHER = ("^(Write|Edit|apply_patch|Bash|shell|shell_command|local_shell|exec_command"
+                 "|exec)$")
 PROBE_PROMPT = "create probe.txt with content x"
 PROBE_HOOK = (
     "import json\n"
@@ -354,7 +364,7 @@ def probe_deny(executable: str | None = None, data: Path | None = None,
         hook = work / "probe-hook.py"
         hook.write_text(PROBE_HOOK, encoding="utf-8", newline="\n")
         hooks = {"hooks": {"PreToolUse": [{
-            "matcher": "^(Write|Edit|apply_patch|Bash|shell|exec_command)$",
+            "matcher": PROBE_MATCHER,
             "hooks": [{"type": "command", "command": _command(hook)}]}]}}
         (work / ".codex" / "hooks.json").write_text(json.dumps(hooks, indent=2) + "\n",
                                                     encoding="utf-8", newline="\n")
@@ -376,10 +386,12 @@ def probe_deny(executable: str | None = None, data: Path | None = None,
     elif fired:
         result, text = "not-enforced", "hook fired but Codex still wrote the file (deny NOT enforced)"
     else:
-        result, text = "inconclusive", ("hook did not fire (project hooks may need trust, or "
-                                         "this CLI uses other tool names)")
+        result, text = "inconclusive", (
+            "hook did not fire: project hooks likely need trust (review the project in "
+            "Codex first), or the matcher lacks this CLI's real tool names "
+            f"(tried {PROBE_MATCHER}); nothing recorded")
     print(f"codex-hooks --probe-deny: {text} [{version or 'unknown version'}]")
-    if version and record_tested_version(version, data):
+    if result != "inconclusive" and version and record_tested_version(version, data):
         print(f"  recorded {TESTED_KEY} in machine.json")
     return result
 

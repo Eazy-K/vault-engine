@@ -49,9 +49,19 @@ def _deny(reason: str) -> None:
     }))
 
 
+def _is_spawn(name: object) -> bool:
+    """`spawn_agent` / `Agent`, also namespaced (e.g. `collaboration.spawn_agent`).
+
+    Codex 0.159 issues spawns as a top-level function call, not through the
+    code-mode `exec` wrapper, so ordinary `exec` calls never match.
+    """
+    return isinstance(name, str) and (
+        name == "Agent" or re.search(r"(^|[._:/])spawn_agent$", name) is not None)
+
+
 def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:
     """Return a deny reason, or None to let the call through."""
-    if not isinstance(payload, dict) or payload.get("tool_name") not in ("spawn_agent", "Agent"):
+    if not isinstance(payload, dict) or not _is_spawn(payload.get("tool_name")):
         return None
     args = payload.get("tool_input")
     if not isinstance(args, dict) or not profiles:
