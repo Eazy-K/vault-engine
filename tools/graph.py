@@ -1539,6 +1539,16 @@ def cmd_stats(args) -> None:
         what = f"over {limit} inline calls" if limit is not None else "over the threshold"
         print(f"orchestrator prompts: {len(prompts)} measured, {over} {what} "
               f"({over / len(prompts):.0%}), median inline calls {statistics.median(calls):g}")
+        for agent in sorted({str(e.get("agent") or "unknown") for e in prompts}):
+            mine = [e for e in prompts if str(e.get("agent") or "unknown") == agent]
+            mine_over = sum(1 for e in mine if e.get("warned"))
+            mine_calls = sorted(int(e.get("inline_calls") or 0) for e in mine)
+            mine_limit = mine[-1].get("threshold")
+            mine_what = (f"over {mine_limit} inline calls" if mine_limit is not None
+                         else "over the threshold")
+            print(f"  {agent}: {len(mine)} measured, {mine_over} {mine_what} "
+                  f"({mine_over / len(mine):.0%}), median inline calls "
+                  f"{statistics.median(mine_calls):g}")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.

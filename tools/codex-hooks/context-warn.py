@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Warn when this vault's Codex request context exceeds 150K tokens."""
+"""Add an orchestration reminder and warn at high context usage.
+
+Current UserPromptSubmit payloads do not include agent_id, so the optional
+agent_id guard is best-effort only; this hook cannot reliably exclude
+subagent prompts with the current Codex hook schema.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,26 @@ import tempfile
 THRESHOLD = 150_000
 MAX_THRESHOLD_OVERRIDE = 1_000_000
 GROWTH_STEP = 10_000
+ORCHESTRATION_REMINDER = (
+    "Orchestration: for multi-step work present a short plan and wait for explicit "
+    "approval (ambiguous scope: ask one question); after approval delegate to "
+    "worker-low/worker-medium; stay within the approved scope."
+)
+
+
+def _emit(warning: str | None = None) -> None:
+    lines = [ORCHESTRATION_REMINDER]
+    if warning:
+        lines.append(warning)
+    output = {"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "\n".join(lines),
+    }}
+    if warning:
+        output["systemMessage"] = warning
+    # Codex hooks communicate as JSON; escaping non-ASCII keeps the line
+    # writable even when Windows gives a subprocess a legacy console encoding.
+    print(json.dumps(output))
 
 
 def _threshold() -> int:
@@ -97,13 +122,16 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except (OSError, ValueError):
         return
-    if not isinstance(payload, dict):
+    # Codex UserPromptSubmit/PostToolUse payloads currently carry no agent_id; subagent calls may count toward the parent turn.
+    if not isinstance(payload, dict) or payload.get("agent_id"):
         return
     rollout = _rollout_path(payload)
     if rollout is None:
+        _emit()
         return
     context = _latest_context(rollout)
     if context is None:
+        _emit()
         return
     tokens, window = context
     state = _state_path(payload, rollout)
@@ -113,21 +141,17 @@ def main() -> None:
             state.unlink(missing_ok=True)
         except OSError:
             pass
+        _emit()
         return
     last_warned = _last_warning(state)
     if tokens - last_warned < GROWTH_STEP:
+        _emit()
         return
     detail = f"{tokens:,} token"
     if window:
         detail += f" / {window:,} ({tokens / window:.0%})"
     message = f"[context-warn] Codex bağlamı yaklaşık {detail}. Uygun iş sınırında /compact veya yeni oturum düşün."
-    print(json.dumps({
-        "systemMessage": message,
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": message,
-        },
-    }, ensure_ascii=False))
+    _emit(message)
     try:
         state.write_text(json.dumps({"last_warned": tokens}), encoding="utf-8")
     except OSError:
