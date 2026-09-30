@@ -14,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_token_stats import assistant_line, token_stats  # noqa: E402
 from test_token_stats_codex import (  # noqa: E402
-    make_rollout, session_meta_line, token_count_line, turn_context_line)
+    make_rollout, session_meta_line, token_count_line,
+    token_usage_record_line, turn_context_line)
 
 SID = "11111111-aaaa-bbbb-cccc-000000000001"
 CODEX_SID = "22222222-aaaa-bbbb-cccc-000000000002"
@@ -52,6 +53,34 @@ class Base(unittest.TestCase):
             token_count_line({"input_tokens": 100, "cached_input_tokens": 40,
                                "output_tokens": 20, "reasoning_output_tokens": 5,
                                "total_tokens": 120}),
+        ])
+
+    def write_codex_child(self, sid, parent_sid):
+        usage = {"input_tokens": 80, "cached_input_tokens": 10,
+                 "cache_write_input_tokens": 0, "output_tokens": 20,
+                 "reasoning_output_tokens": 5, "total_tokens": 105}
+        return make_rollout(self.codex, 2026, 9, 27,
+                            f"rollout-2026-09-27T14-13-50-{sid}.jsonl", [
+            session_meta_line(sid, "2026-09-27T14:13:50.597Z",
+                              parent_thread_id=parent_sid, agent_role="worker"),
+            turn_context_line("gpt-6-sol", "medium", turn_id="child-turn"),
+            token_usage_record_line("child-response", usage,
+                                    turn_id="child-turn", thread_id=sid),
+            token_count_line(usage),
+        ])
+
+    def write_linked_codex_parent(self, sid=CODEX_SID):
+        usage = {"input_tokens": 100, "cached_input_tokens": 20,
+                 "cache_write_input_tokens": 0, "output_tokens": 30,
+                 "reasoning_output_tokens": 5, "total_tokens": 130}
+        return make_rollout(self.codex, 2026, 9, 27,
+                            f"rollout-2026-09-27T14-12-50-{sid}.jsonl", [
+            session_meta_line(sid, "2026-09-27T14:12:50.597Z",
+                              parent_thread_id=None),
+            turn_context_line("gpt-6-luna", "medium", turn_id="parent-turn"),
+            token_usage_record_line("parent-response", usage,
+                                    turn_id="parent-turn", thread_id=sid),
+            token_count_line(usage),
         ])
 
     def session(self, spec, env=None, as_json=False):
@@ -116,7 +145,80 @@ class TestSession(Base):
         self.assertEqual(data["kind"], "codex")
         self.assertEqual(data["models"][0]["total"], 120)
         self.assertEqual(data["models"][0]["cached_input"], 40)
-        self.assertIn("gpt-6-luna", self.session(CODEX_SID))
+        self.assertEqual(data["model_attribution"], "single_model_session")
+        self.assertIsNone(data["calls"])
+        self.assertIsNone(data["models"][0]["calls"])
+        self.assertIsNone(data["models"][0]["calls_pct"])
+        self.assertEqual(data["agent_breakdown"]["status"], "unknown")
+        text = self.session(CODEX_SID)
+        self.assertEqual(text, token_stats.format_session_text(data))
+        self.assertIn("gpt-6-luna", text)
+
+    def test_codex_session_aggregates_verified_parent_and_child(self):
+        self.write_linked_codex_parent()
+        self.write_codex_child("child-session", CODEX_SID)
+
+        data = json.loads(self.session(CODEX_SID, as_json=True))
+        self.assertEqual(data["agent_breakdown"]["status"], "verified")
+        self.assertEqual(data["totals"]["total"], 235)
+        self.assertEqual(data["totals"]["input"], 180)
+        self.assertEqual(data["totals"]["cached_input"], 30)
+        models = {row["model"]: row for row in data["models"]}
+        self.assertEqual(set(models), {"gpt-6-luna", "gpt-6-sol"})
+        self.assertEqual(models["gpt-6-luna"]["total"], 130)
+        self.assertEqual(models["gpt-6-sol"]["total"], 105)
+        self.assertEqual(models["gpt-6-luna"]["calls"], 1)
+        self.assertEqual(models["gpt-6-sol"]["calls"], 1)
+        self.assertAlmostEqual(sum(row["total_pct"] for row in models.values()), 100.0)
+        expected_cost = (
+            token_stats.estimate_codex_cost_usd(
+                {"input_tokens": 100, "cached_input_tokens": 20,
+                 "output_tokens": 30, "total_tokens": 130}, "gpt-6-luna")
+            + token_stats.estimate_codex_cost_usd(
+                {"input_tokens": 80, "cached_input_tokens": 10,
+                 "output_tokens": 20, "total_tokens": 105}, "gpt-6-sol"))
+        self.assertAlmostEqual(data["est_total_usd"], round(expected_cost, 4))
+        self.assertAlmostEqual(sum(row["est_usd"] for row in models.values()),
+                               data["est_total_usd"])
+        self.assertEqual(models["gpt-6-luna"]["main_tokens"], 130)
+        self.assertEqual(models["gpt-6-sol"]["subagent_tokens"], 105)
+        self.assertEqual(data["main"]["total_tokens"], 130)
+        self.assertEqual(data["subagents_total"]["total_tokens"], 105)
+        self.assertEqual(data["subagents_total"]["runs"], 1)
+        self.assertEqual(len(data["subagents"]), 1)
+        child = data["subagents"][0]
+        self.assertEqual(child["session_id"], "child-session")
+        self.assertEqual(child["agent_role"], "worker")
+        self.assertEqual(child["calls"], 1)
+        self.assertEqual(child["total_tokens"], 105)
+        self.assertAlmostEqual(data["main"]["tokens_pct"] +
+                               data["subagents_total"]["tokens_pct"], 100.0)
+
+        text = self.session(CODEX_SID)
+        self.assertEqual(text, token_stats.format_session_text(data))
+        self.assertIn("gpt-6-luna", text)
+        self.assertIn("gpt-6-sol", text)
+        self.assertIn("child-session", text)
+        self.assertIn("105", text)
+
+    def test_codex_unlinked_and_unattributed_usage_stays_unknown(self):
+        make_rollout(self.codex, 2026, 9, 27, f"rollout-mixed-{CODEX_SID}.jsonl", [
+            session_meta_line(CODEX_SID, "2026-09-27T14:12:50.597Z"),
+            turn_context_line("gpt-6-luna", "medium", turn_id="turn-a"),
+            turn_context_line("gpt-6-sol", "high", turn_id="turn-b"),
+            token_count_line({"input_tokens": 100, "cached_input_tokens": 20,
+                               "cache_write_input_tokens": 0, "output_tokens": 30,
+                               "reasoning_output_tokens": 5, "total_tokens": 130}),
+        ])
+
+        data = json.loads(self.session(CODEX_SID, as_json=True))
+        self.assertEqual(data["model_attribution"], "partial_or_unknown")
+        self.assertEqual(data["agent_breakdown"]["status"], "unknown")
+        self.assertEqual(data["models"][0]["model"], "unknown")
+        self.assertIsNone(data["models"][0]["calls"])
+        self.assertIsNone(data["models"][0]["calls_pct"])
+        text = self.session(CODEX_SID)
+        self.assertIn("unknown", text.lower())
 
     def test_current_via_claude_env(self):
         self.write_session()

@@ -46,6 +46,8 @@ delegasyon hook'larını ekler, eksik worker dosyalarını kurar. `doctor` ve `c
 edilen model kullanıcıya özel olduğundan motor onun değişip değişmediğini belirlemez.
 Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
 
+`python tools/graph.py stats --tokens`, model bazında çağrı, token ve tahmini maliyet paylarını gösterir. Codex için `stats --tokens --session <id|current>` ana oturum ile alt ajan kullanımını ayırır ve her alt ajan için ayrı satır verir. JSON çıktısı da çağrı, token ve maliyet paylarını ve ana oturum/alt ajan dökümünü içerir. Tahmini USD, standart OpenAI API liste fiyatlarına göre hesaplanır; Codex veya ChatGPT abonelik ücreti değildir. Model ya da ajan ilişkilendirmesi belirsizse rapor bunu kısmi/bilinmiyor olarak işaretler ve ilgili alanlara tahmin yerine `null` yazar.
+
 Öğrenilen bağlantılar kendiliğinden zayıflar (decay): `reinforce`, bu bilgisayardaki son
 zayıflatmadan bu yana 7 günden fazla geçtiğini görürse öğrenilen bağlantıları önce %5
 zayıflatır ve tek satır `auto-decay:` yazar; değişiklik aynı öğrenilen-bağlantılar
