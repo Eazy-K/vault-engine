@@ -1502,6 +1502,15 @@ def cmd_stats(args) -> None:
                         else claude_config_dir() / "projects")
         codex_dir = Path(args.codex_dir).expanduser()
         since = date.fromisoformat(args.since) if args.since else None
+        if args.session:
+            if since:
+                print("note: --since is ignored with --session", file=sys.stderr)
+            try:
+                print(token_stats.run_session(projects_dir, codex_dir, args.session,
+                                               as_json=args.json))
+            except token_stats.SessionNotFound as exc:
+                sys.exit(f"error: {exc}")
+            return
         print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json,
                                codex_dir=codex_dir))
         return
@@ -1714,6 +1723,10 @@ def main() -> None:
                    help="Codex rollout sessions root, experimental (default: ~/.codex/sessions)")
     p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
     p.add_argument("--top", type=int, default=5, help="how many top sessions to list")
+    p.add_argument("--session", metavar="ID|current",
+                   help="with --tokens: report one Claude/Codex session ('current' = from "
+                        "CLAUDE_CODE_SESSION_ID / CODEX_SESSION_ID, else the newest transcript "
+                        "of this directory); --since is ignored")
     p.add_argument("--json", action="store_true", help="machine-readable output")
 
     p = sub.add_parser("tasks", help="list inbox tasks")
