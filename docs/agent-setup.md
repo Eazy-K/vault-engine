@@ -431,7 +431,8 @@ after step 2.
    compare the Codex/Claude user-level config with the vault's `config/` templates and,
    after the user agrees, `user-config --install`. It backs up every file it changes and
    never removes the user's own entries; a second run changes nothing. `doctor` and
-   `context` warn when it is needed. Supported files under `<data>/config/` (each is
+   `context` warn when it is needed. The full sequence is in README.md, "Updating another
+   computer". Supported files under `<data>/config/` (each is
    optional; the engine ships a default only for `codex/developer-instructions.md`):
 
    ```text
