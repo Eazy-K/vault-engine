@@ -893,9 +893,8 @@ class TestDoctor(unittest.TestCase):
         return buf.getvalue()
 
     def test_codex_version_change_prints_retest_info(self):
-        out_ok = types.SimpleNamespace(returncode=0, stdout="codex-cli 9.9.9\n", stderr="")
         (self.data / ".graph").mkdir(exist_ok=True)
-        with mock.patch("codex_hooks.subprocess.run", return_value=out_ok):
+        with mock.patch("codex_hooks.codex_version", return_value="codex-cli 9.9.9"):
             self.assertIn("run codex-hooks --probe-deny", self._doctor_out())
             codex_hooks.record_tested_version("codex-cli 9.9.9", self.data)
             self.assertNotIn("--probe-deny", self._doctor_out())
