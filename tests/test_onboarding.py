@@ -49,6 +49,7 @@ _spec.loader.exec_module(graph)
 sys.path.insert(0, str(TOOLS_DIR))
 import onboarding  # noqa: E402  (path must be set up first)
 import codex_hooks  # noqa: E402
+import schema  # noqa: E402  (doctor's .gitignore check goes through it)
 
 
 def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -930,6 +931,36 @@ class TestDoctor(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 onboarding.cmd_doctor(Namespace())
         self.assertIn("set for the user but not in this process", buf.getvalue())
+
+    def _doctor_out(self) -> str:
+        with mock.patch.dict(os.environ, self._env(), clear=True),              mock.patch("pathlib.Path.home", return_value=self.home),              mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")),              redirect_stdout(StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                onboarding.cmd_doctor(Namespace())
+        return buf.getvalue()
+
+    def test_warns_when_gitignore_lacks_template_lines(self):
+        (self.data / ".gitignore").write_text("mine\n", encoding="utf-8")
+        out = self._doctor_out()
+        self.assertIn("WARN .gitignore lacks", out)
+        self.assertIn(".graph/last-decay", out)
+        self.assertIn('python "$VAULT_ENGINE/tools/graph.py" migrate', out)
+
+    def test_no_gitignore_warning_when_synced(self):
+        shutil.copyfile(graph.ENGINE / "templates" / ".gitignore", self.data / ".gitignore")
+        self.assertNotIn(".gitignore lacks", self._doctor_out())
+
+    def test_warns_about_files_tracked_though_ignored(self):
+        (self.data / "secret.log").write_text("x\n", encoding="utf-8")
+        git(["add", "-f", "secret.log"], self.data)
+        (self.data / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        out = self._doctor_out()
+        self.assertIn("tracked by git although ignored: secret.log", out)
+        self.assertIn("rm --cached", out)
+
+    def test_no_tracked_ignored_warning_when_clean(self):
+        (self.data / "note.md").write_text("x\n", encoding="utf-8")
+        git(["add", "note.md"], self.data)
+        self.assertNotIn("tracked by git although ignored", self._doctor_out())
 
     def test_user_env_var_is_none_off_windows(self):
         with mock.patch("onboarding._is_windows", return_value=False):
