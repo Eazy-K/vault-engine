@@ -87,15 +87,24 @@ class TestParseCodexRollout(unittest.TestCase):
     def test_cached_input_is_removed_from_regular_input_price(self):
         usage = {"input_tokens": 100, "cached_input_tokens": 20,
                  "cache_write_input_tokens": 10, "output_tokens": 5}
-        # (100 - 20) * $0.10 + 20 * $0.01 + 10 * $0.125 + 5 * $0.50
+        # (100 - 20 - 10) * $0.10 + 20 * $0.01 + 10 * $0.125 + 5 * $0.50
         self.assertAlmostEqual(
             token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
-            11.95 / 1_000_000)
+            10.95 / 1_000_000)
 
     def test_cached_input_above_input_does_not_create_negative_regular_cost(self):
         usage = {"input_tokens": 10, "cached_input_tokens": 20,
                  "cache_write_input_tokens": 0, "output_tokens": 0}
         expected = 20 * token_stats.CODEX_STANDARD_RATES["gpt-6-luna"][1]
+        self.assertAlmostEqual(
+            token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
+            expected / 1_000_000)
+
+    def test_cached_and_cache_write_input_above_input_clamps_regular_input(self):
+        usage = {"input_tokens": 10, "cached_input_tokens": 3,
+                 "cache_write_input_tokens": 9, "output_tokens": 0}
+        _, cached_price, write_price, _ = token_stats.CODEX_STANDARD_RATES["gpt-6-luna"]
+        expected = 3 * cached_price + 9 * write_price
         self.assertAlmostEqual(
             token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
             expected / 1_000_000)
