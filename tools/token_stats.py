@@ -79,6 +79,19 @@ def estimate_cost_usd(input_tokens: int, cache_creation: int, cache_read: int,
             + output_tokens * out_price) / 1_000_000
 
 
+def pct(part: float, total: float) -> float | None:
+    """Share of ``part`` in ``total`` as a percentage (0-100), or None when the
+    total is zero (so callers never divide by zero)."""
+    if not total:
+        return None
+    return round(part * 100.0 / total, 1)
+
+
+def fmt_pct(value: float | None) -> str:
+    """Formats a pct() value for text output; ``-`` when there is no share."""
+    return "-" if value is None else f"{value:.1f}%"
+
+
 def _parse_timestamp(raw: str | None) -> datetime | None:
     if not raw:
         return None
@@ -385,7 +398,10 @@ def build_codex_report(sessions: list[CodexSession]) -> dict | None:
         totals["reasoning_output"] += reasoning_t
         totals["total"] += total_t
 
-    model_rows = [{"model": m, **row} for m, row in sorted(by_model.items())]
+    model_rows = [{"model": m, **row,
+                   "sessions_pct": pct(row["sessions"], len(sessions)),
+                   "total_pct": pct(row["total"], totals["total"])}
+                  for m, row in sorted(by_model.items())]
 
     rate_limits = None
     dated_with_rl = [s for s in sessions if s.start is not None and s.rate_limits]
@@ -418,11 +434,13 @@ def format_codex_section(codex: dict | None, codex_dir: Path) -> list[str]:
     lines.append(f"  {codex['sessions']} sessions, {t['total']:,} tokens total "
                  f"(input {t['input']:,}, cached input {t['cached_input']:,}, "
                  f"output {t['output']:,}, reasoning {t['reasoning_output']:,})")
-    lines.append("  By model (sessions, input, cached input, output, reasoning, total):")
+    lines.append("  By model (sessions, input, cached input, output, reasoning, total, "
+                 "session %, token %):")
     for row in codex["by_model"]:
         lines.append(f"    {row['model']:<20} {row['sessions']:>6}  {row['input']:>12,}  "
                       f"{row['cached_input']:>12,}  {row['output']:>10,}  "
-                      f"{row['reasoning_output']:>10,}  {row['total']:>14,}")
+                      f"{row['reasoning_output']:>10,}  {row['total']:>14,}  "
+                      f"{fmt_pct(row['sessions_pct']):>6}  {fmt_pct(row['total_pct']):>6}")
     rl = codex["rate_limits"]
     if rl:
         p, s = rl["primary"], rl["secondary"]
@@ -446,6 +464,28 @@ def percentile(values: list[int | float], pct: float) -> float:
     return s[lo] * (hi - k) + s[hi] * (k - lo)
 
 
+def _model_rows(by_model: dict[str, dict[str, int]]) -> list[dict]:
+    """Per-model rows (with total, est. USD and call/token/cost shares) from
+    per-model counters. Rows carry a private ``_cost`` (unrounded) that the
+    caller drops after summing."""
+    rows = []
+    for model, row in sorted(by_model.items()):
+        cost = estimate_cost_usd(row["input"], row["cache_creation"], row["cache_read"],
+                                  row["output"], model)
+        rows.append({**row, "model": model,
+                     "total": row["input"] + row["cache_creation"]
+                     + row["cache_read"] + row["output"],
+                     "est_usd": round(cost, 2), "_cost": cost})
+    all_calls = sum(r["calls"] for r in rows)
+    all_tokens = sum(r["total"] for r in rows)
+    all_cost = sum(r["_cost"] for r in rows)
+    for r in rows:
+        r["calls_pct"] = pct(r["calls"], all_calls)
+        r["total_pct"] = pct(r["total"], all_tokens)
+        r["cost_pct"] = pct(r["_cost"], all_cost)
+    return rows
+
+
 def build_report(sessions: list[Session], top: int = 5) -> dict:
     """Aggregates a list of Sessions into a plain-data report (used for both
     the text and --json output)."""
@@ -456,23 +496,19 @@ def build_report(sessions: list[Session], top: int = 5) -> dict:
     for s in sessions:
         for c in s.calls:
             model = c.model or "unknown"
-            row = by_model.setdefault(model, {"calls": 0, "input": 0, "cache_creation": 0,
+            row = by_model.setdefault(model, {"calls": 0, "main_calls": 0, "sub_calls": 0,
+                                               "input": 0, "cache_creation": 0,
                                                "cache_read": 0, "output": 0})
             row["calls"] += 1
+            row["main_calls" if s.kind == "main" else "sub_calls"] += 1
             row["input"] += c.input
             row["cache_creation"] += c.cache_creation
             row["cache_read"] += c.cache_read
             row["output"] += c.output
-    model_rows = []
-    total_cost = 0.0
-    for model, row in sorted(by_model.items()):
-        cost = estimate_cost_usd(row["input"], row["cache_creation"], row["cache_read"],
-                                  row["output"], model)
-        total_cost += cost
-        model_rows.append({**row, "model": model,
-                            "total": row["input"] + row["cache_creation"]
-                            + row["cache_read"] + row["output"],
-                            "est_usd": round(cost, 2)})
+    model_rows = _model_rows(by_model)
+    total_cost = sum(r["_cost"] for r in model_rows)
+    for r in model_rows:
+        del r["_cost"]
 
     top_main = sorted(main_sessions, key=lambda s: -s.total_tokens)[:top]
 
@@ -524,11 +560,15 @@ def format_report_text(report: dict, projects_dir: Path, since: date | None) -> 
     if since:
         lines.append(f"  since {since.isoformat()}")
     lines.append("")
-    lines.append("By model (calls, input, cache-write, cache-read, output, total, est. USD*):")
+    lines.append("By model (calls, input, cache-write, cache-read, output, total, est. USD*, "
+                 "call %, token %, cost %, main/sub calls):")
     for row in report["by_model"]:
         lines.append(f"  {row['model']:<24} {row['calls']:>6}  {row['input']:>12,}  "
                       f"{row['cache_creation']:>12,}  {row['cache_read']:>12,}  "
-                      f"{row['output']:>10,}  {row['total']:>14,}  ${row['est_usd']:,.2f}")
+                      f"{row['output']:>10,}  {row['total']:>14,}  ${row['est_usd']:,.2f}  "
+                      f"{fmt_pct(row['calls_pct']):>6}  {fmt_pct(row['total_pct']):>6}  "
+                      f"{fmt_pct(row['cost_pct']):>6}  "
+                      f"main {row['main_calls']:,} / sub {row['sub_calls']:,}")
     lines.append(f"  est. total*: ${report['est_total_usd']:,.2f}")
     lines.append("")
 
