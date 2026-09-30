@@ -24,11 +24,15 @@ import os
 import re
 import shutil
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import graph as g
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10: no TOML parser, so config.toml is left alone
+    tomllib = None
 
 BEGIN = "# vault-engine:begin"
 END = "# vault-engine:end"
@@ -235,6 +239,9 @@ def plan_instructions(paths: g.Paths, home: Path) -> Item | None:
     source = _read_source(paths, INSTRUCTIONS_SRC)
     if source is None:
         return None
+    if tomllib is None:
+        return Item("codex developer_instructions", home / "config.toml", "error",
+                    "needs Python 3.11+ (tomllib) to edit config.toml safely")
     return _plan_text("codex developer_instructions", home / "config.toml",
                       lambda text: merge_instructions(text, source))
 
