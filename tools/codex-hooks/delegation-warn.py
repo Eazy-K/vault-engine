@@ -21,11 +21,6 @@ from datetime import datetime
 
 THRESHOLD = 4
 MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch"}
-MESSAGE = (
-    "[delegation-warn] Bu kullanıcı turunda 4 veya daha fazla Bash/Read/Edit/Write "
-    "aracı çağrısı yapıldı. Kalan çok adımlı veya uzun işi uygun bir worker-* alt "
-    "ajanına devretmeyi değerlendir."
-)
 MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
 REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
 REPEAT_EVERY = 2
@@ -131,9 +126,7 @@ def main() -> None:
     if not isinstance(payload, dict):
         return
 
-    # Some payload variants may carry agent_id. Current PostToolUse payloads
-    # do not, so this is only a best-effort compatibility guard: subagent tool
-    # calls may share the parent counter and be included in its stats.
+    # Codex UserPromptSubmit/PostToolUse payloads currently carry no agent_id; subagent calls may count toward the parent turn.
     if payload.get("agent_id"):
         return
     if payload.get("tool_name") not in MATCHED_TOOLS:

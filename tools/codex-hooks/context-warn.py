@@ -122,6 +122,7 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except (OSError, ValueError):
         return
+    # Codex UserPromptSubmit/PostToolUse payloads currently carry no agent_id; subagent calls may count toward the parent turn.
     if not isinstance(payload, dict) or payload.get("agent_id"):
         return
     rollout = _rollout_path(payload)
