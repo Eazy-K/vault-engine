@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remind the root Codex agent to delegate after four matching tool calls."""
+"""Remind the root Codex agent to delegate after repeated inline tool calls."""
 
 from __future__ import annotations
 

@@ -59,7 +59,7 @@ class TestCodexDelegationWarn(unittest.TestCase):
         for _ in range(5):
             self.assertEqual(self._run(agent_id="worker").stdout.strip(), "")
             self.assertEqual(self._run(tool_name="Other").stdout.strip(), "")
-        self.assertFalse((self.env and self.data / ".graph" / "usage.log").exists())
+        self.assertFalse((self.data / ".graph" / "usage.log").exists())
 
 
 if __name__ == "__main__":

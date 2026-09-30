@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Warn when this vault's Codex request context exceeds 150K tokens."""
+"""Add a main-session orchestration reminder and warn at high context usage."""
 
 from __future__ import annotations
 
