@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 from typing import Iterator
+from datetime import datetime
 
 THRESHOLD = 4
 MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch"}
@@ -19,17 +20,16 @@ MESSAGE = (
     "aracı çağrısı yapıldı. Kalan çok adımlı veya uzun işi uygun bir worker-* alt "
     "ajanına devretmeyi değerlendir."
 )
+MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
+REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
+REPEAT_EVERY = 2
 
 
 def _state_path(payload: dict) -> Path | None:
     session_id = payload.get("session_id")
-    turn_id = payload.get("turn_id")
     if not isinstance(session_id, str) or not session_id:
         return None
-    if not isinstance(turn_id, str) or not turn_id:
-        return None
-    key = f"{session_id}\0{turn_id}"
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
     base = Path(os.environ.get("CODEX_DELEGATION_WARN_STATE_DIR") or tempfile.gettempdir())
     return base / f"codex-delegation-warn-{digest}.json"
 
@@ -68,15 +68,37 @@ def _load_state(path: Path) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
-        return {"count": 0, "warned": False}
+        return {"turn_id": None, "count": 0, "warned": False}
     if not isinstance(value, dict):
-        return {"count": 0, "warned": False}
+        return {"turn_id": None, "count": 0, "warned": False}
     count = value.get("count")
     warned = value.get("warned")
     return {
+        "turn_id": value.get("turn_id"),
         "count": count if type(count) is int and count >= 0 else 0,
         "warned": warned if type(warned) is bool else False,
     }
+
+
+def _log_prompt(session_id: str, state: dict) -> None:
+    """Append a completed Codex turn to the local usage log, if configured."""
+    try:
+        raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+        if not raw:
+            return
+        data_dir = Path(raw).expanduser()
+        if not data_dir.is_dir():
+            return
+        graph_dir = data_dir / ".graph"
+        graph_dir.mkdir(exist_ok=True)
+        event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "codex",
+                 "session": session_id, "event": "orchestrator_prompt",
+                 "inline_calls": int(state.get("count") or 0),
+                 "warned": bool(state.get("warned")), "threshold": THRESHOLD}
+        with (graph_dir / "usage.log").open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def _save_state(path: Path, state: dict) -> None:
@@ -109,12 +131,21 @@ def main() -> None:
     path = _state_path(payload)
     if path is None:
         return
+    turn_id = payload.get("turn_id")
+    if not isinstance(turn_id, str) or not turn_id:
+        return
+    session_id = payload["session_id"]
     try:
         with _locked(path):
             state = _load_state(path)
+            if state.get("turn_id") != turn_id:
+                if state.get("turn_id") is not None:
+                    _log_prompt(session_id, state)
+                state = {"turn_id": turn_id, "count": 0, "warned": False}
             state["count"] += 1
-            should_warn = state["count"] >= THRESHOLD and not state["warned"]
-            if should_warn:
+            should_warn = (state["count"] >= THRESHOLD and
+                           (state["count"] - THRESHOLD) % REPEAT_EVERY == 0)
+            if state["count"] >= THRESHOLD:
                 state["warned"] = True
             _save_state(path, state)
     except OSError:
@@ -122,11 +153,12 @@ def main() -> None:
         return
 
     if should_warn:
+        message = MESSAGE if state["count"] == THRESHOLD else REPEAT_MESSAGE
         print(json.dumps({
-            "systemMessage": MESSAGE,
+            "systemMessage": message,
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
-                "additionalContext": MESSAGE,
+                "additionalContext": message,
             },
         }, ensure_ascii=False))
 

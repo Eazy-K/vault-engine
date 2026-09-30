@@ -118,6 +118,15 @@ class TestRetrievalHeader(_Ctx):
         self.assertIn("orchestrator prompts: 4 measured, 2 over 3 inline calls (50%), "
                       "median inline calls 3.5", self.stats())
 
+    def test_orchestrator_prompts_are_split_by_agent(self):
+        graph.log_usage(self.paths, {"event": "orchestrator_prompt", "agent": "claude",
+                                     "inline_calls": 2, "warned": False, "threshold": 3})
+        graph.log_usage(self.paths, {"event": "orchestrator_prompt", "agent": "codex",
+                                     "inline_calls": 6, "warned": True, "threshold": 4})
+        out = self.stats()
+        self.assertIn("  claude: 1 measured, 0 over 3 inline calls", out)
+        self.assertIn("  codex: 1 measured, 1 over 4 inline calls", out)
+
     def test_no_orchestrator_section_without_events(self):
         graph.log_usage(self.paths, {"event": "context", "task": "old", "notes": []})
         self.assertNotIn("orchestrator prompts", self.stats())

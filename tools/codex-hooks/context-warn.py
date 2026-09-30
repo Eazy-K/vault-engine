@@ -13,6 +13,24 @@ import tempfile
 THRESHOLD = 150_000
 MAX_THRESHOLD_OVERRIDE = 1_000_000
 GROWTH_STEP = 10_000
+ORCHESTRATION_REMINDER = (
+    "Orchestration: for multi-step work present a short plan and wait for explicit "
+    "approval (ambiguous scope: ask one question); after approval delegate to "
+    "worker-low/worker-medium; stay within the approved scope."
+)
+
+
+def _emit(warning: str | None = None) -> None:
+    lines = [ORCHESTRATION_REMINDER]
+    if warning:
+        lines.append(warning)
+    output = {"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "\n".join(lines),
+    }}
+    if warning:
+        output["systemMessage"] = warning
+    print(json.dumps(output, ensure_ascii=False))
 
 
 def _threshold() -> int:
@@ -97,13 +115,15 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except (OSError, ValueError):
         return
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or payload.get("agent_id"):
         return
     rollout = _rollout_path(payload)
     if rollout is None:
+        _emit()
         return
     context = _latest_context(rollout)
     if context is None:
+        _emit()
         return
     tokens, window = context
     state = _state_path(payload, rollout)
@@ -113,21 +133,17 @@ def main() -> None:
             state.unlink(missing_ok=True)
         except OSError:
             pass
+        _emit()
         return
     last_warned = _last_warning(state)
     if tokens - last_warned < GROWTH_STEP:
+        _emit()
         return
     detail = f"{tokens:,} token"
     if window:
         detail += f" / {window:,} ({tokens / window:.0%})"
     message = f"[context-warn] Codex bağlamı yaklaşık {detail}. Uygun iş sınırında /compact veya yeni oturum düşün."
-    print(json.dumps({
-        "systemMessage": message,
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": message,
-        },
-    }, ensure_ascii=False))
+    _emit(message)
     try:
         state.write_text(json.dumps({"last_warned": tokens}), encoding="utf-8")
     except OSError:
