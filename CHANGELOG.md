@@ -24,7 +24,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - User-level setup honors `CODEX_HOME`, falling back to `~/.codex` when it is unset. (#59)
 - `migrate` adds missing `.gitignore` template lines to an existing vault in a separate commit; `doctor` warns about missing lines and tracked files ignored by `.gitignore`. (#65)
 - Codex cost estimates clamp regular input to zero when cached input exceeds reported input. (#69)
-- Regular input is `max(0, input - cached - cache_write)`: OpenAI documents that input usage includes cache-write tokens and that regular input excludes cached and cache-write tokens ([prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching), [Usage API reference](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/web_search_calls)). (release PR)
+- Regular input is `max(0, input - cached - cache_write)`: OpenAI documents that input usage includes cache-write tokens and that regular input excludes cached and cache-write tokens ([prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching), [Usage API reference](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/web_search_calls)). (#70)
 
 ### Upgrade notes
 - If `doctor` reports tracked files that `.gitignore` excludes (for example, `.graph/last-decay` or `.graph/machine.json`), untrack each once with `git rm --cached <file>` and commit. `migrate` does not untrack them because that would delete the files on other computers. (#64)
