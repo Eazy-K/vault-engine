@@ -15,7 +15,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields.
 
 ### Fixed
-- PR #67 Codex cost estimates no longer price cached input tokens at both the regular input rate and the cached input rate. When a model has no listed price, the report now shows the priced-model subtotal and labels the estimate partial; the unpriced model remains without a cost.
+- PR #67 Codex cost estimates now clamp regular input tokens at zero when cached input exceeds input, while retaining the unverified assumption that cache-write tokens are not included in input; partial cost shares use only priced models.
 
 ## [0.8.0] - 2026-09-28
 

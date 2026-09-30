@@ -101,9 +101,12 @@ def estimate_codex_cost_usd(usage: dict, model: str | None) -> float | None:
     input_price, cached_price, write_price, output_price = rates
     input_tokens = int(usage.get("input_tokens") or 0)
     cached_input_tokens = int(usage.get("cached_input_tokens") or 0)
-    return ((input_tokens - cached_input_tokens) * input_price
+    # Assumption: cache writes are not included in input_tokens; unverified.
+    cache_write_input_tokens = int(usage.get("cache_write_input_tokens") or 0)
+    regular_input_tokens = max(0, input_tokens - cached_input_tokens)
+    return (regular_input_tokens * input_price
             + cached_input_tokens * cached_price
-            + int(usage.get("cache_write_input_tokens") or 0) * write_price
+            + cache_write_input_tokens * write_price
             + int(usage.get("output_tokens") or 0) * output_price) / 1_000_000
 
 
