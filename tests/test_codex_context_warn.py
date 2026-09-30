@@ -51,6 +51,26 @@ class TestCodexContextWarn(unittest.TestCase):
         self.assertIn("[context-warn]", context)
         self.assertIn("[context-warn]", payload["systemMessage"])
 
+    def _meta(self, payload):
+        self._write_context(160000)
+        body = self.rollout.read_text(encoding="utf-8")
+        self.rollout.write_text(json.dumps({"type": "session_meta", "payload": payload})
+                                + "\n" + body, encoding="utf-8")
+
+    def test_subagent_rollout_is_silent(self):
+        for meta in ({"source": {"subagent": {"thread_spawn": {"parent_thread_id": "p"}}}},
+                     {"parent_thread_id": "p"}):
+            with self.subTest(meta=meta):
+                self._meta(meta)
+                out = self._run()
+                self.assertEqual(out.returncode, 0)
+                self.assertEqual(out.stdout.strip(), "")
+
+    def test_main_rollout_with_session_meta_still_warns(self):
+        self._meta({"source": "cli"})
+        out = self._run()
+        self.assertIn("[context-warn]", json.loads(out.stdout)["systemMessage"])
+
     def test_subagent_does_not_receive_orchestration_reminder(self):
         out = self._run({"session_id": "session-test", "agent_id": "worker-1"})
         self.assertEqual(out.stdout.strip(), "")

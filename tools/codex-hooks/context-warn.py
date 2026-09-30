@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Add an orchestration reminder and warn at high context usage.
 
-Current UserPromptSubmit payloads do not include agent_id, so the optional
-agent_id guard is best-effort only; this hook cannot reliably exclude
-subagent prompts with the current Codex hook schema.
+Current UserPromptSubmit payloads do not include agent_id, so subagent
+sessions are detected from the rollout's first record (session_meta with a
+subagent source or parent_thread_id) and skipped; whether Codex fires global
+hooks for subagents at all is unverified live.
 """
 
 from __future__ import annotations
@@ -52,6 +53,26 @@ def _threshold() -> int:
     if not 1 <= parsed <= MAX_THRESHOLD_OVERRIDE:
         return THRESHOLD
     return parsed
+
+
+def _is_subagent_rollout(raw: object) -> bool:
+    """True when the rollout's first record (session_meta) marks a spawned subagent.
+
+    Fails open: a missing or unreadable transcript is treated as the main session.
+    """
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        with open(raw, encoding="utf-8") as stream:
+            first = json.loads(stream.readline(1_048_576))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    meta = first.get("payload") if isinstance(first, dict) else None
+    if not isinstance(first, dict) or first.get("type") != "session_meta" or not isinstance(meta, dict):
+        return False
+    source = meta.get("source")
+    return bool(meta.get("parent_thread_id")
+                or (isinstance(source, dict) and source.get("subagent")))
 
 
 def _rollout_path(payload: dict) -> Path | None:
@@ -122,10 +143,12 @@ def main() -> None:
         payload = json.load(sys.stdin)
     except (OSError, ValueError):
         return
-    # Codex UserPromptSubmit/PostToolUse payloads currently carry no agent_id; subagent calls may count toward the parent turn.
+    # Codex payloads currently carry no agent_id; subagents are detected via the rollout session_meta.
     if not isinstance(payload, dict) or payload.get("agent_id"):
         return
     rollout = _rollout_path(payload)
+    if rollout is not None and _is_subagent_rollout(str(rollout)):
+        return
     if rollout is None:
         _emit()
         return

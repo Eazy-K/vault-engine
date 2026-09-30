@@ -31,11 +31,32 @@ EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 _SAFE_ARG = re.compile(r"[A-Za-z0-9_./:~+-]+")
 
 
+def _short_path(path: str) -> str:
+    """Return the Windows 8.3 short form of path, or path itself when unavailable."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        size = ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
+    except (AttributeError, ImportError, OSError):
+        return path
+    return buf.value if 0 < size < len(buf) else path
+
+
+def _windows_arg(arg: str, short: bool = False) -> str:
+    """Quote only when needed; a space-free (short) path stays bare.
+
+    Codex's Windows hook runner exits 1 when the command starts with a quoted
+    executable under Program Files (#73), so spaces are avoided via 8.3 names.
+    """
+    if short and " " in arg:
+        arg = _short_path(arg)
+    return subprocess.list2cmdline([arg])
+
+
 def _command(script: Path) -> str:
     executable, target = str(Path(sys.executable).resolve()), str(script.resolve())
     if sys.platform == "win32":
-        # Windows shells accept the CommandLineToArgvW quoting produced here.
-        return subprocess.list2cmdline([executable, target])
+        return f"{_windows_arg(executable, short=True)} {_windows_arg(target)}"
     return f"{shlex.quote(executable)} {shlex.quote(target)}"
 
 
@@ -66,6 +87,9 @@ def _upsert_hook(settings: dict, event: str, filename: str, matcher: str | None)
                 changed = handler.get("type") != "command" or handler.get("command") != command
                 handler["type"] = "command"
                 handler["command"] = command
+                if "commandWindows" in handler and handler["commandWindows"] != command:
+                    handler["commandWindows"] = command
+                    changed = True
                 if matcher is not None and entry.get("matcher") != matcher:
                     entry["matcher"] = matcher
                     changed = True
@@ -170,6 +194,7 @@ def hooks_status(hooks_path: Path | None = None) -> tuple[str, str]:
         entries = actual.get(event, []) if isinstance(actual, dict) else []
         found = any(filename in str(handler.get("command", ""))
                     and handler.get("command") == expected_command
+                    and handler.get("commandWindows", expected_command) == expected_command
                     and (expected[event][0].get("matcher") is None
                          or entry.get("matcher") == expected[event][0]["matcher"])
                     for entry in entries if isinstance(entry, dict)

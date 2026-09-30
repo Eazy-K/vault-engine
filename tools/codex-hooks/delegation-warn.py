@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Remind Codex to delegate after repeated inline tool calls.
 
-Current PostToolUse payloads do not include agent_id, so the optional guard
-cannot reliably exclude subagent calls. A completed turn is logged when the
+Current PostToolUse payloads do not include agent_id, so subagent calls are
+detected from the rollout's first record (session_meta with a subagent source
+or parent_thread_id) and skipped; whether Codex fires global hooks for
+subagents at all is unverified live. A completed turn is logged when the
 next turn's first matching tool call arrives; the final turn remains unlogged
 until that happens because this hook does not receive turn-stop events.
 """
@@ -24,6 +26,26 @@ MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch"}
 MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
 REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
 REPEAT_EVERY = 2
+
+
+def _is_subagent_rollout(raw: object) -> bool:
+    """True when the rollout's first record (session_meta) marks a spawned subagent.
+
+    Fails open: a missing or unreadable transcript is treated as the main session.
+    """
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        with open(raw, encoding="utf-8") as stream:
+            first = json.loads(stream.readline(1_048_576))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    meta = first.get("payload") if isinstance(first, dict) else None
+    if not isinstance(first, dict) or first.get("type") != "session_meta" or not isinstance(meta, dict):
+        return False
+    source = meta.get("source")
+    return bool(meta.get("parent_thread_id")
+                or (isinstance(source, dict) and source.get("subagent")))
 
 
 def _state_path(payload: dict) -> Path | None:
@@ -126,8 +148,8 @@ def main() -> None:
     if not isinstance(payload, dict):
         return
 
-    # Codex UserPromptSubmit/PostToolUse payloads currently carry no agent_id; subagent calls may count toward the parent turn.
-    if payload.get("agent_id"):
+    # Codex payloads currently carry no agent_id; subagents are detected via the rollout session_meta.
+    if payload.get("agent_id") or _is_subagent_rollout(payload.get("transcript_path")):
         return
     if payload.get("tool_name") not in MATCHED_TOOLS:
         return
@@ -164,7 +186,7 @@ def main() -> None:
                 "hookEventName": "PostToolUse",
                 "additionalContext": message,
             },
-        }, ensure_ascii=False))
+        }))
 
 
 if __name__ == "__main__":
