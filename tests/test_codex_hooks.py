@@ -69,7 +69,7 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(context_entries[0]["hooks"][0]["command"],
                          codex_hooks._command(codex_hooks.HOOKS_DIR / "context-warn.py"))
         self.assertEqual(delegation_entries[0]["matcher"],
-                         "^(Bash|Read|Edit|Write|apply_patch)$")
+                         codex_hooks.INLINE_MATCHER)
         self.assertEqual(delegation_entries[0]["hooks"][0]["command"],
                          codex_hooks._command(codex_hooks.HOOKS_DIR / "delegation-warn.py"))
 
