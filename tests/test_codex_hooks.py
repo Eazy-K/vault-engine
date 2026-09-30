@@ -45,7 +45,7 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(merged["hooks"]["PreToolUse"], original["hooks"]["PreToolUse"])
         self.assertIn("context-warn.py", merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"])
         post = merged["hooks"]["PostToolUse"][0]
-        self.assertEqual(post["matcher"], "^(Bash|Read|Edit|Write|apply_patch)$")
+        self.assertEqual(post["matcher"], codex_hooks.INLINE_MATCHER)
         self.assertIn("delegation-warn.py", post["hooks"][0]["command"])
 
     def test_merge_is_idempotent(self):
@@ -203,7 +203,7 @@ class TestStatus(unittest.TestCase):
     def test_agent_guard_registered_and_missing_guard_is_stale(self):
         merged, _ = codex_hooks.merge({})
         pre = merged["hooks"]["PreToolUse"][0]
-        self.assertEqual(pre["matcher"], "^(Agent|spawn_agent)$")
+        self.assertEqual(pre["matcher"], codex_hooks.SPAWN_MATCHER)
         self.assertIn("agent-guard.py", pre["hooks"][0]["command"])
         hooks = self.tmp / "hooks.json"
         codex_hooks.cmd_codex_hooks(Namespace(install=True, hooks=str(hooks),
@@ -313,8 +313,29 @@ class TestDenyProbe(unittest.TestCase):
         self.assertEqual(result, "not-enforced")
         self.assertIn("NOT enforced", out)
 
-    def test_hook_not_fired_is_inconclusive(self):
-        self.assertEqual(self._probe(fire=False)[0], "inconclusive")
+    def test_hook_not_fired_is_inconclusive_and_records_nothing(self):
+        result, out, _ = self._probe(fire=False)
+        self.assertEqual(result, "inconclusive")
+        self.assertIn("trust", out)
+        self.assertIn("nothing recorded", out)
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_not_enforced_records_version(self):
+        self._probe(write=True)
+        self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
+
+    def test_matchers_cover_real_codex_tool_names(self):
+        import re
+        spawn = re.compile(codex_hooks.SPAWN_MATCHER)
+        inline = re.compile(codex_hooks.INLINE_MATCHER)
+        for name in ("Agent", "spawn_agent", "collaboration.spawn_agent", "collaboration__spawn_agent"):
+            self.assertTrue(spawn.search(name), name)
+        for name in ("exec", "exec_command", "wait_agent", "followup_task", "spawn_agent_x"):
+            self.assertFalse(spawn.search(name), name)
+        for name in ("Bash", "apply_patch", "exec_command", "shell_command"):
+            self.assertTrue(inline.search(name), name)
+        self.assertFalse(inline.search("exec"))
+        self.assertIn("|exec)", codex_hooks.PROBE_MATCHER)
 
     def test_timeout_records_nothing(self):
         result, _out, _ = self._probe(timeout=True)

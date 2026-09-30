@@ -41,6 +41,21 @@ class TestCodexAgentGuard(unittest.TestCase):
                 self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
                 self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PreToolUse")
 
+    def test_real_codex_spawn_shape_and_namespaced_names(self):
+        # Shape of a real top-level spawn_agent call (collaboration namespace), anonymized.
+        real = {"task_name": "audit", "agent_type": "worker-low", "fork_turns": "none",
+                "message": "do the thing"}
+        self.assertIsNone(spawn("spawn_agent", real))
+        self.assertIsNone(spawn("collaboration.spawn_agent", real))
+        out = spawn("collaboration.spawn_agent", dict(real, agent_type="default"))
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_code_mode_exec_is_never_denied(self):
+        script = 'const r = await tools.exec_command({cmd:"git status"}); text(r.output);'
+        self.assertIsNone(invoke({"tool_name": "exec", "tool_input": script}))
+        self.assertIsNone(spawn("exec_command", {"cmd": "git status"}))
+        self.assertIsNone(spawn("wait_agent", {"agent_type": "default"}))
+
     def test_other_tools_and_malformed_input_fail_open(self):
         self.assertIsNone(spawn("Bash", {"agent_type": "default"}))
         for raw in ("", "not json", "[]", '{"tool_name": "spawn_agent", "tool_input": 3}'):
