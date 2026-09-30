@@ -189,5 +189,25 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(codex_hooks.workers_status(agents)[0], "WARN")
 
 
+class TestCodexHomeEnv(unittest.TestCase):
+    """Install and doctor checks follow CODEX_HOME, like user_config."""
+
+    def test_default_paths_follow_codex_home(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "ch"
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+                self.assertEqual(codex_hooks.hooks_status()[0], "WARN")
+                self.assertIn(str(home), codex_hooks.hooks_status()[1])
+                with redirect_stdout(io.StringIO()):
+                    codex_hooks.cmd_codex_hooks(Namespace(install=True, hooks=None, agents_dir=None))
+                self.assertTrue((home / "hooks.json").is_file())
+                self.assertTrue((home / "agents" / "worker-low.toml").is_file())
+                self.assertEqual(codex_hooks.hooks_status()[0], "OK")
+                self.assertEqual(codex_hooks.workers_status()[0], "OK")
+                self.assertEqual(codex_hooks.model_status()[0], "WARN")
+                self.assertIn(str(home), codex_hooks.model_status()[1])
+
+
 if __name__ == "__main__":
     unittest.main()

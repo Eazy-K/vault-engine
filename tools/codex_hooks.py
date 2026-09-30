@@ -1,7 +1,8 @@
 """Install Codex hooks and worker profiles into the user's Codex home.
 
-The adapter owns only the Codex-specific hooks.json and worker TOMLs. It never
-edits config.toml, and customized worker files are kept. Optional path arguments
+The adapter owns only the Codex-specific hooks.json and worker TOMLs. The Codex
+home is $CODEX_HOME (default ~/.codex), as in user_config. It never edits
+config.toml, and customized worker files are kept. Optional path arguments
 exist so tests can use temporary directories without touching a real Codex home.
 """
 from __future__ import annotations
@@ -17,11 +18,8 @@ import sys
 from pathlib import Path
 
 import graph as g
+from user_config import codex_home
 
-CODEX_HOME = Path.home() / ".codex"
-DEFAULT_HOOKS = CODEX_HOME / "hooks.json"
-DEFAULT_CONFIG = CODEX_HOME / "config.toml"
-DEFAULT_AGENTS = CODEX_HOME / "agents"
 HOOKS_DIR = g.ENGINE / "tools" / "codex-hooks"
 AGENTS_DIR = g.ENGINE / "tools" / "codex-agents"
 HOOKS = {
@@ -119,8 +117,8 @@ def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path]]:
 
 
 def cmd_codex_hooks(args: argparse.Namespace) -> None:
-    hooks_path = Path(args.hooks).expanduser() if args.hooks else DEFAULT_HOOKS
-    agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else DEFAULT_AGENTS
+    hooks_path = Path(args.hooks).expanduser() if args.hooks else codex_home() / "hooks.json"
+    agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else codex_home() / "agents"
     settings = _load_json(hooks_path)
     if settings is None:
         sys.exit(f"codex-hooks: refusing to replace invalid JSON in {hooks_path}")
@@ -161,7 +159,7 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
 
 
 def hooks_status(hooks_path: Path | None = None) -> tuple[str, str]:
-    hooks_path = hooks_path or (Path.home() / ".codex" / "hooks.json")
+    hooks_path = hooks_path or (codex_home() / "hooks.json")
     settings = _load_json(hooks_path)
     if settings is None:
         return "WARN", f"Codex hooks.json is not valid JSON ({hooks_path})"
@@ -204,7 +202,7 @@ def model_status(config_path: Path | None = None) -> tuple[str, str]:
     The engine has no authoritative per-user preferred Codex model, so this check
     cannot decide whether a valid model is current or the user's chosen one.
     """
-    config_path = config_path or (Path.home() / ".codex" / "config.toml")
+    config_path = config_path or (codex_home() / "config.toml")
     values = _root_toml_values(config_path)
     model, effort = values.get("model"), values.get("model_reasoning_effort")
     if not model or not effort or effort not in EFFORTS:
@@ -215,7 +213,7 @@ def model_status(config_path: Path | None = None) -> tuple[str, str]:
 
 
 def workers_status(agents_dir: Path | None = None) -> tuple[str, str]:
-    agents_dir = agents_dir or (Path.home() / ".codex" / "agents")
+    agents_dir = agents_dir or (codex_home() / "agents")
     expected = sorted(AGENTS_DIR.glob("worker-*.toml"))
     if not expected:
         return "OK", "no Codex worker profiles are shipped"
@@ -244,6 +242,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("codex-hooks", help="install Codex context/delegation hooks and worker profiles")
     parser.add_argument("--install", action="store_true",
                         help="write hooks.json and missing worker profiles (default: dry run)")
-    parser.add_argument("--hooks", help=f"hooks.json path (default: {DEFAULT_HOOKS})")
-    parser.add_argument("--agents-dir", help=f"worker directory (default: {DEFAULT_AGENTS})")
+    parser.add_argument("--hooks", help="hooks.json path (default: <CODEX_HOME>/hooks.json)")
+    parser.add_argument("--agents-dir", help="worker directory (default: <CODEX_HOME>/agents)")
     parser.set_defaults(func=cmd_codex_hooks)

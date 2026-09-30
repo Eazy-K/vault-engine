@@ -431,7 +431,32 @@ after step 2.
    compare the Codex/Claude user-level config with the vault's `config/` templates and,
    after the user agrees, `user-config --install`. It backs up every file it changes and
    never removes the user's own entries; a second run changes nothing. `doctor` and
-   `context` warn when it is needed.
+   `context` warn when it is needed. Supported files under `<data>/config/` (each is
+   optional; the engine ships a default only for `codex/developer-instructions.md`):
+
+   ```text
+   config/
+     codex/developer-instructions.md   block in developer_instructions of config.toml
+     codex/default.rules               marked block in rules/default.rules
+     codex/config.toml                 TOML keys/tables upserted into config.toml
+     codex/config.windows.toml         same, applied only on Windows (.linux, .darwin too)
+     claude/settings.json              deep-merged into settings.json
+     workspace/AGENTS.md               block in {WORKSPACE}/AGENTS.md (parent of the data repo)
+     workspace/CLAUDE.md               block in {WORKSPACE}/CLAUDE.md
+   ```
+
+   `codex/config.toml` is a fragment such as `sandbox_mode = "workspace-write"`,
+   `[sandbox_workspace_write]`, `[projects.'{VAULT_DATA}'] trust_level = "trusted"`,
+   `[tui] status_line = [...]`: each key is set to the fragment's value, nothing else in
+   `config.toml` is deleted or reformatted, and an existing equivalent path key (other
+   slash style, or other case on Windows) is reused instead of duplicated. Only strings,
+   numbers, booleans and arrays of them are supported; anything else is reported as an
+   error and nothing is written. Workspace files use `<!-- vault-engine:begin -->` /
+   `<!-- vault-engine:end -->` markers; an existing file that already holds exactly the
+   expanded content is adopted unchanged. Placeholders: `{VAULT_DATA}`,
+   `{VAULT_ENGINE}`, `{WORKSPACE}` (forward slashes) and `{VAULT_DATA_NATIVE}`,
+   `{VAULT_ENGINE_NATIVE}`, `{WORKSPACE_NATIVE}` (OS separators, e.g. for Codex rules
+   that must match both spellings); values are escaped for the target format.
 
 ---
 
