@@ -29,6 +29,8 @@ class TestCodexDelegationWarn(unittest.TestCase):
                    "tool_name": tool_name, "tool_input": {}}
         if agent_id:
             payload["agent_id"] = agent_id
+        if getattr(self, "transcript", None):
+            payload["transcript_path"] = str(self.transcript)
         return subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
                               capture_output=True, text=True, env=self.env)
 
@@ -54,6 +56,28 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertEqual(events[0]["agent"], "codex")
         self.assertEqual(events[0]["inline_calls"], 4)
         self.assertTrue(events[0]["warned"])
+
+    def _rollout(self, payload):
+        self.transcript = self.tmp / "rollout.jsonl"
+        self.transcript.write_text(json.dumps({"type": "session_meta", "payload": payload})
+                                   + "\n", encoding="utf-8")
+
+    def test_subagent_rollout_is_ignored_and_not_logged(self):
+        for meta in ({"source": {"subagent": {"thread_spawn": {"parent_thread_id": "p"}}}},
+                     {"parent_thread_id": "p"}):
+            with self.subTest(meta=meta):
+                self._rollout(meta)
+                for turn in ("a", "b"):
+                    for _ in range(5):
+                        self.assertEqual(self._run(turn_id=turn).stdout.strip(), "")
+                self.assertFalse((self.data / ".graph" / "usage.log").exists())
+
+    def test_main_rollout_still_warns_and_missing_transcript_fails_open(self):
+        self._rollout({"source": "cli"})
+        self.assertTrue(any(self._run().stdout.strip() for _ in range(4)))
+        self.transcript = self.tmp / "missing.jsonl"
+        self.session += "-2"
+        self.assertTrue(any(self._run().stdout.strip() for _ in range(4)))
 
     def test_subagent_and_unmatched_tool_calls_are_ignored(self):
         for _ in range(5):

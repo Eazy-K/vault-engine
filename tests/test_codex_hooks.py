@@ -76,6 +76,58 @@ class TestMerge(unittest.TestCase):
             codex_hooks.merge({"hooks": "broken"})
 
 
+class TestWindowsCommand(unittest.TestCase):
+    """#73: Windows command must not start with a quoted Program Files path."""
+    SCRIPT = Path("C:/tools/codex-hooks/context-warn.py")
+
+    def _build(self, exe, short):
+        from unittest import mock
+        with (mock.patch.object(codex_hooks.sys, "platform", "win32"),
+              mock.patch.object(codex_hooks.sys, "executable", exe),
+              mock.patch.object(codex_hooks, "_short_path", short),
+              mock.patch.object(codex_hooks.Path, "resolve", lambda self: self)):
+            return codex_hooks._command(self.SCRIPT)
+
+    def test_path_without_spaces_is_not_quoted(self):
+        cmd = self._build("C:/Python313/python.exe", lambda p: p)
+        self.assertFalse(cmd.startswith('"'))
+        self.assertNotIn('"', cmd)
+
+    def test_path_with_spaces_uses_short_path(self):
+        cmd = self._build("C:/Program Files/Python313/python.exe",
+                          lambda p: "C:/PROGRA~1/Python313/python.exe")
+        self.assertTrue(cmd.startswith("C:/PROGRA~1/Python313/python.exe "))
+        self.assertNotIn('"', cmd)
+
+    def test_short_path_unavailable_falls_back_to_quoting(self):
+        cmd = self._build("C:/Program Files/Python313/python.exe", lambda p: p)
+        self.assertTrue(cmd.startswith('"'))
+
+    def test_short_path_helper_without_ctypes_windll_returns_input(self):
+        # On non-Windows hosts ctypes has no windll; on Windows a missing path is returned as-is.
+        self.assertEqual(codex_hooks._short_path("Z:/definitely/missing path/x.exe"),
+                         "Z:/definitely/missing path/x.exe")
+
+    def test_stale_quoted_entries_are_rewritten_and_flagged(self):
+        from unittest import mock
+        expected = "C:/PROGRA~1/Python313/python.exe C:/x/context-warn.py"
+        old = '"C:/Program Files/Python313/python.exe" C:/x/context-warn.py'
+        with mock.patch.object(codex_hooks, "_command", lambda script: expected):
+            settings = {"hooks": {"UserPromptSubmit": [{"hooks": [
+                {"type": "command", "command": old, "commandWindows": old}]}]}}
+            merged, changed = codex_hooks.merge(settings)
+            handler = merged["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+            self.assertTrue(changed)
+            self.assertEqual(handler["command"], expected)
+            self.assertEqual(handler["commandWindows"], expected)
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "hooks.json"
+                stale = {"hooks": {ev: [{"hooks": [{"type": "command", "command": expected,
+                         "commandWindows": old}]}] for ev in codex_hooks.HOOKS}}
+                path.write_text(json.dumps(stale), encoding="utf-8")
+                self.assertEqual(codex_hooks.hooks_status(path)[0], "WARN")
+
+
 class TestInstall(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
