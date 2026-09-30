@@ -35,7 +35,9 @@ def _emit(warning: str | None = None) -> None:
     }}
     if warning:
         output["systemMessage"] = warning
-    print(json.dumps(output, ensure_ascii=False))
+    # Codex hooks communicate as JSON; escaping non-ASCII keeps the line
+    # writable even when Windows gives a subprocess a legacy console encoding.
+    print(json.dumps(output))
 
 
 def _threshold() -> int:

@@ -42,7 +42,9 @@ class TestCodexContextWarn(unittest.TestCase):
 
     def test_existing_context_warning_is_preserved_with_reminder(self):
         self._write_context(160000)
+        self.env["PYTHONIOENCODING"] = "ascii"
         out = self._run()
+        self.assertEqual(out.returncode, 0, out.stderr)
         payload = json.loads(out.stdout)
         context = payload["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Orchestration:", context)
