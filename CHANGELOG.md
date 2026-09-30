@@ -5,12 +5,17 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ## Unreleased
 
 ### Added
+- PR #67 adds Codex token, call, and estimated API list-price cost shares by model, linked subagent breakdowns, and per-subagent-run details.
 - `codex-hooks [--install]` installs the Codex context/delegation hooks and missing worker profiles. Existing hooks are merged and backed up before changes; customized worker TOMLs are kept. `doctor` and `context` report missing/stale hooks and worker profiles and check for explicit, valid top-level Codex model/effort values when `~/.codex` exists. They do not enforce a preferred model because that is user-specific.
 - `stats --tokens --session <id|current>`: per-session token breakdown by model with call/token/cost shares, main session vs subagents, and one row per subagent run. `current` reads `CLAUDE_CODE_SESSION_ID` (Claude Code) or `CODEX_SESSION_ID` (Codex); without either it shows the most recent session for the working directory and says it is a guess.
 - The Claude Code status line shows the session's model shares by tokens (main session + subagents), e.g. `Opus 62%·Sonnet 38%`, parsed incrementally with a cache.
 
 ### Changed
+- For `stats --tokens --session <codex id>`, JSON `totals` now includes the main session and linked subagents; the main session's totals are available in `main_totals`.
 - `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields.
+
+### Fixed
+- PR #67 Codex cost estimates no longer price cached input tokens at both the regular input rate and the cached input rate. When a model has no listed price, the report now shows the priced-model subtotal and labels the estimate partial; the unpriced model remains without a cost.
 
 ## [0.8.0] - 2026-09-28
 

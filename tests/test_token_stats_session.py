@@ -163,6 +163,8 @@ class TestSession(Base):
         self.assertEqual(data["totals"]["total"], 235)
         self.assertEqual(data["totals"]["input"], 180)
         self.assertEqual(data["totals"]["cached_input"], 30)
+        self.assertEqual(data["main_totals"]["input"], 100)
+        self.assertEqual(data["main_totals"]["total"], 130)
         models = {row["model"]: row for row in data["models"]}
         self.assertEqual(set(models), {"gpt-6-luna", "gpt-6-sol"})
         self.assertEqual(models["gpt-6-luna"]["total"], 130)
@@ -178,8 +180,9 @@ class TestSession(Base):
                 {"input_tokens": 80, "cached_input_tokens": 10,
                  "output_tokens": 20, "total_tokens": 105}, "gpt-6-sol"))
         self.assertAlmostEqual(data["est_total_usd"], round(expected_cost, 4))
-        self.assertAlmostEqual(sum(row["est_usd"] for row in models.values()),
-                               data["est_total_usd"])
+        # Per-model rows and the total are rounded independently to 4 decimals.
+        self.assertLessEqual(round(abs(sum(row["est_usd"] for row in models.values())
+                                       - data["est_total_usd"]), 7), 0.0001)
         self.assertEqual(models["gpt-6-luna"]["main_tokens"], 130)
         self.assertEqual(models["gpt-6-sol"]["subagent_tokens"], 105)
         self.assertEqual(data["main"]["total_tokens"], 130)
@@ -200,6 +203,34 @@ class TestSession(Base):
         self.assertIn("gpt-6-sol", text)
         self.assertIn("child-session", text)
         self.assertIn("105", text)
+
+    def test_codex_session_partial_cost_keeps_priced_subtotal(self):
+        self.write_linked_codex_parent()
+        unknown = {"input_tokens": 50, "cached_input_tokens": 5,
+                   "cache_write_input_tokens": 0, "output_tokens": 10,
+                   "reasoning_output_tokens": 2, "total_tokens": 62}
+        make_rollout(self.codex, 2026, 9, 27,
+                     "rollout-2026-09-27T14-13-50-child-session.jsonl", [
+            session_meta_line("child-session", "2026-09-27T14:13:50.597Z",
+                              parent_thread_id=CODEX_SID, agent_role="worker"),
+            turn_context_line("custom-unpriced-model", "medium", turn_id="child-turn"),
+            token_usage_record_line("child-response", unknown,
+                                    turn_id="child-turn", thread_id="child-session"),
+            token_count_line(unknown),
+        ])
+
+        data = json.loads(self.session(CODEX_SID, as_json=True))
+        models = {row["model"]: row for row in data["models"]}
+        self.assertIsNone(models["custom-unpriced-model"]["est_usd"])
+        self.assertIsNone(models["custom-unpriced-model"]["cost_pct"])
+        self.assertEqual(models["gpt-6-luna"]["cost_pct"], 100.0)
+        expected = token_stats.estimate_codex_cost_usd(
+            {"input_tokens": 100, "cached_input_tokens": 20,
+             "cache_write_input_tokens": 0, "output_tokens": 30}, "gpt-6-luna")
+        self.assertEqual(data["est_total_usd"], round(expected, 4))
+        self.assertEqual(data["cost_estimate_status"], "partial")
+        text = self.session(CODEX_SID)
+        self.assertIn("partial; priced models only", text)
 
     def test_codex_unlinked_and_unattributed_usage_stays_unknown(self):
         make_rollout(self.codex, 2026, 9, 27, f"rollout-mixed-{CODEX_SID}.jsonl", [
