@@ -1171,6 +1171,18 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         for result in codex_hooks.statuses():
             check(*result)
 
+    if codex_hooks is not None and found.get("codex"):
+        try:
+            retest = codex_hooks.deny_retest_status(found["codex"], data)
+        except Exception:  # must not hide the other checks
+            retest = None
+        if retest:
+            check(*retest)
+
+    if sys.version_info < (3, 11):
+        check("WARN", f"Python {sys.version.split()[0]}: Codex config.toml user-config items "
+                      "need Python 3.11+ (tomllib)")
+
     user_config = sys.modules.get("user_config")
     if user_config is not None and data is not None:
         try:

@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import graph as g
@@ -117,6 +118,9 @@ def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path]]:
 
 
 def cmd_codex_hooks(args: argparse.Namespace) -> None:
+    if getattr(args, "probe_deny", False):
+        probe_deny()
+        return
     hooks_path = Path(args.hooks).expanduser() if args.hooks else codex_home() / "hooks.json"
     agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else codex_home() / "agents"
     settings = _load_json(hooks_path)
@@ -238,8 +242,128 @@ def statuses(hooks_path: Path | None = None, config_path: Path | None = None,
     return [hooks_status(hooks_path), model_status(config_path), workers_status(agents_dir)]
 
 
+# --- PreToolUse deny probe ---------------------------------------------------------------
+
+TESTED_KEY = "codex_deny_tested_version"  # in <data>/.graph/machine.json (gitignored)
+PROBE_TIMEOUT = 240
+PROBE_PROMPT = "create probe.txt with content x"
+PROBE_HOOK = (
+    "import json\n"
+    "from pathlib import Path\n"
+    'Path(__file__).with_name("fired.log").write_text("fired", encoding="utf-8")\n'
+    'print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", '
+    '"permissionDecision": "deny", "permissionDecisionReason": "vault-engine deny probe"}}))\n'
+)
+RETEST_HINT = ("Codex CLI changed; PreToolUse deny enforcement is unverified on this version "
+               "- run codex-hooks --probe-deny")
+
+
+def codex_version(executable: str = "codex") -> str | None:
+    """Output of `codex --version`, or None when it cannot be run."""
+    try:
+        out = subprocess.run([executable, "--version"], capture_output=True, text=True,
+                             encoding="utf-8", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = (out.stdout or "").strip()
+    return text if out.returncode == 0 and text else None
+
+
+def _machine_file(data: Path | None = None) -> Path | None:
+    try:
+        data = data or g.resolve_data_dir()
+    except SystemExit:
+        return None
+    return data / ".graph" / "machine.json"
+
+
+def _load_machine(path: Path) -> dict:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def tested_version(data: Path | None = None) -> str | None:
+    path = _machine_file(data)
+    value = _load_machine(path).get(TESTED_KEY) if path else None
+    return value if isinstance(value, str) and value else None
+
+
+def record_tested_version(version: str, data: Path | None = None) -> bool:
+    path = _machine_file(data)
+    if path is None or not path.parent.parent.is_dir():
+        return False
+    machine = _load_machine(path)
+    machine[TESTED_KEY] = version
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(machine, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8", newline="\n")
+    return True
+
+
+def deny_retest_status(executable: str = "codex", data: Path | None = None) -> tuple[str, str] | None:
+    """INFO when the installed Codex CLI differs from the version the deny probe last
+    ran on (or no probe was recorded); None when it matches or codex cannot run."""
+    version = codex_version(executable)
+    if version is None or tested_version(data) == version:
+        return None
+    return "INFO", RETEST_HINT
+
+
+def probe_deny(executable: str | None = None, data: Path | None = None,
+               timeout: int = PROBE_TIMEOUT) -> str:
+    """Run one `codex exec` in a throwaway git dir whose project .codex/hooks.json denies
+    file writes; report whether the hook fired and whether the write was blocked.
+    Never touches the real Codex config. Returns "enforced", "not-enforced",
+    "inconclusive" or "skipped"."""
+    executable = executable or shutil.which("codex")
+    if not executable:
+        print("codex-hooks --probe-deny: codex not found, skipped")
+        return "skipped"
+    version = codex_version(executable)
+    with tempfile.TemporaryDirectory(prefix="vault-engine-probe-") as tmp:
+        work = Path(tmp)
+        (work / ".codex").mkdir()
+        hook = work / "probe-hook.py"
+        hook.write_text(PROBE_HOOK, encoding="utf-8", newline="\n")
+        hooks = {"hooks": {"PreToolUse": [{
+            "matcher": "^(Write|Edit|apply_patch|Bash|shell|exec_command)$",
+            "hooks": [{"type": "command", "command": _command(hook)}]}]}}
+        (work / ".codex" / "hooks.json").write_text(json.dumps(hooks, indent=2) + "\n",
+                                                    encoding="utf-8", newline="\n")
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=work, capture_output=True, timeout=60)
+            subprocess.run([executable, "exec", "--sandbox", "workspace-write", PROBE_PROMPT],
+                           cwd=work, capture_output=True, text=True, encoding="utf-8",
+                           timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"codex-hooks --probe-deny: timed out after {timeout}s; nothing recorded")
+            return "inconclusive"
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"codex-hooks --probe-deny: could not run ({exc}); nothing recorded")
+            return "inconclusive"
+        fired = (work / "fired.log").exists()
+        blocked = not (work / "probe.txt").exists()
+    if fired and blocked:
+        result, text = "enforced", "hook fired and the write was blocked"
+    elif fired:
+        result, text = "not-enforced", "hook fired but Codex still wrote the file (deny NOT enforced)"
+    else:
+        result, text = "inconclusive", ("hook did not fire (project hooks may need trust, or "
+                                         "this CLI uses other tool names)")
+    print(f"codex-hooks --probe-deny: {text} [{version or 'unknown version'}]")
+    if version and record_tested_version(version, data):
+        print(f"  recorded {TESTED_KEY} in machine.json")
+    return result
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("codex-hooks", help="install Codex context/delegation hooks and worker profiles")
+    parser.add_argument("--probe-deny", action="store_true",
+                        help="run one throwaway `codex exec` to test whether a PreToolUse deny "
+                             "is enforced, and record the Codex version tested")
     parser.add_argument("--install", action="store_true",
                         help="write hooks.json and missing worker profiles (default: dry run)")
     parser.add_argument("--hooks", help="hooks.json path (default: <CODEX_HOME>/hooks.json)")

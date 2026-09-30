@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -207,6 +209,86 @@ class TestCodexHomeEnv(unittest.TestCase):
                 self.assertEqual(codex_hooks.workers_status()[0], "OK")
                 self.assertEqual(codex_hooks.model_status()[0], "WARN")
                 self.assertIn(str(home), codex_hooks.model_status()[1])
+
+
+class TestDenyProbe(unittest.TestCase):
+    def setUp(self):
+        from unittest import mock
+        self.mock = mock
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.data = self.tmp / "data"
+        (self.data / ".graph").mkdir(parents=True)
+
+    def _fake_run(self, version="codex-cli 1.2.3", fire=True, write=False, timeout=False):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[1:] == ["--version"]:
+                return types.SimpleNamespace(returncode=0, stdout=version + "\n", stderr="")
+            if cmd[1] == "exec":
+                if timeout:
+                    raise subprocess.TimeoutExpired(cmd, 1)
+                cwd = Path(kw["cwd"])
+                self.assertTrue((cwd / ".codex" / "hooks.json").is_file())
+                if fire:
+                    (cwd / "fired.log").write_text("fired")
+                if write:
+                    (cwd / "probe.txt").write_text("x")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return run, calls
+
+    def _probe(self, **kw):
+        run, calls = self._fake_run(**kw)
+        buf = io.StringIO()
+        with self.mock.patch("subprocess.run", side_effect=run), redirect_stdout(buf):
+            result = codex_hooks.probe_deny("codex", self.data)
+        return result, buf.getvalue(), calls
+
+    def _machine(self):
+        return json.loads((self.data / ".graph" / "machine.json").read_text(encoding="utf-8"))
+
+    def test_enforced_records_version(self):
+        result, out, calls = self._probe()
+        self.assertEqual(result, "enforced")
+        self.assertIn("blocked", out)
+        self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
+        self.assertEqual(sum(1 for c in calls if c[1:2] == ["exec"]), 1)
+
+    def test_not_enforced_when_file_written(self):
+        result, out, _ = self._probe(write=True)
+        self.assertEqual(result, "not-enforced")
+        self.assertIn("NOT enforced", out)
+
+    def test_hook_not_fired_is_inconclusive(self):
+        self.assertEqual(self._probe(fire=False)[0], "inconclusive")
+
+    def test_timeout_records_nothing(self):
+        result, _out, _ = self._probe(timeout=True)
+        self.assertEqual(result, "inconclusive")
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_skipped_without_codex(self):
+        with self.mock.patch("shutil.which", return_value=None), \
+             self.mock.patch("subprocess.run") as run, redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_hooks.probe_deny(None, self.data), "skipped")
+        run.assert_not_called()
+
+    def test_retest_status(self):
+        run, _ = self._fake_run()
+        with self.mock.patch("subprocess.run", side_effect=run):
+            status = codex_hooks.deny_retest_status("codex", self.data)
+            self.assertEqual(status[0], "INFO")
+            self.assertIn("codex-hooks --probe-deny", status[1])
+            codex_hooks.record_tested_version("codex-cli 1.2.3", self.data)
+            self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
+            codex_hooks.record_tested_version("codex-cli 1.0.0", self.data)
+            self.assertEqual(codex_hooks.deny_retest_status("codex", self.data)[0], "INFO")
+
+    def test_retest_status_silent_when_codex_cannot_run(self):
+        with self.mock.patch("subprocess.run", side_effect=OSError("nope")):
+            self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
 
 
 if __name__ == "__main__":
