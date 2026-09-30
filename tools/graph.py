@@ -194,6 +194,7 @@ DEFAULT_LINK_WEIGHT = 0.7  # frontmatter link without an explicit weight
 BODY_LINK_WEIGHT = 0.5  # wikilink written in the note body
 LEARNING_RATE = 0.1
 DECAY_RATE = 0.05
+USAGE_LOG_KEEP_DAYS = 90  # usage.log entries older than this are trimmed (at most once a day)
 DECAY_INTERVAL_DAYS = 7  # `reinforce` decays on its own once more days than this have passed
 DEFAULT_THRESHOLD = 0.6  # 0.5 let two-hop neighbours of every seed in
 DEFAULT_DEPTH = 3
@@ -1281,8 +1282,52 @@ def log_usage(paths: Paths, event: dict) -> None:
         usage_log.parent.mkdir(exist_ok=True)
         with usage_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        trim_usage_log(paths)
     except OSError:
         pass
+
+
+def _usage_ts(line: str) -> datetime | None:
+    """Local naive timestamp of a usage.log line, None if it has no parsable ts."""
+    try:
+        ts = datetime.fromisoformat(str(json.loads(line)["ts"]))
+    except (ValueError, KeyError, TypeError):
+        return None
+    return ts.astimezone().replace(tzinfo=None) if ts.tzinfo is not None else ts
+
+
+def trim_usage_log(paths: Paths, now: datetime | None = None) -> int:
+    """Drop usage.log lines older than USAGE_LOG_KEEP_DAYS; return how many were
+    removed. Cheap trigger: the file is append-only, so only its first dated line
+    (read within the first 50 lines) is checked, and the rewrite happens only when
+    that one is past the cutoff -- in practice about once a day. Lines whose ts
+    can't be parsed are kept. The rewrite is atomic (temp file + os.replace) and
+    any OSError is swallowed. Only graph.py trims, never the hooks."""
+    cutoff = (now or datetime.now()) - timedelta(days=USAGE_LOG_KEEP_DAYS)
+    try:
+        usage_log = paths.usage_log
+        with usage_log.open(encoding="utf-8") as f:
+            for _, line in zip(range(50), f):
+                ts = _usage_ts(line)
+                if ts is not None:
+                    break
+            else:
+                return 0
+            if ts >= cutoff:
+                return 0
+        kept, dropped = [], 0
+        for line in usage_log.read_text(encoding="utf-8").splitlines(keepends=True):
+            ts = _usage_ts(line)
+            if ts is not None and ts < cutoff:
+                dropped += 1
+            else:
+                kept.append(line)
+        tmp = usage_log.with_name(usage_log.name + ".tmp")
+        tmp.write_text("".join(kept), encoding="utf-8", newline="\n")
+        os.replace(tmp, usage_log)
+        return dropped
+    except (OSError, ValueError):
+        return 0
 
 
 def read_usage(paths: Paths) -> list[dict]:
