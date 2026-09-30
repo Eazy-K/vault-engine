@@ -49,7 +49,6 @@ _spec.loader.exec_module(graph)
 sys.path.insert(0, str(TOOLS_DIR))
 import onboarding  # noqa: E402  (path must be set up first)
 import codex_hooks  # noqa: E402
-import schema  # noqa: E402  (doctor's .gitignore check goes through it)
 
 
 def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -933,6 +932,13 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("set for the user but not in this process", buf.getvalue())
 
     def _doctor_out(self) -> str:
+        # doctor reaches schema.py through sys.modules; import it only for this run,
+        # so test_schema.py still loads it first, bound to its own graph instance.
+        with mock.patch.dict(sys.modules):
+            import schema  # noqa: F401
+            return self._doctor_run()
+
+    def _doctor_run(self) -> str:
         with mock.patch.dict(os.environ, self._env(), clear=True),              mock.patch("pathlib.Path.home", return_value=self.home),              mock.patch("onboarding.urllib.request.urlopen", side_effect=OSError("no ollama")),              redirect_stdout(StringIO()) as buf:
             with self.assertRaises(SystemExit):
                 onboarding.cmd_doctor(Namespace())
