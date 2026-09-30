@@ -3,7 +3,7 @@
 e.g. "Opus 5.5·med │ vault-engine (fix/windows-hook-quoting) │ ctx 80K/1000K 8% │ $1.42".
 
 Reads the JSON session object Claude Code sends on stdin (see
-https://code.claude.com/docs/en/statusline) and prints up to four
+https://code.claude.com/docs/en/statusline) and prints up to five
 segments, joined by " │ ", omitting any segment whose data is missing:
 
 1. Model name and reasoning effort (model.display_name). Effort is read
@@ -23,6 +23,15 @@ segments, joined by " │ ", omitting any segment whose data is missing:
    /compact, so that case is reported as "no data yet" rather than as an
    error.
 4. Session cost: cost.total_cost_usd formatted as "$1.42".
+5. Model shares of this session by total tokens (input + cache + output),
+   main transcript plus its subagent transcripts combined, e.g.
+   "Opus 65%·Sonnet 35%". Omitted when only one model was used, when
+   there is no data, or on any error. Transcripts are parsed
+   incrementally (byte offset + per-model totals cached as JSON, under
+   CLAUDE_STATUSLINE_CACHE or the OS temp dir), so a refresh only reads
+   the bytes appended since the last one. Per-call counting mirrors
+   tools/token_stats.py load_calls (assistant messages deduped by
+   message id, last one wins, "<synthetic>" skipped).
 
 Any parse error or missing field is handled gracefully -- never a
 traceback, never a non-zero exit -- so a bug here can never break the
@@ -32,11 +41,21 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 import subprocess
 import sys
+import tempfile
+from glob import glob
 
 # Overridable so tests never read the real ~/.claude/settings.json.
 SETTINGS_ENV_VAR = "CLAUDE_STATUSLINE_SETTINGS"
+
+# Overridable so tests never write into the real temp/cache dir.
+CACHE_ENV_VAR = "CLAUDE_STATUSLINE_CACHE"
+CACHE_VERSION = 1
+MAX_SEEN_IDS = 20000  # per file; oldest ids are forgotten beyond this
+HEAD_BYTES = 256  # file-identity fingerprint (start of the file)
 
 EFFORT_ABBREV = {
     "low": "low",
@@ -181,12 +200,175 @@ def cost_segment(data: dict) -> str | None:
     return f"${total:.2f}"
 
 
+def _cache_dir() -> str:
+    env = os.environ.get(CACHE_ENV_VAR)
+    if env:
+        return env
+    return os.path.join(tempfile.gettempdir(), "claude-statusline-cache")
+
+
+def _cache_path(session_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:100] or "session"
+    return os.path.join(_cache_dir(), f"{safe}.json")
+
+
+def _load_cache(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        if cache.get("v") == CACHE_VERSION and isinstance(cache.get("files"), dict):
+            return cache
+    except Exception:
+        pass
+    return {"v": CACHE_VERSION, "files": {}}
+
+
+def _save_cache(path: str, cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, separators=(",", ":"))
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _apply_line(line: bytes, entry: dict) -> None:
+    """Fold one transcript line into entry (same rules as token_stats.load_calls)."""
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(rec, dict) or rec.get("type") != "assistant":
+        return
+    message = rec.get("message")
+    if not isinstance(message, dict):
+        return
+    msg_id = message.get("id")
+    model = message.get("model")
+    if not msg_id or not isinstance(msg_id, str) or model == "<synthetic>":
+        return
+    if not isinstance(model, str) or not model:
+        model = "unknown"
+    usage = message.get("usage") or {}
+    total = sum(int(usage.get(k) or 0) for k in (
+        "input_tokens", "cache_creation_input_tokens",
+        "cache_read_input_tokens", "output_tokens"))
+    totals, seen = entry["totals"], entry["seen"]
+    old = seen.pop(msg_id, None)  # re-insert so it counts as newest
+    if old is not None:
+        totals[old[0]] = totals.get(old[0], 0) - old[1]
+    seen[msg_id] = [model, total]
+    totals[model] = totals.get(model, 0) + total
+    while len(seen) > MAX_SEEN_IDS:
+        del seen[next(iter(seen))]
+
+
+def _valid_entry(entry) -> bool:
+    return (isinstance(entry, dict) and isinstance(entry.get("off"), int)
+            and isinstance(entry.get("fp"), str)
+            and isinstance(entry.get("totals"), dict)
+            and isinstance(entry.get("seen"), dict))
+
+
+def _update_file(path: str, entry: dict | None) -> dict | None:
+    """Advance one file's cache entry by reading only bytes appended since
+    the last run; reparse from 0 if the file shrank or was replaced."""
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            head = f.read(min(HEAD_BYTES, size))
+            fp = hashlib.sha1(head).hexdigest()
+            if not _valid_entry(entry) or entry["off"] > size or (
+                    entry["off"] >= len(head) and entry["fp"] != fp):
+                entry = None
+            if entry is None:
+                entry = {"off": 0, "fp": fp, "totals": {}, "seen": {}}
+            f.seek(entry["off"])
+            chunk = f.read()
+    except OSError:
+        return None
+    if entry["off"] < HEAD_BYTES:
+        entry["fp"] = fp  # the head was still growing when last cached
+    end = chunk.rfind(b"\n")
+    if end >= 0:  # an unterminated last line is left for the next run
+        for line in chunk[:end].split(b"\n"):
+            if line.strip():
+                _apply_line(line, entry)
+        entry["off"] += end + 1
+    return entry
+
+
+def session_model_totals(data: dict) -> dict[str, int]:
+    """Per-model total tokens for the session (main + subagents), cached."""
+    transcript = data.get("transcript_path")
+    if not isinstance(transcript, str) or not transcript:
+        return {}
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        session_id = os.path.splitext(os.path.basename(transcript))[0]
+    sub_glob = os.path.join(os.path.splitext(transcript)[0], "subagents", "agent-*.jsonl")
+    paths = [transcript] + sorted(glob(sub_glob))
+
+    cache_file = _cache_path(session_id)
+    cache = _load_cache(cache_file)
+    old_files = cache["files"]
+    new_files = {}
+    changed = set(old_files) != set(paths)
+    for p in paths:
+        before = old_files.get(p)
+        before_off = before.get("off") if isinstance(before, dict) else None
+        entry = _update_file(p, before)
+        if entry is not None:
+            new_files[p] = entry
+            changed = changed or entry["off"] != before_off
+    if changed:
+        cache["files"] = new_files
+        _save_cache(cache_file, cache)
+
+    merged: dict[str, int] = {}
+    for entry in new_files.values():
+        for model, n in entry["totals"].items():
+            merged[model] = merged.get(model, 0) + n
+    return merged
+
+
+def short_model_name(model_id: str) -> str:
+    lower = model_id.lower()
+    for family in ("opus", "sonnet", "haiku", "fable"):
+        if family in lower:
+            return family.capitalize()
+    return re.sub(r"^claude-", "", lower)[:16]
+
+
+def model_shares_segment(data: dict) -> str | None:
+    try:
+        totals = {m: n for m, n in session_model_totals(data).items() if n > 0}
+        grand = sum(totals.values())
+        if grand <= 0:
+            return None
+        shares: dict[str, float] = {}
+        for model, n in totals.items():
+            name = short_model_name(model)
+            shares[name] = shares.get(name, 0) + n
+        if len(shares) < 2:
+            return None
+        parts = [(name, round(100 * n / grand)) for name, n in
+                 sorted(shares.items(), key=lambda kv: -kv[1])]
+        parts = [f"{name} {pct}%" for name, pct in parts if pct >= 1]
+        return "·".join(parts) if len(parts) >= 2 else None
+    except Exception:
+        return None
+
+
 def format_line(data: dict, settings_path: str | None = None) -> str:
     segments = [
         model_segment(data, settings_path),
         folder_segment(data),
         ctx_segment(data),
         cost_segment(data),
+        model_shares_segment(data),
     ]
     return " │ ".join(s for s in segments if s)
 

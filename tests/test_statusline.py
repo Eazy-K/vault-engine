@@ -195,5 +195,126 @@ class TestStatusLineSegments(unittest.TestCase):
         self.assertIn(REPO_ROOT.name, out.stdout)
 
 
+def _assistant(msg_id, model, out_tokens, inp=0):
+    return json.dumps({
+        "type": "assistant", "timestamp": "2026-01-01T00:00:00Z",
+        "message": {"id": msg_id, "model": model,
+                    "usage": {"input_tokens": inp, "output_tokens": out_tokens}},
+    }) + "\n"
+
+
+class TestModelShares(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.proj = root / "proj"
+        (self.proj / "sess1" / "subagents").mkdir(parents=True)
+        self.main = self.proj / "sess1.jsonl"
+        self.sub = self.proj / "sess1" / "subagents" / "agent-a1.jsonl"
+        self.cache = root / "cache"
+        self.env = {"CLAUDE_STATUSLINE_CACHE": str(self.cache)}
+
+    def _line(self, transcript=None):
+        out = _run({"session_id": "sess1",
+                    "transcript_path": str(transcript or self.main)}, self.env)
+        self.assertEqual(out.returncode, 0)
+        return out.stdout.strip()
+
+    def test_shares_combine_main_and_subagents(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 600)
+                             + _assistant("m2", "claude-opus-5-5", 50), encoding="utf-8")
+        self.sub.write_text(_assistant("s1", "claude-sonnet-5-5", 300)
+                            + _assistant("s2", "claude-fable-1", 50), encoding="utf-8")
+        self.assertIn("Opus 65%·Sonnet 30%·Fable 5%", self._line())
+
+    def test_share_under_one_percent_omitted(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 10000)
+                             + _assistant("m2", "claude-haiku-5", 10), encoding="utf-8")
+        self.assertNotIn("Opus", self._line())
+
+    def test_single_model_no_segment(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 100), encoding="utf-8")
+        self.sub.write_text(_assistant("s1", "claude-opus-5-5", 100), encoding="utf-8")
+        self.assertNotIn("%", self._line())
+
+    def test_missing_transcript_path(self):
+        out = _run({"session_id": "sess1"}, self.env)
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn("Opus", out.stdout)
+        out = _run({"transcript_path": str(self.proj / "nope.jsonl")}, self.env)
+        self.assertEqual(out.returncode, 0)
+
+    def test_incremental_append_and_partial_line(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 100)
+                             + _assistant("m2", "claude-sonnet-5-5", 100), encoding="utf-8")
+        self.assertIn("Opus 50%·Sonnet 50%", self._line())
+        partial = _assistant("m3", "claude-sonnet-5-5", 200)
+        with open(self.main, "a", encoding="utf-8", newline="") as f:
+            f.write(partial[:-1])  # no trailing newline yet: must not count
+        self.assertIn("Opus 50%·Sonnet 50%", self._line())
+        with open(self.main, "a", encoding="utf-8", newline="") as f:
+            f.write("\n")
+        self.assertIn("Sonnet 75%·Opus 25%", self._line())
+        # The cache now sits at the end of the file: only new bytes are read.
+        cached = json.loads(next(self.cache.glob("*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(cached["files"][str(self.main)]["off"], self.main.stat().st_size)
+
+    def test_dedup_by_message_id_last_wins(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 10)
+                             + _assistant("m1", "claude-opus-5-5", 100)
+                             + _assistant("m2", "claude-sonnet-5-5", 100), encoding="utf-8")
+        self.assertIn("Opus 50%·Sonnet 50%", self._line())
+        with open(self.main, "a", encoding="utf-8") as f:
+            f.write(_assistant("m1", "claude-opus-5-5", 300))  # updated in a later run
+        self.assertIn("Opus 75%·Sonnet 25%", self._line())
+
+    def test_corrupted_cache_falls_back(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 100)
+                             + _assistant("m2", "claude-sonnet-5-5", 100), encoding="utf-8")
+        self._line()
+        for f in self.cache.glob("*.json"):
+            f.write_text("{not json", encoding="utf-8")
+        self.assertIn("Opus 50%·Sonnet 50%", self._line())
+        for f in self.cache.glob("*.json"):
+            f.write_text(json.dumps({"v": 1, "files": {str(self.main): {"off": "x"}}}),
+                         encoding="utf-8")
+        self.assertIn("Opus 50%·Sonnet 50%", self._line())
+
+    def test_shrunk_file_reparsed(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 100)
+                             + _assistant("m2", "claude-sonnet-5-5", 100)
+                             + _assistant("m3", "claude-sonnet-5-5", 100), encoding="utf-8")
+        self.assertIn("Sonnet 67%·Opus 33%", self._line())
+        self.main.write_text(_assistant("m9", "claude-opus-5-5", 300)
+                             + _assistant("m8", "claude-sonnet-5-5", 100), encoding="utf-8")
+        self.assertIn("Opus 75%·Sonnet 25%", self._line())
+
+    def test_matches_token_stats_load_calls(self):
+        import importlib.util
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        try:
+            import token_stats
+        finally:
+            sys.path.pop(0)
+        spec = importlib.util.spec_from_file_location("statusline_under_test", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        lines = (_assistant("a", "claude-opus-5-5", 10, inp=5)
+                 + _assistant("a", "claude-opus-5-5", 40, inp=5)
+                 + _assistant("b", "claude-sonnet-5-5", 7)
+                 + _assistant("c", "<synthetic>", 999)
+                 + "garbage\n" + json.dumps({"type": "user"}) + "\n")
+        self.main.write_text(lines, encoding="utf-8")
+        expected: dict[str, int] = {}
+        for c in token_stats.load_calls(self.main):
+            expected[c.model] = expected.get(c.model, 0) + c.total
+        os.environ["CLAUDE_STATUSLINE_CACHE"] = str(self.cache)
+        self.addCleanup(os.environ.pop, "CLAUDE_STATUSLINE_CACHE", None)
+        got = mod.session_model_totals({"session_id": "sess1",
+                                        "transcript_path": str(self.main)})
+        self.assertEqual(got, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
