@@ -2,6 +2,31 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.10.0] - 2026-09-30
+
+### Added
+- `user-config [--check|--install] [--data <vault>]` keeps Codex and Claude user-level configuration in step with templates: engine `defaults/config/<path>`, overridden by vault `<VAULT_DATA>/config/<path>`. Managed blocks (`# vault-engine:begin/end`) are written to Codex `developer_instructions` and `rules/default.rules`; Claude `settings.json` fragments are deep-merged without removing anything. A backup is made before a file's first change and a second run changes nothing. `doctor` and `context` report drift. (#75)
+- `config/codex/config.toml` fragments (with `config.windows|linux|darwin.toml` overlays) are upserted into Codex `config.toml`, leaving other text byte-identical and verifying the result by re-parsing; `config/workspace/AGENTS.md` and `CLAUDE.md` are synced as managed blocks in the workspace folder; `*_NATIVE` path placeholders are escaped per target. (#76)
+- `codex-hooks --install` also installs the `agent-guard` PreToolUse hook (matcher `^(Agent|spawn_agent)$`), which derives allowed roles, model and effort from the worker profiles and fails open. `doctor` and `context` report installs without it as stale. Codex CLI 0.159.2 was not shown to enforce PreToolUse denials, so the hook takes effect once the CLI honors it. (#74)
+- Codex orchestration guidance: plan-and-approve reminders on each prompt while keeping the 150K context warning, delegation warnings repeated at tool calls 4, 6, 8 and later even counts, Codex tool counts logged, and `stats` showing Codex and Claude separately while preserving legacy records. (#71)
+
+### Changed
+- The AGENTS template gains orchestration guidance. (#71)
+- `codex-hooks` honors `CODEX_HOME` like the other user-level commands. (#76)
+- Top-level `config/**` in a data repo or `defaults/` is no longer loaded as graph notes. (#75)
+
+### Fixed
+- `user-config` stays importable on Python 3.10 without `tomllib`. (#75)
+- The default Codex developer instructions now say to delegate only with `agent_type` worker-low or worker-medium, never default or general-purpose, matching the agent-guard. (#77)
+
+### Known limitations
+- Codex UserPromptSubmit/PostToolUse payloads carry no `agent_id`, so subagent calls may count toward the parent turn; the session's final message is not logged. (#71)
+
+### Upgrade notes
+- On other computers run `git pull` (or `update`), then `doctor`, then `python tools/graph.py codex-hooks --install` (installs the new agent-guard; Codex may ask you to re-trust the hook) and `python tools/graph.py user-config --install`.
+- Hand-written `developer_instructions` text in Codex `config.toml` that duplicates the managed block should be removed manually.
+- Vault `config/` templates are opt-in; without them only the engine's generic developer instructions are managed.
+
 ## [0.9.0] - 2026-09-30
 
 ### Added
