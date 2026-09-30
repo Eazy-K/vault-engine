@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Add a main-session orchestration reminder and warn at high context usage."""
+"""Add an orchestration reminder and warn at high context usage.
+
+Current UserPromptSubmit payloads do not include agent_id, so the optional
+agent_id guard is best-effort only; this hook cannot reliably exclude
+subagent prompts with the current Codex hook schema.
+"""
 
 from __future__ import annotations
 

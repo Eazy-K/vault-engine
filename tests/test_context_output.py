@@ -127,6 +127,16 @@ class TestRetrievalHeader(_Ctx):
         self.assertIn("  claude: 1 measured, 0 over 3 inline calls", out)
         self.assertIn("  codex: 1 measured, 1 over 4 inline calls", out)
 
+    def test_legacy_orchestrator_prompt_without_agent_is_unknown(self):
+        self.paths.usage_log.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.usage_log.write_text(
+            '{"event":"orchestrator_prompt","inline_calls":2,'
+            '"warned":false,"threshold":4}\n',
+            encoding="utf-8",
+        )
+        self.assertIn("  unknown: 1 measured, 0 over 4 inline calls (0%), "
+                      "median inline calls 2", self.stats())
+
     def test_no_orchestrator_section_without_events(self):
         graph.log_usage(self.paths, {"event": "context", "task": "old", "notes": []})
         self.assertNotIn("orchestrator prompts", self.stats())

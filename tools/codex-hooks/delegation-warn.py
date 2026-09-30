@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Remind the root Codex agent to delegate after repeated inline tool calls."""
+"""Remind Codex to delegate after repeated inline tool calls.
+
+Current PostToolUse payloads do not include agent_id, so the optional guard
+cannot reliably exclude subagent calls. A completed turn is logged when the
+next turn's first matching tool call arrives; the final turn remains unlogged
+until that happens because this hook does not receive turn-stop events.
+"""
 
 from __future__ import annotations
 
@@ -81,7 +87,11 @@ def _load_state(path: Path) -> dict:
 
 
 def _log_prompt(session_id: str, state: dict) -> None:
-    """Append a completed Codex turn to the local usage log, if configured."""
+    """Append a completed Codex turn to the local usage log, if configured.
+
+    PostToolUse has no final-turn callback, so the final turn may never be
+    flushed unless another turn begins in this session.
+    """
     try:
         raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
         if not raw:
@@ -121,8 +131,9 @@ def main() -> None:
     if not isinstance(payload, dict):
         return
 
-    # Subagent hooks share the parent session and turn IDs, so agent_id must
-    # be checked before touching that shared counter.
+    # Some payload variants may carry agent_id. Current PostToolUse payloads
+    # do not, so this is only a best-effort compatibility guard: subagent tool
+    # calls may share the parent counter and be included in its stats.
     if payload.get("agent_id"):
         return
     if payload.get("tool_name") not in MATCHED_TOOLS:
