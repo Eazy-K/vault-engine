@@ -92,6 +92,14 @@ class TestParseCodexRollout(unittest.TestCase):
             token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
             11.95 / 1_000_000)
 
+    def test_cached_input_above_input_does_not_create_negative_regular_cost(self):
+        usage = {"input_tokens": 10, "cached_input_tokens": 20,
+                 "cache_write_input_tokens": 0, "output_tokens": 0}
+        expected = 20 * token_stats.CODEX_STANDARD_RATES["gpt-6-luna"][1]
+        self.assertAlmostEqual(
+            token_stats.estimate_codex_cost_usd(usage, "gpt-6-luna"),
+            expected / 1_000_000)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
