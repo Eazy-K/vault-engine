@@ -166,10 +166,6 @@ class Paths:
         return self.data / ".graph" / "last-decay"  # per machine, not committed
 
     @property
-    def usage_trim_stamp(self) -> Path:
-        return self.data / ".graph" / "last-usage-trim"  # per machine, not committed
-
-    @property
     def config_file(self) -> Path:
         return self.data / "vault.config.json"
 
@@ -1291,39 +1287,46 @@ def log_usage(paths: Paths, event: dict) -> None:
         pass
 
 
+def _usage_ts(line: str) -> datetime | None:
+    """Local naive timestamp of a usage.log line, None if it has no parsable ts."""
+    try:
+        ts = datetime.fromisoformat(str(json.loads(line)["ts"]))
+    except (ValueError, KeyError, TypeError):
+        return None
+    return ts.astimezone().replace(tzinfo=None) if ts.tzinfo is not None else ts
+
+
 def trim_usage_log(paths: Paths, now: datetime | None = None) -> int:
     """Drop usage.log lines older than USAGE_LOG_KEEP_DAYS; return how many were
-    removed. Runs at most once a day (stamp file); lines whose ts can't be parsed
-    are kept. Best effort: the rewrite is atomic (temp file + os.replace) and any
-    OSError is swallowed. Only graph.py trims, never the hooks."""
-    now = now or datetime.now()
+    removed. Cheap trigger: the file is append-only, so only its first dated line
+    (read within the first 50 lines) is checked, and the rewrite happens only when
+    that one is past the cutoff -- in practice about once a day. Lines whose ts
+    can't be parsed are kept. The rewrite is atomic (temp file + os.replace) and
+    any OSError is swallowed. Only graph.py trims, never the hooks."""
+    cutoff = (now or datetime.now()) - timedelta(days=USAGE_LOG_KEEP_DAYS)
     try:
-        stamp, usage_log = paths.usage_trim_stamp, paths.usage_log
-        if stamp.exists() and now.timestamp() - stamp.stat().st_mtime < 86400:
-            return 0
-        if not usage_log.exists():
-            return 0
-        cutoff = now - timedelta(days=USAGE_LOG_KEEP_DAYS)
+        usage_log = paths.usage_log
+        with usage_log.open(encoding="utf-8") as f:
+            for _, line in zip(range(50), f):
+                ts = _usage_ts(line)
+                if ts is not None:
+                    break
+            else:
+                return 0
+            if ts >= cutoff:
+                return 0
         kept, dropped = [], 0
         for line in usage_log.read_text(encoding="utf-8").splitlines(keepends=True):
-            try:
-                ts = datetime.fromisoformat(str(json.loads(line)["ts"]))
-                if ts.tzinfo is not None:
-                    ts = ts.astimezone().replace(tzinfo=None)
-                old = ts < cutoff
-            except (ValueError, KeyError, TypeError):
-                old = False
-            if old:
+            ts = _usage_ts(line)
+            if ts is not None and ts < cutoff:
                 dropped += 1
             else:
                 kept.append(line)
-        if dropped:
-            tmp = usage_log.with_name(usage_log.name + ".tmp")
-            tmp.write_text("".join(kept), encoding="utf-8", newline="\n")
-            os.replace(tmp, usage_log)
-        stamp.write_text(now.isoformat(timespec="seconds"), encoding="utf-8")
+        tmp = usage_log.with_name(usage_log.name + ".tmp")
+        tmp.write_text("".join(kept), encoding="utf-8", newline="\n")
+        os.replace(tmp, usage_log)
         return dropped
-    except OSError:
+    except (OSError, ValueError):
         return 0
 
 
