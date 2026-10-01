@@ -896,7 +896,7 @@ class TestDoctor(unittest.TestCase):
         (self.data / ".graph").mkdir(exist_ok=True)
         hooks = sys.modules["codex_hooks"]  # the module doctor looks up
         with mock.patch.object(hooks, "codex_version", return_value="codex-cli 9.9.9"):
-            self.assertIn("run codex-hooks --probe-deny", self._doctor_with_agents())
+            self.assertIn("--ack-deny to dismiss", self._doctor_with_agents())
             hooks.record_tested_version("codex-cli 9.9.9", self.data)
             self.assertNotIn("--probe-deny", self._doctor_with_agents())
 

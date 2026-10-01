@@ -313,12 +313,53 @@ class TestDenyProbe(unittest.TestCase):
         self.assertEqual(result, "not-enforced")
         self.assertIn("NOT enforced", out)
 
-    def test_hook_not_fired_is_inconclusive_and_records_nothing(self):
+    def test_hook_not_fired_is_inconclusive_and_recorded(self):
         result, out, _ = self._probe(fire=False)
         self.assertEqual(result, "inconclusive")
         self.assertIn("trust", out)
-        self.assertIn("nothing recorded", out)
+        self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
+        self.assertEqual(self._machine()["codex_deny_tested_result"], "inconclusive")
+        with self.mock.patch("subprocess.run", side_effect=self._fake_run()[0]):
+            self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
+
+    def test_ack_records_acknowledged(self):
+        run, _ = self._fake_run()
+        buf = io.StringIO()
+        with self.mock.patch("subprocess.run", side_effect=run), redirect_stdout(buf):
+            self.assertEqual(codex_hooks.ack_deny("codex", self.data), "acknowledged")
+            self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
+        self.assertIn("acknowledged", buf.getvalue())
+        self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
+        self.assertEqual(self._machine()["codex_deny_tested_result"], "acknowledged")
+
+    def test_ack_without_codex_records_nothing(self):
+        with self.mock.patch("shutil.which", return_value=None), \
+             self.mock.patch("subprocess.run", side_effect=OSError("nope")), \
+             redirect_stdout(io.StringIO()) as buf:
+            self.assertEqual(codex_hooks.ack_deny(None, self.data), "skipped")
+            self.assertEqual(codex_hooks.ack_deny("codex", self.data), "skipped")
+        self.assertIn("nothing recorded", buf.getvalue())
         self.assertFalse((self.data / ".graph" / "machine.json").exists())
+
+    def test_retest_status_mentions_last_result(self):
+        run, _ = self._fake_run()
+        with self.mock.patch("subprocess.run", side_effect=run):
+            self.assertIn("no deny check recorded", codex_hooks.deny_retest_status("codex", self.data)[1])
+            codex_hooks.record_tested_version("codex-cli 1.0.0", self.data, "inconclusive")
+            level, text = codex_hooks.deny_retest_status("codex", self.data)
+            self.assertEqual(level, "INFO")
+            self.assertNotIn("\n", text)
+            for part in ("codex-cli 1.0.0 = inconclusive", "codex-cli 1.2.3", "--probe-deny", "--ack-deny"):
+                self.assertIn(part, text)
+
+    def test_retest_status_old_machine_json_without_result(self):
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"codex_deny_tested_version": "codex-cli 1.0.0"}), encoding="utf-8")
+        run, _ = self._fake_run()
+        with self.mock.patch("subprocess.run", side_effect=run):
+            self.assertIn("codex-cli 1.0.0 = unknown", codex_hooks.deny_retest_status("codex", self.data)[1])
+            codex_hooks.record_tested_version("codex-cli 1.2.3", self.data)
+            self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
 
     def test_not_enforced_records_version(self):
         self._probe(write=True)
@@ -336,6 +377,12 @@ class TestDenyProbe(unittest.TestCase):
             self.assertTrue(inline.search(name), name)
         self.assertFalse(inline.search("exec"))
         self.assertIn("|exec)", codex_hooks.PROBE_MATCHER)
+
+    def test_run_error_records_nothing(self):
+        with self.mock.patch("subprocess.run", side_effect=OSError("boom")), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_hooks.probe_deny("codex", self.data), "inconclusive")
+        self.assertFalse((self.data / ".graph" / "machine.json").exists())
 
     def test_timeout_records_nothing(self):
         result, _out, _ = self._probe(timeout=True)
