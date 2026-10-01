@@ -41,7 +41,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - Stop a subagent with `interrupt_agent`; confirm it stopped before giving the same work to a new one. Completion notices give no history size, so do not resume; start a new agent.
 - The `developer_instructions` managed block (installed by `user-config --install`) carries the core rules.
 - Hooks: `context-warn` on every prompt, `delegation-warn` at 4, 6 and 8 inline calls. Subagent calls are detected through the rollout `session_meta` and excluded.
-- `agent-guard` is installed, but Codex CLI does not enforce PreToolUse deny (tested on 0.159.2). Re-test with `codex-hooks --probe-deny` when the CLI changes; until then the role limit is an instruction only.
+- `agent-guard` is installed, but Codex CLI does not enforce PreToolUse deny (tested on 0.159.2). Re-test with `codex-hooks --probe-deny` when the CLI changes (or dismiss the doctor notice with `--ack-deny`); until then the role limit is an instruction only.
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored, CLI 0.159.2), and it would block the orchestrator's own commits.
 
 ## Models

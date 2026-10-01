@@ -153,6 +153,9 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
     if getattr(args, "probe_deny", False):
         probe_deny()
         return
+    if getattr(args, "ack_deny", False):
+        ack_deny()
+        return
     hooks_path = Path(args.hooks).expanduser() if args.hooks else codex_home() / "hooks.json"
     agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else codex_home() / "agents"
     settings = _load_json(hooks_path)
@@ -278,6 +281,7 @@ def statuses(hooks_path: Path | None = None, config_path: Path | None = None,
 # --- PreToolUse deny probe ---------------------------------------------------------------
 
 TESTED_KEY = "codex_deny_tested_version"  # in <data>/.graph/machine.json (gitignored)
+RESULT_KEY = "codex_deny_tested_result"
 PROBE_TIMEOUT = 240
 PROBE_MATCHER = ("^(Write|Edit|apply_patch|Bash|shell|shell_command|local_shell|exec_command"
                  "|exec)$")
@@ -289,10 +293,6 @@ PROBE_HOOK = (
     'print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", '
     '"permissionDecision": "deny", "permissionDecisionReason": "vault-engine deny probe"}}))\n'
 )
-RETEST_HINT = ("Codex CLI changed; PreToolUse deny enforcement is unverified on this version "
-               "- run codex-hooks --probe-deny")
-
-
 def codex_version(executable: str = "codex") -> str | None:
     """Output of `codex --version`, or None when it cannot be run."""
     try:
@@ -326,12 +326,23 @@ def tested_version(data: Path | None = None) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def record_tested_version(version: str, data: Path | None = None) -> bool:
+def tested_result(data: Path | None = None) -> str | None:
+    path = _machine_file(data)
+    value = _load_machine(path).get(RESULT_KEY) if path else None
+    return value if isinstance(value, str) and value else None
+
+
+def record_tested_version(version: str, data: Path | None = None,
+                          result: str | None = None) -> bool:
     path = _machine_file(data)
     if path is None or not path.parent.parent.is_dir():
         return False
     machine = _load_machine(path)
     machine[TESTED_KEY] = version
+    if result:
+        machine[RESULT_KEY] = result
+    else:
+        machine.pop(RESULT_KEY, None)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(machine, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8", newline="\n")
@@ -340,11 +351,32 @@ def record_tested_version(version: str, data: Path | None = None) -> bool:
 
 def deny_retest_status(executable: str = "codex", data: Path | None = None) -> tuple[str, str] | None:
     """INFO when the installed Codex CLI differs from the version the deny probe last
-    ran on (or no probe was recorded); None when it matches or codex cannot run."""
+    ran on or acknowledged (or nothing was recorded); None when it matches or codex
+    cannot run."""
     version = codex_version(executable)
-    if version is None or tested_version(data) == version:
+    recorded = tested_version(data)
+    if version is None or recorded == version:
         return None
-    return "INFO", RETEST_HINT
+    last = (f"last deny check: {recorded} = {tested_result(data) or 'unknown'}"
+            if recorded else "no deny check recorded")
+    return "INFO", (f"Codex CLI changed ({last}); PreToolUse deny unverified on {version} "
+                    "- run codex-hooks --probe-deny, or --ack-deny to dismiss")
+
+
+def ack_deny(executable: str | None = None, data: Path | None = None) -> str:
+    """Record the current Codex version as acknowledged without running the probe.
+    Returns "acknowledged" or "skipped"."""
+    executable = executable or shutil.which("codex")
+    version = codex_version(executable) if executable else None
+    if not version:
+        print("codex-hooks --ack-deny: codex not found or version unknown; nothing recorded")
+        return "skipped"
+    if not record_tested_version(version, data, "acknowledged"):
+        print("codex-hooks --ack-deny: no data dir to record in; nothing recorded")
+        return "skipped"
+    print(f"codex-hooks --ack-deny: recorded {TESTED_KEY}={version}, "
+          f"{RESULT_KEY}=acknowledged in machine.json")
+    return "acknowledged"
 
 
 def probe_deny(executable: str | None = None, data: Path | None = None,
@@ -389,10 +421,10 @@ def probe_deny(executable: str | None = None, data: Path | None = None,
         result, text = "inconclusive", (
             "hook did not fire: project hooks likely need trust (review the project in "
             "Codex first), or the matcher lacks this CLI's real tool names "
-            f"(tried {PROBE_MATCHER}); nothing recorded")
+            f"(tried {PROBE_MATCHER}); version recorded as inconclusive")
     print(f"codex-hooks --probe-deny: {text} [{version or 'unknown version'}]")
-    if result != "inconclusive" and version and record_tested_version(version, data):
-        print(f"  recorded {TESTED_KEY} in machine.json")
+    if version and record_tested_version(version, data, result):
+        print(f"  recorded {TESTED_KEY} and {RESULT_KEY}={result} in machine.json")
     return result
 
 
@@ -401,6 +433,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--probe-deny", action="store_true",
                         help="run one throwaway `codex exec` to test whether a PreToolUse deny "
                              "is enforced, and record the Codex version tested")
+    parser.add_argument("--ack-deny", action="store_true",
+                        help="record the current Codex version as acknowledged (deny unverified) "
+                             "without running the probe, to dismiss the doctor INFO line")
     parser.add_argument("--install", action="store_true",
                         help="write hooks.json and missing worker profiles (default: dry run)")
     parser.add_argument("--hooks", help="hooks.json path (default: <CODEX_HOME>/hooks.json)")
