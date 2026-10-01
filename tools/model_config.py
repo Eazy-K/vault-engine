@@ -9,6 +9,7 @@ try/except, since that script runs standalone) `agent-guard.py`. Stdlib only.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 # Cheapest to most expensive. A model not listed here is unknown: it never
@@ -25,11 +26,29 @@ DEFAULT_MODELS = {
 }
 
 
-def rank(model: str | None) -> int | None:
-    """This model's rank (0 = cheapest), or None if it isn't a known model."""
+_VARIANT_SUFFIX = re.compile(r"\[[^\]]*\]$")
+
+
+def has_variant(model: str | None) -> bool:
+    """True if `model` carries a trailing [variant] suffix, e.g. "opus[1m]"."""
+    return isinstance(model, str) and bool(_VARIANT_SUFFIX.search(model.strip()))
+
+
+def base_model(model: str | None) -> str | None:
+    """`model` without a trailing [variant] suffix (e.g. "opus[1m]" -> "opus"),
+    stripped and lowercased. None if `model` isn't a string."""
     if not isinstance(model, str):
         return None
-    return MODEL_RANK.get(model.strip().lower())
+    return _VARIANT_SUFFIX.sub("", model.strip()).strip().lower()
+
+
+def rank(model: str | None) -> int | None:
+    """This model's rank (0 = cheapest), or None if it isn't a known model.
+    A [variant] suffix such as "[1m]" is ignored."""
+    base = base_model(model)
+    if base is None:
+        return None
+    return MODEL_RANK.get(base)
 
 
 def is_cheaper(model: str | None, than: str | None) -> bool:

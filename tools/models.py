@@ -83,12 +83,25 @@ def _backup(path: Path) -> Path | None:
 
 # --- apply: settings.json + worker-*.md frontmatter ---------------------------
 
+def _model_matches(configured: str, existing) -> bool:
+    """A configured model without a [variant] suffix ("opus") matches any
+    variant of it in settings.json ("opus[1m]"); a configured model with a
+    suffix must match exactly (case-insensitive)."""
+    if not isinstance(existing, str):
+        return False
+    if mc.has_variant(configured):
+        return existing.strip().lower() == configured.strip().lower()
+    return mc.base_model(existing) == mc.base_model(configured)
+
+
 def settings_matches(effective: dict, settings_path: Path) -> bool:
     """True if settings.json's "model" and "effortLevel" already match the
-    configured orchestrator (the fields `--apply` writes)."""
+    configured orchestrator (the fields `--apply` writes). A suffix-less
+    configured model also matches a suffixed one ("opus" vs "opus[1m]")."""
     settings = _load(settings_path)
     orch = effective["orchestrator"]
-    return settings.get("model") == orch["model"] and settings.get("effortLevel") == orch["effort"]
+    return (_model_matches(orch["model"], settings.get("model"))
+            and settings.get("effortLevel") == orch["effort"])
 
 
 def _apply_settings(effective: dict, settings_path: Path) -> bool:
@@ -105,7 +118,10 @@ def _apply_settings(effective: dict, settings_path: Path) -> bool:
     settings = _load(settings_path)
     if settings_path.exists():
         _backup(settings_path)
-    settings["model"] = effective["orchestrator"]["model"]
+    # Keep an existing variant suffix ("opus[1m]") when the configured model
+    # is the same base without one.
+    if not _model_matches(effective["orchestrator"]["model"], settings.get("model")):
+        settings["model"] = effective["orchestrator"]["model"]
     settings["effortLevel"] = effective["orchestrator"]["effort"]
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n",

@@ -199,6 +199,42 @@ class TestApply(ModelsTestCase):
         self.assertIn("OUT OF DATE", out)
 
 
+class TestVariantSuffix(ModelsTestCase):
+    def _settings(self, **kw):
+        self.settings.write_text(json.dumps(kw), encoding="utf-8")
+
+    def _read(self):
+        return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def _eff(self, model):
+        return {"orchestrator": {"model": model, "effort": "medium"}}
+
+    def test_suffixless_config_matches_suffixed_settings(self):
+        self._settings(model="opus[1m]", effortLevel="medium")
+        self.assertTrue(models.settings_matches(self._eff("opus"), self.settings))
+
+    def test_suffixed_config_requires_exact_match(self):
+        self._settings(model="opus", effortLevel="medium")
+        self.assertFalse(models.settings_matches(self._eff("opus[1m]"), self.settings))
+        self._settings(model="Opus[1M]", effortLevel="medium")
+        self.assertTrue(models.settings_matches(self._eff("opus[1m]"), self.settings))
+
+    def test_apply_keeps_suffix_when_only_effort_changes(self):
+        self._settings(model="opus[1m]", effortLevel="low")
+        models._apply_settings(self._eff("opus"), self.settings)
+        self.assertEqual(self._read(), {"model": "opus[1m]", "effortLevel": "medium"})
+
+    def test_apply_writes_suffixed_config_over_plain_settings(self):
+        self._settings(model="opus", effortLevel="medium")
+        self.assertTrue(models._apply_settings(self._eff("opus[1m]"), self.settings))
+        self.assertEqual(self._read()["model"], "opus[1m]")
+
+    def test_apply_replaces_different_base_model(self):
+        self._settings(model="opus[1m]", effortLevel="medium")
+        models._apply_settings(self._eff("sonnet"), self.settings)
+        self.assertEqual(self._read()["model"], "sonnet")
+
+
 class TestStatus(ModelsTestCase):
     def test_status_none_when_settings_missing(self):
         self.assertIsNone(models.status(self.data, self.settings, self.agents))
