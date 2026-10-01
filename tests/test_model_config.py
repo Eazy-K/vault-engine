@@ -53,6 +53,14 @@ class TestRanking(unittest.TestCase):
     def test_allowed_worker_models_sonnet_orchestrator(self):
         self.assertEqual(mc.allowed_worker_models("sonnet"), ["haiku"])
 
+    def test_variant_suffix_ignored_in_rank(self):
+        self.assertEqual(mc.rank("opus[1m]"), mc.rank("opus"))
+        self.assertEqual(mc.rank(" Opus[1M] "), mc.rank("opus"))
+        self.assertIsNone(mc.rank("[1m]"))
+
+    def test_allowed_worker_models_with_variant_suffix(self):
+        self.assertEqual(mc.allowed_worker_models("opus[1m]"), ["haiku", "sonnet"])
+
 
 class TestLayering(unittest.TestCase):
     def setUp(self):
