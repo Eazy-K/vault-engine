@@ -217,6 +217,7 @@ DEFAULT_BUDGET = 2000  # tokens of note content printed by `context`
 CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
+MAX_SENTENCE_WORDS = 25  # `lint` warns above this (one warning per note)
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
@@ -1706,6 +1707,32 @@ def cmd_show(args) -> None:
               f"learned {graph.learned.get(key, 0.0):+.3f})")
 
 
+def sentence_lengths(body: str) -> list[int]:
+    """Word count of each sentence in a note body (prose only).
+
+    Skips fenced code, table rows, headings and HTML comments. A [[link]], an
+    inline code span and a URL each count as one word. Every line, and every
+    `. ! ?` followed by whitespace, ends a sentence."""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    counts: list[int] = []
+    fence = False
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence or not line or line.startswith(("|", "#")):
+            continue
+        line = re.sub(r"^(?:[-*+]|\d+[.)])\s+", "", line)
+        line = re.sub(r"\[\[[^\]]*\]\]|`[^`]*`|https?://\S+", " X ", line)
+        line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"", line)
+        for sentence in re.split(r"[.!?]+(?:\s+|$)", line):
+            n = len(sentence.split())
+            if n:
+                counts.append(n)
+    return counts
+
+
 def cmd_lint(_args, paths: Paths | None = None) -> None:
     graph = Graph(paths)
     errors = list(graph.problems)
@@ -1728,6 +1755,11 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
         lines = [line for line in note.body.splitlines() if line.strip()]
         if note.core and len(lines) > MAX_CORE_LINES:
             warnings.append(f"{nid}: core note has {len(lines)} lines (max {MAX_CORE_LINES})")
+    for nid, note in graph.notes.items():
+        long = [n for n in sentence_lengths(note.body) if n > MAX_SENTENCE_WORDS]
+        if long:
+            warnings.append(f"{nid}: {len(long)} sentence(s) over {MAX_SENTENCE_WORDS} words "
+                            f"(longest {max(long)})")
     for line in errors:
         print(f"ERROR  {line}")
     for line in warnings:

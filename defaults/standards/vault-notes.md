@@ -18,6 +18,10 @@ weights:
 - Bullet points and table rows must stand on their own, because search treats each one as a separate chunk.
 - Don't write placeholder or example lines — they cause false matches.
 - Dates are written in absolute form (YYYY-MM-DD).
+- Keep sentences short: one fact per sentence. Use at most about 25 words (`lint` warns above this).
+- Use the same term for the same thing every time. Do not switch synonyms; put synonyms in `keywords`.
+- Prefer active voice. Write instructions in imperative form, one instruction per sentence.
+- Cut filler words.
 - File names are English and kebab-case; content language is whatever the user has set in `profile/language.md`.
 
 ## Frontmatter
@@ -48,7 +52,7 @@ weights:
 - `show`: shows a note's edges (`--body` prints its full text; `context` names this command for notes it truncated or left out)
 - `reinforce --task <id>`, `decay`: learning. `reinforce` also runs `decay` by itself when more than 7 days have passed since this computer's last decay (the timestamp is kept per computer, not committed), so running `decay` by hand is rarely needed
 - `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used, and (when the delegation hook has logged them) how often the orchestrator did multi-call work inline
-- `lint`: consistency check
+- `lint`: consistency check (also warns about notes with sentences over 25 words)
 - `mv <note> <new path or name>`: moves or renames a note and updates `[[links]]`, `weights` and learned edges. Don't move notes by hand.
 - `index`: precomputes embeddings
 - `tasks`: lists inbox tasks (`--status`, `--project`)
