@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_core import graph, note, write  # noqa: E402
 
-LONG = " ".join(["word"] * 30) + "."
+LONG = " ".join(["word"] * 35) + "."
 SHORT = "This sentence is short."
 
 
@@ -35,7 +35,7 @@ class TestSentenceLint(unittest.TestCase):
 
     def test_long_sentence_warns_without_failing(self):
         out, code = self.lint(LONG)
-        self.assertIn("a: 1 sentence(s) over 25 words (longest 30)", out)
+        self.assertIn("a: 1 sentence(s) over 30 words (longest 35)", out)
         self.assertEqual(code, 0)
 
     def test_short_sentences_pass(self):
@@ -62,6 +62,14 @@ class TestSentenceLint(unittest.TestCase):
         half = " ".join(["w"] * 15)
         out, _ = self.lint(f"{half}\n{half}")
         self.assertNotIn("sentence(s)", out)
+
+    def test_task_notes_are_skipped(self):
+        write(self.data / "t.md", note("T", LONG, extra="keywords: [t]\ntype: task\n"))
+        write(self.data / "inbox" / "p" / "0001-x.md", note("X", LONG, extra="keywords: [x]\n"))
+        out = StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            graph.cmd_lint(Namespace(), self.paths)
+        self.assertNotIn("sentence(s)", out.getvalue())
 
     def test_limit_is_module_constant(self):
         with mock.patch.object(graph, "MAX_SENTENCE_WORDS", 50):

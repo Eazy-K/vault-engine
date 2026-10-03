@@ -217,7 +217,7 @@ DEFAULT_BUDGET = 2000  # tokens of note content printed by `context`
 CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
-MAX_SENTENCE_WORDS = 25  # `lint` warns above this (one warning per note)
+MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
@@ -1756,6 +1756,8 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
         if note.core and len(lines) > MAX_CORE_LINES:
             warnings.append(f"{nid}: core note has {len(lines)} lines (max {MAX_CORE_LINES})")
     for nid, note in graph.notes.items():
+        if note.meta.get("type") == "task" or nid.startswith("inbox/"):
+            continue  # task notes are working logs, not search content
         long = [n for n in sentence_lengths(note.body) if n > MAX_SENTENCE_WORDS]
         if long:
             warnings.append(f"{nid}: {len(long)} sentence(s) over {MAX_SENTENCE_WORDS} words "

@@ -5,7 +5,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ## [Unreleased]
 
 ### Added
-- `lint` warns once per note when it has sentences over 25 words (`MAX_SENTENCE_WORDS` in `graph.py`); code blocks, tables, headings and comments are skipped. Warnings never change the exit code. The `vault-notes` standard gains short-sentence, same-term, active-voice and no-filler rules.
+- `lint` warns once per note when it has sentences over 30 words (`MAX_SENTENCE_WORDS` in `graph.py`); task notes (`type: task` or under `inbox/`), code blocks, tables, headings and comments are skipped. Warnings never change the exit code. The `vault-notes` standard gains short-sentence, same-term, active-voice and no-filler rules.
 
 ## [0.11.0] - 2026-10-01
 
