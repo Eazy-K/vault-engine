@@ -131,22 +131,46 @@ def _backup(path: Path) -> Path | None:
     return candidate
 
 
-def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path]]:
-    installed, skipped = [], []
+def _agent_state(source: Path, target: Path) -> str:
+    """"missing", "same", "old" (an unedited earlier shipped version) or "custom"."""
+    if not target.exists():
+        return "missing"
+    current = target.read_bytes().replace(b"\r\n", b"\n")
+    if current == source.read_bytes().replace(b"\r\n", b"\n"):
+        return "same"
+    import onboarding  # lazy: shares Claude's git-history check for earlier shipped versions
+    rel = f"tools/codex-agents/{source.name}"
+    return "old" if onboarding._blob_id(current) in onboarding._shipped_blob_ids(rel) else "custom"
+
+
+def refreshable_workers(agents_dir: Path | None = None) -> list[str]:
+    """Names of shipped worker profiles that `update` may write: missing, or an
+    unedited earlier shipped version. Empty unless the agents dir already holds at
+    least one shipped worker (Codex counts as set up for workers only then);
+    customized files are never listed."""
+    agents_dir = agents_dir or (codex_home() / "agents")
+    states = {p.name: _agent_state(p, agents_dir / p.name)
+              for p in sorted(AGENTS_DIR.glob("worker-*.toml"))}
+    if all(st == "missing" for st in states.values()):
+        return []
+    return [name for name, st in states.items() if st in ("missing", "old")]
+
+
+def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path], list[Path]]:
+    installed, skipped, updated = [], [], []
     agents_dir.mkdir(parents=True, exist_ok=True)
     for source in sorted(AGENTS_DIR.glob("worker-*.toml")):
         target = agents_dir / source.name
-        content = source.read_bytes()
-        if target.exists():
-            current = target.read_bytes()
-            if current.replace(b"\r\n", b"\n") == content.replace(b"\r\n", b"\n"):
-                continue
+        state = _agent_state(source, target)
+        if state == "same":
+            continue
+        if state == "custom":
             # Do not replace locally edited profiles: the user may have customized them.
             skipped.append(target)
             continue
-        target.write_bytes(content)
-        installed.append(target)
-    return installed, skipped
+        target.write_bytes(source.read_bytes())
+        (updated if state == "old" else installed).append(target)
+    return installed, skipped, updated
 
 
 def cmd_codex_hooks(args: argparse.Namespace) -> None:
@@ -158,29 +182,37 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
         return
     hooks_path = Path(args.hooks).expanduser() if args.hooks else codex_home() / "hooks.json"
     agents_dir = Path(args.agents_dir).expanduser() if args.agents_dir else codex_home() / "agents"
-    settings = _load_json(hooks_path)
-    if settings is None:
-        sys.exit(f"codex-hooks: refusing to replace invalid JSON in {hooks_path}")
-    merged, hooks_changed = merge(settings)
+    agents_only = getattr(args, "agents_only", False)
+    merged, hooks_changed = {}, False
+    if not agents_only:
+        settings = _load_json(hooks_path)
+        if settings is None:
+            sys.exit(f"codex-hooks: refusing to replace invalid JSON in {hooks_path}")
+        merged, hooks_changed = merge(settings)
     agent_sources = sorted(AGENTS_DIR.glob("worker-*.toml"))
     missing_agents = [p for p in agent_sources if not (agents_dir / p.name).exists()]
-    custom_agents = [p for p in agent_sources if (agents_dir / p.name).exists()
-                     and (agents_dir / p.name).read_bytes().replace(b"\r\n", b"\n")
-                     != p.read_bytes().replace(b"\r\n", b"\n")]
+    states = {p: _agent_state(p, agents_dir / p.name) for p in agent_sources}
+    old_agents = [p for p, st in states.items() if st == "old"]
+    custom_agents = [p for p, st in states.items() if st == "custom"]
 
     if not args.install:
-        if not hooks_changed and not missing_agents and not custom_agents:
+        if not hooks_changed and not missing_agents and not old_agents \
+                and not custom_agents:
             print(f"up to date: {hooks_path}; worker profiles: {agents_dir}")
         else:
             print(f"would update: {hooks_path}" if hooks_changed else f"hooks up to date: {hooks_path}")
             if missing_agents:
                 print("  install workers: " + ", ".join(p.name for p in missing_agents))
+            if old_agents:
+                print("  update unedited workers: " + ", ".join(p.name for p in old_agents))
             if custom_agents:
                 print("  keep customized workers: " + ", ".join(p.name for p in custom_agents))
             print("(dry run: pass --install to write missing or managed files)")
         return
 
-    if hooks_changed:
+    if agents_only:
+        pass
+    elif hooks_changed:
         backup = _backup(hooks_path)
         if backup:
             print(f"  backup: {backup}")
@@ -190,9 +222,11 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
         print(f"  installed hooks: {hooks_path}")
     else:
         print(f"  hooks up to date: {hooks_path}")
-    installed, skipped = _install_agents(agents_dir)
+    installed, skipped, updated = _install_agents(agents_dir)
     for path in installed:
         print(f"  installed worker: {path}")
+    for path in updated:
+        print(f"  updated worker: {path}")
     for path in skipped:
         print(f"  kept customized worker: {path}")
 
@@ -438,6 +472,8 @@ def register(sub: argparse._SubParsersAction) -> None:
                              "without running the probe, to dismiss the doctor INFO line")
     parser.add_argument("--install", action="store_true",
                         help="write hooks.json and missing worker profiles (default: dry run)")
+    parser.add_argument("--agents-only", action="store_true",
+                        help="leave hooks.json alone and only install/update worker profiles")
     parser.add_argument("--hooks", help="hooks.json path (default: <CODEX_HOME>/hooks.json)")
     parser.add_argument("--agents-dir", help="worker directory (default: <CODEX_HOME>/agents)")
     parser.set_defaults(func=cmd_codex_hooks)
