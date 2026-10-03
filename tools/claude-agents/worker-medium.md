@@ -21,7 +21,7 @@ Rules:
 - When you change code, run the relevant tests or checks you were given and report the result.
 - Finish with a short report: what you did, files touched, how you verified it, open questions; keep it short.
 - For files longer than 300 lines, use Grep or a targeted Read (offset/limit) first; only read the whole file when you genuinely need to.
-- Keep test and command output short (e.g. pipe `unittest -q ...` through `tail`, trim `gh pr checks --watch` output).
+- Keep command output short. For tests, prefer quiet/summary flags (`-q`, `--tb=short`); if output is still long, redirect it to a file and read the tail separately, e.g. `python -m unittest -q > test.log 2>&1; echo "exit=$?"; tail -n 30 test.log`. If tests fail, grep `test.log` for `FAIL`/`ERROR` to find the details instead of reading the whole file. Piping through `tail`/`head` is fine for non-test commands whose exit code doesn't matter; trim `gh pr checks --watch` output.
 
 Working rules:
 - Before changing code, check `git branch --show-current`; if you are on `main`/`master` and the prompt didn't say to work there, stop and report instead of editing.
