@@ -131,22 +131,33 @@ def _backup(path: Path) -> Path | None:
     return candidate
 
 
-def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path]]:
-    installed, skipped = [], []
+def _agent_state(source: Path, target: Path) -> str:
+    """"missing", "same", "old" (an unedited earlier shipped version) or "custom"."""
+    if not target.exists():
+        return "missing"
+    current = target.read_bytes().replace(b"\r\n", b"\n")
+    if current == source.read_bytes().replace(b"\r\n", b"\n"):
+        return "same"
+    import onboarding  # lazy: shares Claude's git-history check for earlier shipped versions
+    rel = f"tools/codex-agents/{source.name}"
+    return "old" if onboarding._blob_id(current) in onboarding._shipped_blob_ids(rel) else "custom"
+
+
+def _install_agents(agents_dir: Path) -> tuple[list[Path], list[Path], list[Path]]:
+    installed, skipped, updated = [], [], []
     agents_dir.mkdir(parents=True, exist_ok=True)
     for source in sorted(AGENTS_DIR.glob("worker-*.toml")):
         target = agents_dir / source.name
-        content = source.read_bytes()
-        if target.exists():
-            current = target.read_bytes()
-            if current.replace(b"\r\n", b"\n") == content.replace(b"\r\n", b"\n"):
-                continue
+        state = _agent_state(source, target)
+        if state == "same":
+            continue
+        if state == "custom":
             # Do not replace locally edited profiles: the user may have customized them.
             skipped.append(target)
             continue
-        target.write_bytes(content)
-        installed.append(target)
-    return installed, skipped
+        target.write_bytes(source.read_bytes())
+        (updated if state == "old" else installed).append(target)
+    return installed, skipped, updated
 
 
 def cmd_codex_hooks(args: argparse.Namespace) -> None:
@@ -164,17 +175,20 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
     merged, hooks_changed = merge(settings)
     agent_sources = sorted(AGENTS_DIR.glob("worker-*.toml"))
     missing_agents = [p for p in agent_sources if not (agents_dir / p.name).exists()]
-    custom_agents = [p for p in agent_sources if (agents_dir / p.name).exists()
-                     and (agents_dir / p.name).read_bytes().replace(b"\r\n", b"\n")
-                     != p.read_bytes().replace(b"\r\n", b"\n")]
+    states = {p: _agent_state(p, agents_dir / p.name) for p in agent_sources}
+    old_agents = [p for p, st in states.items() if st == "old"]
+    custom_agents = [p for p, st in states.items() if st == "custom"]
 
     if not args.install:
-        if not hooks_changed and not missing_agents and not custom_agents:
+        if not hooks_changed and not missing_agents and not old_agents \
+                and not custom_agents:
             print(f"up to date: {hooks_path}; worker profiles: {agents_dir}")
         else:
             print(f"would update: {hooks_path}" if hooks_changed else f"hooks up to date: {hooks_path}")
             if missing_agents:
                 print("  install workers: " + ", ".join(p.name for p in missing_agents))
+            if old_agents:
+                print("  update unedited workers: " + ", ".join(p.name for p in old_agents))
             if custom_agents:
                 print("  keep customized workers: " + ", ".join(p.name for p in custom_agents))
             print("(dry run: pass --install to write missing or managed files)")
@@ -190,9 +204,11 @@ def cmd_codex_hooks(args: argparse.Namespace) -> None:
         print(f"  installed hooks: {hooks_path}")
     else:
         print(f"  hooks up to date: {hooks_path}")
-    installed, skipped = _install_agents(agents_dir)
+    installed, skipped, updated = _install_agents(agents_dir)
     for path in installed:
         print(f"  installed worker: {path}")
+    for path in updated:
+        print(f"  updated worker: {path}")
     for path in skipped:
         print(f"  kept customized worker: {path}")
 

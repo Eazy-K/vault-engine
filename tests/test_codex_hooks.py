@@ -14,6 +14,7 @@ import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 for _var in ("VAULT_DATA", "VAULT_HOME"):
     os.environ.pop(_var, None)
@@ -32,6 +33,7 @@ sys.modules["graph"] = graph
 spec.loader.exec_module(graph)
 sys.path.insert(0, str(TOOLS_DIR))
 import codex_hooks  # noqa: E402
+import onboarding  # noqa: E402
 
 
 class TestMerge(unittest.TestCase):
@@ -179,6 +181,36 @@ class TestInstall(unittest.TestCase):
         self.assertIn("kept customized worker", output)
         self.assertEqual(custom.read_text(encoding="utf-8"), "# local edit\n")
         self.assertTrue((self.agents / "worker-medium.toml").exists())
+
+    def test_install_updates_unedited_earlier_version(self):
+        self.agents.mkdir(parents=True)
+        old = self.agents / "worker-low.toml"
+        old.write_text("# earlier shipped version\n", encoding="utf-8")
+        with mock.patch("onboarding._shipped_blob_ids",
+                        return_value={onboarding._blob_id(b"# earlier shipped version\n")}):
+            output = self._run(True)
+        shipped = (codex_hooks.AGENTS_DIR / "worker-low.toml").read_bytes()
+        self.assertEqual(old.read_bytes(), shipped)
+        self.assertIn("updated worker", output)
+        self.assertNotIn("kept customized", output)
+
+    def test_install_leaves_identical_worker_unchanged(self):
+        self._run(True)
+        output = self._run(True)
+        self.assertNotIn("updated worker", output)
+        self.assertNotIn("installed worker", output)
+        self.assertNotIn("kept customized", output)
+
+    def test_dry_run_writes_nothing_for_earlier_version(self):
+        self.agents.mkdir(parents=True)
+        old = self.agents / "worker-low.toml"
+        old.write_text("# earlier shipped version\n", encoding="utf-8")
+        with mock.patch("onboarding._shipped_blob_ids",
+                        return_value={onboarding._blob_id(b"# earlier shipped version\n")}):
+            output = self._run(False)
+        self.assertIn("update unedited workers: worker-low.toml", output)
+        self.assertEqual(old.read_text(encoding="utf-8"), "# earlier shipped version\n")
+        self.assertFalse(self.hooks.exists())
 
     def test_invalid_json_is_not_overwritten(self):
         self.hooks.parent.mkdir(parents=True)
