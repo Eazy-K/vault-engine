@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [Unreleased]
+
+### Added
+- `lint` warns once per note when it has sentences over 30 words (`MAX_SENTENCE_WORDS` in `graph.py`); task notes (`type: task` or under `inbox/`), code blocks, tables, headings and comments are skipped. Warnings never change the exit code. The `vault-notes` standard gains short-sentence, same-term, active-voice and no-filler rules.
+
 ## [0.11.0] - 2026-10-01
 
 ### Added
