@@ -2,10 +2,23 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
-## [Unreleased]
+## [0.12.0] - 2026-10-03
 
 ### Added
+- `codex-hooks --ack-deny` acknowledges an inconclusive deny probe; the inconclusive result is now recorded so `doctor` does not keep asking.
+- `update` refreshes stale Codex worker agent files as well as Claude ones (`--agents` or an interactive yes; edited files are kept). `codex-hooks --agents-only` installs or updates only the workers.
 - `lint` warns once per note when it has sentences over 30 words (`MAX_SENTENCE_WORDS` in `graph.py`); task notes (`type: task` or under `inbox/`), code blocks, tables, headings and comments are skipped. Warnings never change the exit code. The `vault-notes` standard gains short-sentence, same-term, active-voice and no-filler rules.
+
+### Changed
+- Worker agent rules (Claude and Codex) now allow worker commits, share one test-output rule (redirect to a file, print the exit code, read the tail, grep for FAIL/ERROR) and tell workers to lint vault notes before and after editing.
+- README gains an "Updating another computer" section.
+
+### Fixed
+- Installing Codex hooks updates unedited copies of the worker agent files instead of leaving them stale.
+- A configured model without a variant suffix (e.g. `opus`) matches `opus[1m]` in `settings.json`, and `--apply` keeps the existing suffix.
+
+### Upgrade notes
+- After updating the engine, run `python tools/graph.py update --agents` to refresh the Claude and Codex worker files. Worker files you edited are kept.
 
 ## [0.11.0] - 2026-10-01
 
