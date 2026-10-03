@@ -18,7 +18,7 @@ weights:
 - Bullet points and table rows must stand on their own, because search treats each one as a separate chunk.
 - Don't write placeholder or example lines — they cause false matches.
 - Dates are written in absolute form (YYYY-MM-DD).
-- Keep sentences short: one fact per sentence. Use at most about 30 words (`lint` warns above this).
+- Keep sentences short: one fact per sentence. Use at most 30 words per sentence. A backticked path or code span, a `[[link]]` and a URL each count as one word. `lint` warns above this limit, except in task notes (`type: task` and `inbox/`). It ignores fenced code, tables and headings.
 - Use the same term for the same thing every time. Do not switch synonyms; put synonyms in `keywords`.
 - Prefer active voice. Write instructions in imperative form, one instruction per sentence.
 - Cut filler words.
