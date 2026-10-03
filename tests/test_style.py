@@ -52,7 +52,7 @@ class TestVersion(unittest.TestCase):
         source = (TOOLS / "graph.py").read_text(encoding="utf-8")
         version = re.search(r'^__version__ = "([^"]+)"', source, re.M).group(1)
         changelog = (TOOLS.parent / "CHANGELOG.md").read_text(encoding="utf-8")
-        top = re.search(r"^## [(?!Unreleased)([^]]+)]", changelog, re.M).group(1)  # Unreleased is allowed above
+        top = re.search(r"^## \[(?!Unreleased)([^\]]+)\]", changelog, re.M).group(1)  # Unreleased may sit above
         self.assertEqual(top, version)
 
     def test_schema_raise_has_upgrade_note(self):
