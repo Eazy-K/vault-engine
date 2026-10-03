@@ -363,7 +363,10 @@ available, want me to check what changed?"). If they agree:
    subagent files being out of date on this computer (only shown when `~/.claude`
    exists), ask the user once, then run the `update` command it gives
    (`--claude-hooks --models --agents`, which install/sync all three without further
-   prompting; `update` alone offers each interactively instead).
+   prompting; `update` alone offers each interactively instead). `--agents` also
+   refreshes Codex worker profiles (`<CODEX_HOME>/agents/worker-*.toml`) that are missing
+   or an unedited older version, when Codex workers are already installed; edited ones
+   are kept, and `hooks.json` is left to `codex-hooks --install`.
 
 Only 0.3.0 and later check for new versions and have `update`. On 0.1.0 and 0.2.0 you
 get no update line, and `update` fails with `invalid choice: 'update'`; use the next

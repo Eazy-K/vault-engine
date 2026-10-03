@@ -99,7 +99,7 @@ git -C <data repo> pull --rebase --autostash
 python <engine>/tools/graph.py doctor
 python <engine>/tools/graph.py user-config --install   # doctor ayar farkı bildirirse
 python <engine>/tools/graph.py codex-hooks --install   # doctor Codex hook'larının eskidiğini bildirirse
-python <engine>/tools/graph.py update --claude-hooks --models --agents   # doctor Claude hook'larının eskidiğini bildirirse (kararlı kanal; geliştirme kanalında bunun yerine `claude-hooks --install` ve `models --apply` çalıştırın)
+python <engine>/tools/graph.py update --claude-hooks --models --agents   # doctor Claude hook'larının eskidiğini bildirirse (kararlı kanal; geliştirme kanalında bunun yerine `claude-hooks --install` ve `models --apply` çalıştırın; `--agents` Codex worker profillerini de yeniler, düzenlenmiş olanları korur)
 ```
 
 Her kurulum komutu bir dosyayı değiştirmeden önce yedeğini alır ve ikinci çalıştırmada hiçbir şey yapmaz.

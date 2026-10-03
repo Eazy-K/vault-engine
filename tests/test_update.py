@@ -1029,6 +1029,63 @@ class TestUpdateAgents(unittest.TestCase):
         m.assert_not_called()
 
 
+class TestUpdateCodexAgents(unittest.TestCase):
+    """update also refreshes <CODEX_HOME>/agents/worker-*.toml that are missing or
+    an unedited earlier version, with the same consent rules as the Claude files."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.engine = self.tmp / "engine"
+        _write(self.engine / "tools" / "codex-agents" / "worker-low.toml", "content")
+
+    def _run(self, stale=("worker-low.toml",), interactive=False, answer="", **kw):
+        fake = types.SimpleNamespace(refreshable_workers=lambda: list(stale))
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="  updated worker: x\n", stderr="")
+        with mock.patch.dict(sys.modules, {"codex_hooks": fake}),              mock.patch("update.run_step", return_value=done) as m,              mock.patch.object(update.g, "stdin_is_interactive", return_value=interactive),              mock.patch("builtins.input", return_value=answer), redirect_stdout(StringIO()) as buf:
+            update._codex_agents_step(self.engine, self.tmp / "data", Args(**kw))
+        return [c.args[2] for c in m.call_args_list], buf.getvalue()
+
+    def test_yes_alone_only_prints_the_command(self):
+        calls, out = self._run(yes=True)
+        self.assertEqual(calls, [])
+        self.assertIn("worker-low.toml", out)
+        self.assertIn("rerun update with --agents", out)
+
+    def test_interactive_yes_refreshes_workers_only(self):
+        calls, out = self._run(interactive=True, answer="y")
+        self.assertEqual(calls, [["codex-hooks", "--install", "--agents-only"]])
+        self.assertIn("updated worker: x", out)
+
+    def test_interactive_no_does_not_refresh(self):
+        calls, _ = self._run(interactive=True, answer="n")
+        self.assertEqual(calls, [])
+
+    def test_flag_refreshes_without_asking(self):
+        calls, _ = self._run(yes=True, agents=True)
+        self.assertEqual(len(calls), 1)
+
+    def test_quiet_when_nothing_to_refresh(self):
+        calls, out = self._run(stale=(), agents=True)
+        self.assertEqual(calls, [])
+        self.assertEqual(out, "")
+
+    def test_skipped_without_shipped_codex_agents_or_module(self):
+        shutil.rmtree(self.engine / "tools" / "codex-agents")
+        calls, _ = self._run(agents=True)
+        self.assertEqual(calls, [])
+        _write(self.engine / "tools" / "codex-agents" / "worker-low.toml", "content")
+        with mock.patch.dict(sys.modules, {"codex_hooks": None}),              mock.patch("update.run_step") as m, redirect_stdout(StringIO()):
+            update._codex_agents_step(self.engine, self.tmp / "data", Args(yes=True, agents=True))
+        m.assert_not_called()
+
+    def test_agents_step_runs_both(self):
+        with mock.patch("update._claude_agents_step") as c,              mock.patch("update._codex_agents_step") as x:
+            update._agents_step(self.engine, self.tmp / "data", Args(yes=True))
+        c.assert_called_once()
+        x.assert_called_once()
+
+
 class TestUpdateRunsAgentsStep(UpdateTestCase):
     def test_called_after_a_successful_upgrade(self):
         fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")

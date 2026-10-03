@@ -426,6 +426,12 @@ def _models_step(engine: Path, data: Path, args) -> None:
 # --- update command: Claude Code subagent files -----------------------------
 
 def _agents_step(engine: Path, data: Path, args) -> None:
+    """Refresh step for the worker files of both agents: Claude Code's, then Codex's."""
+    _claude_agents_step(engine, data, args)
+    _codex_agents_step(engine, data, args)
+
+
+def _claude_agents_step(engine: Path, data: Path, args) -> None:
     """Offers to refresh ~/.claude/agents/worker-*.md (or under $CLAUDE_CONFIG_DIR; and the other shipped
     subagent files) that differ from the engine's current versions (see
     onboarding.stale_claude_agents / onboarding._setup_agents). ~/.claude
@@ -456,6 +462,35 @@ def _agents_step(engine: Path, data: Path, args) -> None:
         return
     result = run_step(engine, data, ["setup", "--yes", "--no-env", "--no-routing",
                                      "--no-machine", "--no-projects", "--data", str(data)])
+    _print_step_output(result)
+
+
+def _codex_agents_step(engine: Path, data: Path, args) -> None:
+    """Offers to refresh <CODEX_HOME>/agents/worker-*.toml that are missing or an
+    unedited earlier shipped version (see codex_hooks.refreshable_workers).
+    Customized files are kept. Same consent rules as the Claude files: --yes alone
+    never writes; an interactive yes or --agents does. Only runs when the Codex
+    agents dir already holds a shipped worker, and only writes worker files (never
+    hooks.json: that stays with `codex-hooks --install`)."""
+    codex_hooks = sys.modules.get("codex_hooks")
+    if codex_hooks is None or not (engine / "tools" / "codex-agents").is_dir():
+        return
+    stale = codex_hooks.refreshable_workers()
+    if not stale:
+        return
+    print(f"\nCodex worker files are missing or out of date: {', '.join(stale)}")
+    refresh = getattr(args, "agents", False)
+    if not refresh and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Refresh them from the engine's current versions? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        refresh = answer.startswith("y")
+    if not refresh:
+        print("refresh them later with: python tools/graph.py codex-hooks --install --agents-only "
+              "(or rerun update with --agents)")
+        return
+    result = run_step(engine, data, ["codex-hooks", "--install", "--agents-only"])
     _print_step_output(result)
 
 
@@ -799,7 +834,8 @@ def register(sub) -> None:
                    help="sync Claude Code's model settings (models --apply) without asking "
                         "if they are out of date; --yes alone only prints the command")
     p.add_argument("--agents", action="store_true",
-                   help="refresh ~/.claude/agents/ (or $CLAUDE_CONFIG_DIR/agents/)*.md from the engine's shipped versions "
-                        "without asking if they are out of date; --yes alone only prints "
+                   help="refresh ~/.claude/agents/ (or $CLAUDE_CONFIG_DIR/agents/)*.md and, if Codex worker "
+                        "files are already installed, <CODEX_HOME>/agents/worker-*.toml from the "
+                        "engine's shipped versions (edited files are kept) without asking if they are out of date; --yes alone only prints "
                         "the command")
     p.set_defaults(func=cmd_update)

@@ -212,6 +212,25 @@ class TestInstall(unittest.TestCase):
         self.assertEqual(old.read_text(encoding="utf-8"), "# earlier shipped version\n")
         self.assertFalse(self.hooks.exists())
 
+    def test_refreshable_workers(self):
+        self.assertEqual(codex_hooks.refreshable_workers(self.agents), [])  # Codex not set up
+        self.agents.mkdir(parents=True)
+        self.assertEqual(codex_hooks.refreshable_workers(self.agents), [])
+        shipped = sorted(codex_hooks.AGENTS_DIR.glob("worker-*.toml"))
+        (self.agents / shipped[0].name).write_bytes(shipped[0].read_bytes())
+        (self.agents / shipped[1].name).write_text("# my own edit\n", encoding="utf-8")
+        self.assertEqual(codex_hooks.refreshable_workers(self.agents), [])  # custom kept
+        (self.agents / shipped[1].name).unlink()
+        self.assertEqual(codex_hooks.refreshable_workers(self.agents), [shipped[1].name])
+
+    def test_agents_only_leaves_hooks_alone(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            codex_hooks.cmd_codex_hooks(Namespace(install=True, hooks=str(self.hooks),
+                                                  agents_dir=str(self.agents), agents_only=True))
+        self.assertFalse(self.hooks.exists())
+        self.assertTrue((self.agents / "worker-low.toml").is_file())
+
     def test_invalid_json_is_not_overwritten(self):
         self.hooks.parent.mkdir(parents=True)
         self.hooks.write_text("{broken", encoding="utf-8")
