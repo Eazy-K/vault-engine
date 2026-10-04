@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [Unreleased]
+
+### Fixed
+- The engine skips the `.claude` folder when scanning notes, so Claude Code worktrees (`.claude/worktrees/`) no longer duplicate every note or cause "ambiguous" link errors in `lint`.
+
 ## [0.12.0] - 2026-10-03
 
 ### Added
@@ -147,7 +152,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 
 ### Added
 - `update` offers the Claude Code hooks (agent-guard, context-warn, status line) after a successful switch, and when already up to date, if they are missing or point at an old path and this computer has a `~/.claude` folder. An interactive yes or the new `--claude-hooks` flag runs `claude-hooks --install`; `--yes` alone never writes `settings.json` and only prints the command.
-- `VAULT_SKIP_DIRS` (comma-separated folder names) adds folders to skip when the engine scans notes, on top of the built-in `.git`, `.obsidian`, `.graph`, `tools` and `__pycache__`.
+- `VAULT_SKIP_DIRS` (comma-separated folder names) adds folders to skip when the engine scans notes, on top of the built-in `.git`, `.obsidian`, `.graph`, `.claude`, `tools` and `__pycache__`.
 
 ### Changed
 - `templates/AGENTS.md` is ~40% shorter (template revision 4): the Windows variable spelling, the `$VAULT_ENGINE`-empty fallback, the full onboarding procedure and the no-Python fallback moved to a new default note, `defaults/standards/agents-details.md`. All steps and their commands are unchanged.
