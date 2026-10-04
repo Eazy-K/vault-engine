@@ -788,7 +788,7 @@ def cmd_update(args) -> None:
             _agents_md_step(engine, args)
         sys.exit(f"update: this checkout is detached at {ref}, which is not a release tag "
                  "(vX.Y.Z); update this manually to a release tag (git checkout <vX.Y.Z>).")
-    if status != "stable":
+    if status not in ("stable", "dev"):  # dev only reaches here with --to
         if args.apply_agents:
             _agents_md_step(engine, args)
         sys.exit("update: not at a release tag and not on a branch (not a git checkout of "

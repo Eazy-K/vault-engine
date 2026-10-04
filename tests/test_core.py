@@ -487,6 +487,27 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         self.assertIn("hooks, model or worker settings are out of date on this computer", output)
         self.assertIn("update --all", output)
 
+    def test_hint_is_the_single_update_command_on_every_channel(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
+        fake_hooks = types.SimpleNamespace(
+            status=lambda settings_path=None: ("WARN", "agent-guard hook not installed"))
+        outputs = []
+        update_mod = sys.modules.get("update")
+        for channel in (("dev", "main"), ("stable", "v0.1.0")):
+            with mock.patch.object(update_mod, "channel", return_value=channel)                     if update_mod is not None else mock.patch("os.getcwd"):
+                outputs.append(self._run_context_with_modules(claude_hooks=fake_hooks))
+        for output in outputs:
+            hint = [l for l in output.splitlines() if "out of date on this computer" in l]
+            self.assertEqual(len(hint), 1, output)
+            self.assertIn("update --all", hint[0])
+            for stale in ("--claude-hooks", "--models", "codex-hooks --install"):
+                self.assertNotIn(stale, hint[0])
+        hints = [[l for l in o.splitlines() if "out of date on this computer" in l][0]
+                 for o in outputs]
+        self.assertEqual(hints[0], hints[1])
+
     def test_up_to_date_is_quiet(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
         claude_dir.mkdir(parents=True)

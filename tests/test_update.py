@@ -364,11 +364,13 @@ class TestUpdateCheck(UpdateTestCase):
 
 
 class TestUpdateDevAndUnknown(UpdateTestCase):
-    def test_dev_channel_explains_and_exits_cleanly(self):
-        self.checkout(self.origin["branch"])
-        with redirect_stdout(StringIO()) as buf:
-            update.cmd_update(Args(yes=True))
-        self.assertIn("development checkout", buf.getvalue())
+    def test_dev_channel_on_another_branch_refuses_with_the_fix_command(self):
+        self.checkout(self.origin["branch"])  # not named main here
+        with mock.patch("update.run_step") as steps, redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                update.cmd_update(Args(yes=True))
+        self.assertIn("switch main", str(ctx.exception))
+        steps.assert_not_called()
 
     def test_unknown_channel_exits_1(self):
         self.checkout(self.origin["untagged_sha"])
@@ -713,11 +715,12 @@ class TestUpdateAgentsMd(UpdateTestCase):
         self.assertEqual(self.head_tag(), "v0.10.0")
 
     def test_apply_agents_works_on_the_dev_channel(self):
-        self.checkout(self.origin["branch"])
+        _run(["git", "checkout", "-q", "-B", "main", f"origin/{self.origin['branch']}"], self.engine)
+        _run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], self.engine)
         (self.data / "AGENTS.md").write_text("AGENTS v1\ncontent-a\n", encoding="utf-8")
-        with redirect_stdout(StringIO()) as buf:
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with mock.patch("update.run_step", return_value=ok), redirect_stdout(StringIO()):
             update.cmd_update(Args(apply_agents=True))
-        self.assertIn("development checkout", buf.getvalue())
         self.assertEqual((self.data / "AGENTS.md").read_text(encoding="utf-8"), "AGENTS v3\ncontent-c\n")
 
 
