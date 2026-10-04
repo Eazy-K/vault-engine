@@ -318,38 +318,68 @@ def _print_step_output(result: subprocess.CompletedProcess) -> None:
         print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
 
 
-def _rollback_hint(previous_ref: str | None) -> str:
+def _rollback_hint(previous_ref: str | None, branch: bool = False) -> str:
     graph_py = Path(__file__).resolve().parent / "graph.py"
-    return (f"go back with: python \"{graph_py}\" update --to {previous_ref} --yes"
-            if previous_ref else "go back with a manual `git checkout` to the previous tag")
+    if previous_ref and not branch:
+        return f"go back with: python \"{graph_py}\" update --to {previous_ref} --yes"
+    if previous_ref:
+        return f"go back with: git -C \"{graph_py.parent.parent}\" switch {previous_ref}"
+    return "go back with a manual `git checkout` to the previous tag"
 
 
-def _run_post_checkout(engine: Path, data: Path, target: str, is_upgrade: bool,
-                       previous_ref: str | None) -> bool:
-    """Runs the new engine's migrate/setup/doctor. Returns True if every step
-    that ran succeeded."""
-    if is_upgrade and _engine_has_schema(engine, target):
+def update_all_command(engine: Path | None = None) -> str:
+    """The one command that brings everything on this computer up to date and
+    consents to the user-level writes (shared by hints, doctor and docs)."""
+    return f'python "{(engine or g.ENGINE) / "tools" / "graph.py"}" update --all'
+
+
+def _consent(args, flag: str) -> bool:
+    """True when the step's own flag or --all says yes. --yes alone never does:
+    ~/.claude and ~/.codex belong to the user."""
+    return bool(getattr(args, flag, False) or getattr(args, "all", False))
+
+
+def _resolve_data(args) -> Path | None:
+    try:
+        return _data_paths(args).data
+    except SystemExit:
+        if getattr(args, "apply_agents", False):
+            raise
+        return None
+
+
+def _post_update(engine: Path, data: Path, args, *, moved: bool, migrate: bool = True,
+                 rollback: str = "") -> bool:
+    """The shared tail of `update`, identical for the stable and the dev channel.
+    Order: migrate and setup (only when the engine moved), AGENTS.md, Claude
+    subagent files, Codex workers, Claude hooks, models, Codex hooks, doctor.
+    Returns False if migrate/setup/doctor failed (the caller exits 1)."""
+    if moved and migrate and (engine / "tools" / "schema.py").exists():
         print("running: migrate --yes")
         result = run_step(engine, data, ["migrate", "--yes"])
         _print_step_output(result)
         if result.returncode != 0:
-            print(f"update: migrate failed ({_rollback_hint(previous_ref)})")
+            print(f"update: migrate failed ({rollback})")
             return False
-
-    # --no-env: the engine and data folders did not move, and shell startup files
-    # or setx are never changed without the user running setup themselves.
-    print("running: setup --yes --no-env")
-    result = run_step(engine, data, ["setup", "--yes", "--no-env", "--data", str(data)])
-    _print_step_output(result)
-    if result.returncode != 0:
-        print(f"update: setup failed ({_rollback_hint(previous_ref)})")
-        return False
-
+    if moved:
+        # --no-env: the engine and data folders did not move, and shell startup
+        # files or setx are never changed without the user running setup themselves.
+        print("running: setup --yes --no-env")
+        result = run_step(engine, data, ["setup", "--yes", "--no-env", "--data", str(data)])
+        _print_step_output(result)
+        if result.returncode != 0:
+            print(f"update: setup failed ({rollback})")
+            return False
+    _handle_agents_md(engine, data, args)
+    _agents_step(engine, data, args)
+    _claude_hooks_step(engine, data, args)
+    _models_step(engine, data, args)
+    _codex_hooks_step(engine, data, args)
     print("running: doctor")
     result = run_step(engine, data, ["doctor"])
     _print_step_output(result)
     if result.returncode != 0:
-        print(f"update: doctor reported problems ({_rollback_hint(previous_ref)})")
+        print(f"update: doctor reported problems ({rollback})")
         return False
     return True
 
@@ -374,7 +404,7 @@ def _claude_hooks_step(engine: Path, data: Path, args) -> None:
         return
     print("\nClaude Code hooks (agent-guard, context-warn, status line) are missing or out of date:")
     _print_step_output(result)
-    install = getattr(args, "claude_hooks", False)
+    install = _consent(args, "claude_hooks")
     if not install and not args.yes and g.stdin_is_interactive():
         try:
             answer = input("Install them into Claude Code's settings.json? [y/N]: ").strip().lower()
@@ -383,7 +413,7 @@ def _claude_hooks_step(engine: Path, data: Path, args) -> None:
         install = answer.startswith("y")
     if not install:
         print("install them later with: python tools/graph.py claude-hooks --install "
-              "(or rerun update with --claude-hooks)")
+              f"(or rerun update with --claude-hooks; everything at once: {update_all_command(engine)})")
         return
     result = run_step(engine, data, ["claude-hooks", "--install"])
     _print_step_output(result)
@@ -407,7 +437,7 @@ def _models_step(engine: Path, data: Path, args) -> None:
         return
     print("\nClaude Code model settings (settings.json, worker agent files) are out of date:")
     _print_step_output(result)
-    apply_models = getattr(args, "models", False)
+    apply_models = _consent(args, "models")
     if not apply_models and not args.yes and g.stdin_is_interactive():
         try:
             answer = input("Sync settings.json and worker agent files with this model "
@@ -417,7 +447,7 @@ def _models_step(engine: Path, data: Path, args) -> None:
         apply_models = answer.startswith("y")
     if not apply_models:
         print("sync them later with: python tools/graph.py models --apply "
-              "(or rerun update with --models)")
+              f"(or rerun update with --models; everything at once: {update_all_command(engine)})")
         return
     result = run_step(engine, data, ["models", "--apply"])
     _print_step_output(result)
@@ -449,7 +479,7 @@ def _claude_agents_step(engine: Path, data: Path, args) -> None:
     if not stale:
         return
     print(f"\nClaude Code subagent files are missing or out of date: {', '.join(stale)}")
-    refresh = getattr(args, "agents", False)
+    refresh = _consent(args, "agents")
     if not refresh and not args.yes and g.stdin_is_interactive():
         try:
             answer = input("Refresh them from the engine's current versions? [y/N]: ").strip().lower()
@@ -479,7 +509,7 @@ def _codex_agents_step(engine: Path, data: Path, args) -> None:
     if not stale:
         return
     print(f"\nCodex worker files are missing or out of date: {', '.join(stale)}")
-    refresh = getattr(args, "agents", False)
+    refresh = _consent(args, "agents")
     if not refresh and not args.yes and g.stdin_is_interactive():
         try:
             answer = input("Refresh them from the engine's current versions? [y/N]: ").strip().lower()
@@ -488,9 +518,38 @@ def _codex_agents_step(engine: Path, data: Path, args) -> None:
         refresh = answer.startswith("y")
     if not refresh:
         print("refresh them later with: python tools/graph.py codex-hooks --install --agents-only "
-              "(or rerun update with --agents)")
+              f"(or rerun update with --agents; everything at once: {update_all_command(engine)})")
         return
     result = run_step(engine, data, ["codex-hooks", "--install", "--agents-only"])
+    _print_step_output(result)
+
+
+def _codex_hooks_step(engine: Path, data: Path, args) -> None:
+    """Offers to install the engine's Codex hooks into <CODEX_HOME>/hooks.json
+    (codex-hooks --install, backed up by the installer; also adds missing worker
+    profiles). ~/.codex belongs to the user, so --yes alone never writes it: an
+    interactive yes, --codex-hooks or --all does. Skipped when there is no Codex
+    config folder here (Codex not used) or the engine has no codex-hooks command."""
+    codex_hooks = sys.modules.get("codex_hooks")
+    if codex_hooks is None or not (engine / "tools" / "codex_hooks.py").exists()             or not codex_hooks.codex_home().is_dir():
+        return
+    result = run_step(engine, data, ["codex-hooks"])
+    if result.returncode != 0 or "would update:" not in result.stdout:
+        return
+    print("\nCodex hooks are missing or out of date:")
+    _print_step_output(result)
+    install = _consent(args, "codex_hooks")
+    if not install and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Install them into Codex's hooks.json? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        install = answer.startswith("y")
+    if not install:
+        print("install them later with: python tools/graph.py codex-hooks --install "
+              f"(or rerun update with --codex-hooks; everything at once: {update_all_command(engine)})")
+        return
+    result = run_step(engine, data, ["codex-hooks", "--install"])
     _print_step_output(result)
 
 
@@ -697,6 +756,8 @@ def _agents_md_step(engine: Path, args) -> None:
 
 def cmd_update(args) -> None:
     engine = g.ENGINE
+    if getattr(args, "all", False):
+        args.yes = True
     current_v = parse_version(g.__version__)
     status, ref = channel(engine)
 
@@ -707,11 +768,8 @@ def cmd_update(args) -> None:
         print(f"latest:  {latest or 'unknown (could not reach origin)'}")
         return
 
-    if status == "dev":
-        print(f"this is a development checkout (branch {ref}). "
-              "Update it with: git pull, then `python tools/graph.py migrate` (if available). "
-              "The engine was not changed.")
-        _agents_md_step(engine, args)
+    if status == "dev" and not args.to:
+        _update_dev(engine, ref, args)
         return
     if status == "prerelease":
         if args.apply_agents:
@@ -752,13 +810,10 @@ def cmd_update(args) -> None:
             _rewrite_ci_pin(_data_paths(args).data, ref or target)
         except SystemExit:
             pass
-        _agents_md_step(engine, args)
-        try:
-            _claude_hooks_step(engine, _data_paths(args).data, args)
-            _models_step(engine, _data_paths(args).data, args)
-            _agents_step(engine, _data_paths(args).data, args)
-        except SystemExit:
-            pass
+        data = _resolve_data(args)
+        if data is not None:
+            if not _post_update(engine, data, args, moved=False, rollback=_rollback_hint(ref)):
+                sys.exit(1)
         return
 
     is_upgrade = current_v is not None and target_v > current_v
@@ -808,18 +863,68 @@ def cmd_update(args) -> None:
     print(f"checked out {target}")
     _rewrite_ci_pin(paths.data, target)
 
-    ok = _run_post_checkout(engine, paths.data, target, is_upgrade, ref)
-    _handle_agents_md(engine, paths.data, args)
+    ok = _post_update(engine, paths.data, args, moved=True, migrate=is_upgrade,
+                      rollback=_rollback_hint(ref, branch=status == "dev"))
     if not ok:
         sys.exit(1)
-    _claude_hooks_step(engine, paths.data, args)
-    _models_step(engine, paths.data, args)
-    _agents_step(engine, paths.data, args)
+
+
+def _git(engine: Path, *cmd: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *cmd], cwd=engine, capture_output=True, text=True,
+                          encoding="utf-8", timeout=120)
+
+
+def _short_head(engine: Path) -> str:
+    out = _git(engine, "rev-parse", "--short", "HEAD")
+    return out.stdout.strip() if out.returncode == 0 else "?"
+
+
+def _update_dev(engine: Path, branch: str, args) -> None:
+    """Dev channel (HEAD on a branch): fast-forward `main` from origin, then run
+    the same post-update routine as stable. Never creates branches, merges or
+    rebases; every refusal prints the exact command that fixes it."""
+    q = f'git -C "{engine}"'
+    if branch != "main":
+        sys.exit(f"update: the engine checkout is on branch {branch}, not main; nothing changed. "
+                 f"Switch with: {q} switch main   (manage other branches yourself), then rerun "
+                 "update. To follow the latest release instead: rerun with --to <vX.Y.Z tag>.")
+    dirty = _dirty_engine(engine)
+    if dirty:
+        sys.exit("update: the engine checkout has local changes; nothing changed. Commit or "
+                 f"stash them first (for example: {q} stash), then rerun update:\n{dirty}")
+    fetch = _git(engine, "fetch", "--tags", "--quiet", "origin")
+    if fetch.returncode != 0:
+        sys.exit(f"update: git fetch failed (is origin reachable?):\n{fetch.stderr.strip()}")
+    before = _short_head(engine)
+    remote = _git(engine, "rev-parse", "--verify", "--quiet", "origin/main^{commit}")
+    if remote.returncode != 0:
+        sys.exit("update: origin/main not found; nothing changed. Check the remote with: "
+                 f"{q} remote -v")
+    moved = False
+    if _git(engine, "merge-base", "--is-ancestor", "origin/main", "HEAD").returncode == 0:
+        print(f"already up to date (main at {before})")
+    elif _git(engine, "merge-base", "--is-ancestor", "HEAD", "origin/main").returncode != 0:
+        sys.exit("update: local main and origin/main have diverged (local commits that are "
+                 "not on origin); nothing changed. Update never merges or rebases for you. "
+                 f"Rebase your commits with: {q} rebase origin/main   "
+                 f"(or, to drop them: {q} reset --hard origin/main)")
+    else:
+        pull = _git(engine, "pull", "--ff-only", "--quiet", "origin", "main")
+        if pull.returncode != 0:
+            sys.exit(f"update: git pull --ff-only failed; nothing changed:\n{pull.stderr.strip()}")
+        moved = True
+        print(f"pulled main: {before} -> {_short_head(engine)}")
+    paths = _data_paths(args)
+    # The CI pin stays at main on this channel.
+    if not _post_update(engine, paths.data, args, moved=moved,
+                        rollback=f"go back with: {q} reset --hard {before}" if moved else ""):
+        sys.exit(1)
 
 
 def register(sub) -> None:
     """Called by graph.py's extension mechanism (see EXTENSIONS)."""
-    p = sub.add_parser("update", help="update the engine checkout to a newer (or older) release tag")
+    p = sub.add_parser("update", help="update the engine (stable: release tag; dev: fast-forward main) "
+                                      "and everything that depends on it, then run doctor")
     p.add_argument("--check", action="store_true", help="print current/channel/latest and exit")
     p.add_argument("--to", help="target tag (default: highest local tag after fetch)")
     p.add_argument("--data", help="data dir (default: resolve_data_dir())")
@@ -830,6 +935,13 @@ def register(sub) -> None:
     p.add_argument("--claude-hooks", action="store_true",
                    help="install the Claude Code hooks (claude-hooks --install) without asking "
                         "if they are missing; --yes alone only prints the command")
+    p.add_argument("--codex-hooks", action="store_true",
+                   help="install the Codex hooks (codex-hooks --install) without asking if "
+                        "they are missing; --yes alone only prints the command")
+    p.add_argument("--all", action="store_true",
+                   help="consent to every user-level write without prompts: Claude agents, "
+                        "Claude and Codex hooks, models, Codex workers (implies --yes; "
+                        "AGENTS.md still needs --apply-agents)")
     p.add_argument("--models", action="store_true",
                    help="sync Claude Code's model settings (models --apply) without asking "
                         "if they are out of date; --yes alone only prints the command")
