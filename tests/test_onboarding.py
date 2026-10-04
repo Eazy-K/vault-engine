@@ -1024,7 +1024,7 @@ class TestDoctor(unittest.TestCase):
         code, out = self._doctor_without_vault_data({"VAULT_DATA": str(self.data)})
         self.assertEqual(code, 0, out)
         self.assertIn("WARN VAULT_DATA is set for the user but not in this process: "
-                      "restart the terminal and the agent", out)
+                      "manual: restart the terminal and the agent", out)
         self.assertIn(f"OK   data dir has AGENTS.md ({self.data})", out)
 
     def test_no_vault_data_anywhere_fails_and_names_data_flag(self):

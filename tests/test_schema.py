@@ -807,19 +807,21 @@ class TestDoctorSchemaLine(DoctorCase):
         with mock.patch.object(schema, "SCHEMA_VERSION", 5):
             write_config(graph.Paths(graph.ENGINE, self.data), {"schema": 1})
             out = self._run_doctor()
-        self.assertIn("WARN vault schema 1 is older than this engine (5): run migrate", out)
+        self.assertIn("WARN vault schema 1 is older than this engine (5): run python", out)
+        self.assertIn("graph.py\" migrate", out)
 
     def test_fail_when_newer(self):
         write_config(graph.Paths(graph.ENGINE, self.data), {"schema": 99})
         out = self._run_doctor()
         self.assertIn("FAIL vault schema 99 is newer than this engine", out)
-        self.assertIn("run update on this computer", out)
+        self.assertIn("update --all", out)
 
     def test_warn_when_schema_field_is_missing(self):
         write_config(graph.Paths(graph.ENGINE, self.data), {"feedback": {"level": "off"}})
         out = self._run_doctor()
         self.assertIn("WARN vault schema 1 (implicit, not recorded in vault.config.json): "
-                      "run migrate", out)
+                      "run python", out)
+        self.assertIn("graph.py\" migrate", out)
         self.assertNotIn("OK   vault schema", out)
 
 
@@ -856,7 +858,8 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
                      {"schema": schema.SCHEMA_VERSION, "project_roots": [str(root)]})
         out = self._run_doctor()
         self.assertIn("WARN vault.config.json sets project_roots, a per-computer path, in the "
-                      "shared config: run migrate", out)
+                      "shared config: run python", out)
+        self.assertIn("graph.py\" migrate (moves it to", out)
 
     def test_shared_project_roots_of_another_computer(self):
         write_config(graph.Paths(graph.ENGINE, self.data),
@@ -870,7 +873,8 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         self._workflow("main")
         self._on_branch("main")
         out = self._run_doctor_on(("stable", "v0.3.0"))
-        self.assertIn("WARN vault CI runs the engine at @main, this engine is v0.3.0: run update", out)
+        self.assertIn("WARN vault CI runs the engine at @main, this engine is v0.3.0: run python", out)
+        self.assertIn("graph.py\" update (re-pins it", out)
 
     def test_ci_pin_matches_stable_install(self):
         self._workflow("v0.3.0")

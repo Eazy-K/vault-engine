@@ -236,7 +236,7 @@ def status(settings_path: Path | None = None) -> tuple[str, str]:
     if hook is not None and hook.get("command") == _guard_command():
         return "OK", f"agent-guard hook installed ({settings_path})"
     return "WARN", (f"agent-guard hook not installed in {settings_path}: run "
-                     "`graph.py claude-hooks --install` to stop expensive subagents")
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to stop expensive subagents")
 
 
 def context_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -247,7 +247,7 @@ def context_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
     if hook is not None and hook.get("command") == _context_warn_command():
         return "OK", f"context-warn hook installed ({settings_path})"
     return "WARN", (f"context-warn hook not installed in {settings_path}: run "
-                     "`graph.py claude-hooks --install` to warn before context runs out")
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to warn before context runs out")
 
 
 def delegation_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -259,7 +259,7 @@ def delegation_warn_status(settings_path: Path | None = None) -> tuple[str, str]
     if hook is not None and hook.get("command") == _delegation_warn_command():
         return "OK", f"delegation-warn hook installed ({settings_path})"
     return "WARN", (f"delegation-warn hook not installed in {settings_path}: run "
-                     "`graph.py claude-hooks --install` to nudge delegation of "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to nudge delegation of "
                      "multi-step work")
 
 

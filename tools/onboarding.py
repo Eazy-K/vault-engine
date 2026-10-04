@@ -831,6 +831,8 @@ def cmd_machine(args: argparse.Namespace) -> None:
             sys.exit("machine: that name looks like personal data; pick a neutral one "
                      "such as laptop or pc-2")
         updates["machine"] = name
+    if getattr(args, "engine_developer", None) is not None:
+        updates["engine_developer"] = getattr(args, "engine_developer") == "on"
 
     if updates:
         _write_machine_json(data, updates)
@@ -849,6 +851,7 @@ def cmd_machine(args: argparse.Namespace) -> None:
               and g.sanitize_machine_name(saved["machine"]) else "hostname")
     print(f"machine name: {g.machine_name(paths)} ({source})")
     print("project roots: " + ", ".join(str(r) for r in g.project_roots(paths)))
+    print("engine developer machine: " + ("yes" if saved.get("engine_developer") is True else "no"))
 
 
 # --- doctor ------------------------------------------------------------------------
@@ -918,7 +921,7 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
     pin = _CI_PIN_RE.search(text)
     if channel == "stable" and engine_ref and pin and pin.group(1) != engine_ref:
         found.append(("WARN", f"vault CI runs the engine at @{pin.group(1)}, this engine is "
-                              f"{engine_ref}: run update (re-pins it and commits "
+                              f"{engine_ref}: run {_graph_cmd('update')} (re-pins it and commits "
                               ".github/workflows/vault.yml), then push"))
     push = _CI_PUSH_BRANCHES_RE.search(text)
     branches = [b.strip().strip("'\"") for b in push.group(1).split(",")] if push else []
@@ -1017,10 +1020,10 @@ def _doctor_data_dir(data_arg: str | None,
     if saved:
         return data or Path(saved).expanduser().resolve(), [
             ("WARN", "VAULT_DATA is set for the user but not in this process: "
-                     "restart the terminal and the agent")]
+                     "manual: restart the terminal and the agent")]
     if not _is_windows() and _rc_block_present(rc_path, "VAULT_DATA"):
         msg = (f"VAULT_DATA is set in {rc_path} but not in this process: "
-               "restart the terminal and the agent")
+               "manual: restart the terminal and the agent")
         return data, [("WARN", msg) if data else ("FAIL", msg + " (or pass --data)")]
     if data is not None:
         return data, [("WARN", "VAULT_DATA not set: run setup --data")]
@@ -1028,10 +1031,25 @@ def _doctor_data_dir(data_arg: str | None,
                            "or pass --data to doctor")]
 
 
+# Every doctor WARN names the command that fixes it (preferably `update --all`) or
+# says "manual:" when the engine cannot fix it; check() enforces this.
+FIX_MARKERS = ("graph.py", "git ", "git -C", "manual:")
+
+
+def has_fix(msg: str) -> bool:
+    return any(marker in msg for marker in FIX_MARKERS)
+
+
+def _graph_cmd(command: str) -> str:
+    return f'python "{g.ENGINE / "tools" / "graph.py"}" {command}'
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     checks: list[tuple[str, str]] = []
 
     def check(status: str, msg: str) -> None:
+        if status == "WARN" and not has_fix(msg):
+            msg += "; manual: no automatic fix, see docs/agent-setup.md"
         checks.append((status, msg))
 
     rc_path = _rc_file_for_shell(_shell_name(), sys.platform, Path.home())
@@ -1046,7 +1064,16 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if status == "stable":
             check("OK", f"channel: stable ({ref})")
         elif status == "dev":
-            check("INFO", f"channel: dev ({ref}): update with git pull, then migrate")
+            if data is not None and update.is_engine_developer(data):
+                check("INFO", f"channel: dev ({ref}), engine developer machine "
+                              f"(machine --engine-developer off to undo): update with "
+                              f"{_graph_cmd('update --all')}")
+            else:
+                tag = update._highest_tag(update._local_tags(g.ENGINE)) or "<latest vX.Y.Z tag>"
+                check("WARN", f"channel: dev ({ref}): this computer follows the development "
+                              "branch, not a release; switch to the latest stable release with "
+                              f"{_graph_cmd(f'update --to {tag} --yes')} (if this is the engine "
+                              f"developer's machine: {_graph_cmd('machine --engine-developer on')})")
         elif status == "prerelease":
             check("INFO", f"channel: prerelease ({ref}): not a release tag; "
                           "update manually to a vX.Y.Z tag")
@@ -1064,7 +1091,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     latest_v = update.parse_version(latest)
                     if latest_v and current_v and latest_v > current_v:
                         check("WARN", f"vault-engine {'.'.join(str(n) for n in latest_v)} "
-                                      f"available (current {g.__version__}): run update")
+                                      f"available (current {g.__version__}): run "
+                                      f"{_graph_cmd('update --all')}")
                     else:
                         check("OK", "up to date")
 
@@ -1085,10 +1113,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     raw_engine = os.environ.get("VAULT_ENGINE")
     if not raw_engine and _user_env_var("VAULT_ENGINE"):
         check("WARN", "VAULT_ENGINE is set for the user but not in this process: "
-                      "restart the terminal and the agent")
+                      "manual: restart the terminal and the agent")
     elif not raw_engine and not _is_windows() and _rc_block_present(rc_path, "VAULT_ENGINE"):
         check("WARN", f"VAULT_ENGINE is set in {rc_path} but not in this process: "
-                      "restart the terminal and the agent")
+                      "manual: restart the terminal and the agent")
     elif not raw_engine:
         check("WARN", "VAULT_ENGINE not set")
     elif not _same_path(raw_engine, str(g.ENGINE)):
@@ -1109,8 +1137,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             if agents_state in ("current", "customized"):
                 check("OK", agents_msg)
             elif agents_state == "stale":
-                check("WARN", f"{agents_msg}: run update to see the diff; "
-                              "update --apply-agents replaces the file")
+                check("WARN", f"{agents_msg}: run {_graph_cmd('update')} to see the diff; "
+                              f"{_graph_cmd('update --apply-agents')} replaces the file")
             elif agents_state == "newer":
                 check("INFO", agents_msg)
 
@@ -1130,8 +1158,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         unfilled = [p.name for p in sorted(profile_dir.glob("*.md"))
                     if SKELETON_MARKER in _read_text(p)] if profile_dir.is_dir() else []
         if unfilled:
-            check("WARN", "profile not filled yet: run `onboard --questions`, ask the user, "
-                          "then `onboard --answers <file>` (or `onboard` in a terminal)")
+            check("WARN", "profile not filled yet: run "
+                          f"`{_graph_cmd('onboard --questions')}`, ask the user, then "
+                          f"`{_graph_cmd('onboard --answers <file>')}` (or `onboard` in a terminal)")
 
     claude_hooks = sys.modules.get("claude_hooks")
     models = sys.modules.get("models")
@@ -1141,7 +1170,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         stale = stale_claude_agents(claude_dir / "agents")
         if stale:
             check("WARN", f"claude-agents out of date in {claude_dir / 'agents'}: "
-                          f"{', '.join(stale)}")
+                          f"{', '.join(stale)}; run {_graph_cmd('update --all')}")
         else:
             check("OK", f"claude-agents up to date in {claude_dir / 'agents'}")
         if claude_hooks is not None:
@@ -1181,7 +1210,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     if sys.version_info < (3, 11):
         check("WARN", f"Python {sys.version.split()[0]}: Codex config.toml user-config items "
-                      "need Python 3.11+ (tomllib)")
+                      "need Python 3.11+ (tomllib); manual: install Python 3.11 or newer")
 
     user_config = sys.modules.get("user_config")
     if user_config is not None and data is not None:
@@ -1189,7 +1218,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             for result in user_config.statuses(g.Paths(g.ENGINE, data)):
                 check(*result)
         except Exception as exc:  # must not hide the other checks
-            check("WARN", f"user-config check failed ({exc})")
+            check("WARN", f"user-config check failed ({exc}); manual: fix the error, "
+                          "then rerun doctor")
 
     if data is not None:
         paths = g.Paths(g.ENGINE, data)
@@ -1198,20 +1228,22 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             if claude_md.exists() and _routes_to(claude_md, data):
                 check("OK", f"routing present for {root}")
             else:
+                setup_cmd = _graph_cmd(f'setup --data "{data}"')
                 check("WARN", f"routing missing for {root}: run "
-                              f"setup --data \"{data}\" (writes {claude_md} if it doesn't "
+                              f"{setup_cmd} (writes {claude_md} if it doesn't "
                               "exist yet, or add the routing line to it by hand)")
 
     try:
         models = g.ollama_models()
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback")
+        check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback; "
+                          "manual: start Ollama (the engine cannot)")
     else:
         if g.has_embed_model(models):
             check("OK", f"Ollama reachable at {g.OLLAMA_URL}, {g.EMBED_MODEL} pulled")
         else:
             check("WARN", f"Ollama reachable at {g.OLLAMA_URL} but {g.EMBED_MODEL} is not pulled; "
-                          f"keyword-only fallback until you {g.pull_hint()}")
+                          f"keyword-only fallback; manual: {g.pull_hint()}")
 
     discovery = sys.modules.get("discovery")
     if data is not None and discovery is not None:
@@ -1223,7 +1255,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         else:
             if missing:
                 check("WARN", f"projects without notes: {', '.join(missing)} (ask the user: "
-                              "`projects --ask`; `projects --skip <name>` to stop asking)")
+                              f"`{_graph_cmd('projects --ask')}`; "
+                              f"`{_graph_cmd('projects --skip <name>')}` to stop asking)")
             else:
                 check("OK", "every discovered project has notes")
 
@@ -1237,22 +1270,23 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         data_schema = schema.read_schema(schema_paths)
         if data_schema == schema.SCHEMA_VERSION and not schema.has_schema_field(schema_paths):
             check("WARN", f"vault schema {data_schema} (implicit, not recorded in "
-                          "vault.config.json): run migrate")
+                          f"vault.config.json): run {_graph_cmd('migrate')}")
         elif data_schema == schema.SCHEMA_VERSION:
             check("OK", f"vault schema {data_schema}")
         elif data_schema > schema.SCHEMA_VERSION:
             check("FAIL", f"vault schema {data_schema} is newer than this engine "
-                          f"({schema.SCHEMA_VERSION}): run update on this computer")
+                          f"({schema.SCHEMA_VERSION}): run {_graph_cmd('update --all')} on this computer")
         else:
             check("WARN", f"vault schema {data_schema} is older than this engine "
-                          f"({schema.SCHEMA_VERSION}): run migrate")
+                          f"({schema.SCHEMA_VERSION}): run {_graph_cmd('migrate')}")
         shared_roots = schema.shared_project_roots(schema_paths)
         if shared_roots and all(Path(r).expanduser().is_dir() for r in shared_roots):
             check("WARN", "vault.config.json sets project_roots, a per-computer path, in the "
-                          "shared config: run migrate (moves it to .graph/machine.json)")
+                          f"shared config: run {_graph_cmd('migrate')} (moves it to "
+                          ".graph/machine.json)")
         elif shared_roots:
             check("WARN", "vault.config.json sets project_roots that do not exist on this "
-                          "computer (ignored here): run migrate on the computer they belong to")
+                          "computer (ignored here): manual: run migrate on the computer they belong to")
 
     if data is not None:
         for ci_status, msg in _vault_ci_checks(data, status, ref):
@@ -1554,6 +1588,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--project-root", action="append",
                    help="this computer's project folder (repeatable, replaces the saved list)")
     p.add_argument("--name", help="this computer's name for .graph/learned/<name>.json")
+    p.add_argument("--engine-developer", choices=("on", "off"),
+                   help="mark this computer as the engine developer's (doctor then accepts the "
+                        "dev channel instead of warning about it)")
     p.set_defaults(func=cmd_machine)
 
     p = sub.add_parser("doctor", help="check the onboarding setup, one line per check")

@@ -96,6 +96,16 @@ def _machine_file(paths: "g.Paths") -> Path:
     return paths.data / ".graph" / "machine.json"
 
 
+DEVELOPER_KEY = "engine_developer"
+
+
+def is_engine_developer(data: Path) -> bool:
+    """True if this computer is marked as the engine developer's machine
+    (`machine --engine-developer on`, stored in the gitignored .graph/machine.json).
+    Only doctor reads it: the dev channel is expected there and not warned about."""
+    return _load_json(data / ".graph" / "machine.json").get(DEVELOPER_KEY) is True
+
+
 def load_settings(paths: "g.Paths") -> dict:
     """Effective update-check settings: vault.config.json, then the per-machine
     override on top (machine values win, key by key). Default check=True."""
@@ -330,7 +340,9 @@ def _rollback_hint(previous_ref: str | None, branch: bool = False) -> str:
 def update_all_command(engine: Path | None = None) -> str:
     """The one command that brings everything on this computer up to date and
     consents to the user-level writes (shared by hints, doctor and docs)."""
-    return f'python "{(engine or g.ENGINE) / "tools" / "graph.py"}" update --all'
+    if engine is None:
+        return g.update_all_command()
+    return f'python "{engine / "tools" / "graph.py"}" update --all'
 
 
 def _consent(args, flag: str) -> bool:
