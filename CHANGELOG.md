@@ -4,6 +4,20 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 
 ## [Unreleased]
 
+### Added
+- `update` works on the dev channel: on `main` with a clean tree it runs `git fetch` and `git pull --ff-only` without asking, then the same steps as the stable channel. On another branch, with local changes or when `main` cannot fast-forward it stops with the exact fix command; it never creates branches, merges or rebases. `update --to <tag>` moves a dev checkout to a release.
+- One shared post-update routine for both channels: migrate, setup, the `AGENTS.md` check, Claude subagent files, Codex workers, Claude Code hooks, model settings, Codex hooks (new), then `doctor`.
+- `update --all` consents to every user-level write (Claude agents, Claude and Codex hooks, models, Codex workers) without prompts and implies `--yes`; `--codex-hooks` installs the Codex hooks. `--yes` alone still never writes `~/.claude` or `~/.codex`.
+- `machine --engine-developer on|off` marks this computer as the engine developer's (key `engine_developer` in the gitignored `.graph/machine.json`).
+
+### Changed
+- Every `doctor` WARN now names its fix command (preferably `update --all`) or says `manual:`. On a dev checkout `doctor` warns and prints the command that switches to the latest release, unless the computer is marked as the engine developer's (then INFO).
+- `context` prints one hint for out-of-date Claude Code/Codex hooks, models or workers: ask once, then run `update --all` (any channel). The AGENTS.md template (revision 9) and `defaults/standards/agents-details.md` say never to update the engine by hand.
+- Docs: new installs stay on the stable channel; README, README.tr and the agent setup guide point to the single `update` command.
+
+### Upgrade notes
+- On the dev channel `update` now pulls (it used to do nothing). Run `python tools/graph.py update --apply-agents` once to bring the vault's `AGENTS.md` to template revision 9. Existing installs are not switched to stable automatically.
+
 ### Fixed
 - The engine skips the `.claude` folder when scanning notes, so Claude Code worktrees (`.claude/worktrees/`) no longer duplicate every note or cause "ambiguous" link errors in `lint`.
 

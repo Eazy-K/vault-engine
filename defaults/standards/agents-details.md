@@ -1,5 +1,5 @@
 ---
-keywords: [agents.md, onboarding, powershell, cmd, env var, vault_engine, vault_data, reg query, python yok, no python]
+keywords: [agents.md, update, güncelleme, onboarding, powershell, cmd, env var, vault_engine, vault_data, reg query, python yok, no python]
 links:
   - "[[vault-notes]]"
 weights:
@@ -41,3 +41,6 @@ projects --ask` first: it only reports candidates and instructions, it never wri
 
 ## If Python isn't available
 Read `profile/working-style.md` and `profile/language.md` in the vault, then the engine's `$VAULT_ENGINE/defaults/standards/vault-notes.md` and `$VAULT_ENGINE/defaults/standards/data-policy.md` (a vault note at the same relative path replaces the engine's copy).
+
+## Updating the engine
+Never update the engine by hand: no `git pull`, `merge`, `rebase` or `checkout` in the engine folder and no ad-hoc branches. Use only `python "$VAULT_ENGINE/tools/graph.py" update` (add `--all` once the user agreed, so hooks, agent files and model settings are refreshed without prompts). It works on every channel (stable: release tag; dev: fast-forwards `main` from a clean tree), runs migrate, setup and the user-level steps, then `doctor`. If it refuses (other branch, local changes, diverged `main`), it prints the exact command that fixes that; tell the user instead of improvising.
