@@ -250,7 +250,7 @@ def hooks_status(hooks_path: Path | None = None) -> tuple[str, str]:
                     for handler in entry.get("hooks", []) if isinstance(handler, dict))
         if not found:
             return "WARN", (f"Codex {filename} hook missing or stale in {hooks_path}; "
-                             "run `graph.py codex-hooks --install`")
+                             f"run `{g.update_all_command()}` (or `graph.py codex-hooks --install`)")
     return "OK", f"Codex hooks installed ({hooks_path})"
 
 
@@ -281,7 +281,8 @@ def model_status(config_path: Path | None = None) -> tuple[str, str]:
     model, effort = values.get("model"), values.get("model_reasoning_effort")
     if not model or not effort or effort not in EFFORTS:
         return "WARN", (f"Codex model/reasoning effort is missing or invalid in {config_path}; "
-                         "review the top-level model and model_reasoning_effort settings")
+                         "manual: set the top-level model and model_reasoning_effort "
+                         "(the engine does not choose them)")
     return "OK", (f"Codex model and reasoning effort are explicitly configured "
                    f"({model}, {effort}); preferred-model drift is not checked")
 
@@ -303,7 +304,9 @@ def workers_status(agents_dir: Path | None = None) -> tuple[str, str]:
                 stale.append(f"{source.name} differs")
     if stale:
         return "WARN", (f"Codex worker profiles missing or customized in {agents_dir}: "
-                         f"{', '.join(stale)}; review against {AGENTS_DIR}")
+                         f"{', '.join(stale)}; run `{g.update_all_command()}` (refreshes unedited "
+                         f"files, keeps customized ones; manual: review customized ones "
+                         f"against {AGENTS_DIR})")
     return "OK", f"Codex worker profiles match engine templates ({agents_dir})"
 
 

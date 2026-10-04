@@ -94,13 +94,13 @@ yüzden bütün bilgisayarlar en az 0.3.0'a geçmeden, Upgrade notes'unda veri d
 Bir bilgisayarda yapılan değişikliklerden sonra, veri deposunu paylaşan her diğer bilgisayarda:
 
 ```
-git -C <engine> pull          # veya: python tools/graph.py update (kararlı kanal)
 git -C <data repo> pull --rebase --autostash
-python <engine>/tools/graph.py doctor
+python <engine>/tools/graph.py update --all            # motor (her kanalda), migrate, setup, Claude/Codex ajanları, hook'lar, modeller, sonda doctor
 python <engine>/tools/graph.py user-config --install   # doctor ayar farkı bildirirse
-python <engine>/tools/graph.py codex-hooks --install   # doctor Codex hook'larının eskidiğini bildirirse
-python <engine>/tools/graph.py update --claude-hooks --models --agents   # doctor Claude hook'larının eskidiğini bildirirse (kararlı kanal; geliştirme kanalında bunun yerine `claude-hooks --install` ve `models --apply` çalıştırın; `--agents` Codex worker profillerini de yeniler, düzenlenmiş olanları korur)
 ```
+
+Motoru elle güncellemeyin (`git pull`/`merge`/`checkout`, özel dal yok); her kanalda yalnızca `update`. Kararlı kanalda en yüksek sürüm etiketine geçer; geliştirme kanalında (`main`, temiz ağaç) `git pull --ff-only` yapar, başka dalda, yerel değişiklikte ya da `main` ileri sarılamıyorsa durup düzeltme komutunu yazar. `--all` kullanıcı düzeyindeki tüm yazmalara (Claude/Codex ajanları, hook'lar, modeller) onay verir; `--yes` tek başına `~/.claude` ve `~/.codex` dosyalarına yazmaz. Yeni kurulumlar kararlı kanalda kalır; `doctor` geliştirme kanalında uyarır (geliştirici bilgisayarı: `machine --engine-developer on`).
+
 
 Her kurulum komutu bir dosyayı değiştirmeden önce yedeğini alır ve ikinci çalıştırmada hiçbir şey yapmaz.
 

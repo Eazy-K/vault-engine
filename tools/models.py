@@ -238,7 +238,7 @@ def status(data_dir: Path, settings_path: Path | None = None,
             stale.append(f"{role}.md")
     if stale:
         return "WARN", (f"model config out of date in {', '.join(stale)}: run "
-                         "`graph.py models --apply` to sync")
+                         f"`{g.update_all_command()}` (or `graph.py models --apply`) to sync")
     return "OK", "model config matches settings.json and worker agent files"
 
 

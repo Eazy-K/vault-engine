@@ -666,6 +666,12 @@ def has_embed_model(names: list[str]) -> bool:
     return any(name in wanted for name in names)
 
 
+def update_all_command() -> str:
+    """The single command that updates the engine (any channel), everything that
+    depends on it and, with --all, the user-level files; hints and doctor print it."""
+    return f'python "{ENGINE / "tools" / "graph.py"}" update --all'
+
+
 def pull_hint() -> str:
     return f"run: ollama pull {EMBED_MODEL}"
 
@@ -1453,6 +1459,7 @@ def cmd_query(args, content: bool) -> None:
             models = sys.modules.get("models")
             onboarding = sys.modules.get("onboarding")
             claude_dirs = sys.modules.get("claude_dirs")
+            stale_agents = False
             if claude_hooks is not None or models is not None:
                 dirs = claude_dirs.registered(paths.data) if claude_dirs is not None else [
                     claude_config_dir()]
@@ -1465,19 +1472,20 @@ def cmd_query(args, content: bool) -> None:
                     if not stale and onboarding is not None:
                         stale = bool(onboarding.stale_claude_agents(claude_dir / "agents"))
                     if stale:
-                        graph_py = Path(__file__).resolve()
-                        print(f"<!-- Claude Code hooks/model settings are out of date on this "
-                              f"computer: ask the user once, then run python \"{graph_py}\" "
-                              f"update --claude-hooks --models --agents -->")
+                        stale_agents = True
                         break
             codex_home = Path.home() / ".codex"
             if codex_hooks is not None and codex_home.is_dir():
                 checks = codex_hooks.statuses()
-                if any(level != "OK" for level, _message in checks):
-                    graph_py = Path(__file__).resolve()
-                    print(f"<!-- Codex hooks/model/worker settings are missing or out of "
-                          f"date on this computer: ask the user once, then run python "
-                          f"\"{graph_py}\" codex-hooks --install -->")
+                # The model/effort line cannot be fixed by the engine; only hooks and
+                # workers count as something `update` repairs.
+                if any(level != "OK" for level, _message in
+                       (checks[0], checks[-1])):
+                    stale_agents = True
+            if stale_agents:
+                print(f"<!-- Claude Code/Codex hooks, model or worker settings are out of "
+                      f"date on this computer: ask the user once, then run "
+                      f"{update_all_command()} (works on every channel) -->")
             user_config = sys.modules.get("user_config")
             if user_config is not None and user_config.has_drift(paths):
                 graph_py = Path(__file__).resolve()

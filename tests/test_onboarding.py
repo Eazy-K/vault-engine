@@ -892,6 +892,57 @@ class TestDoctor(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         return buf.getvalue()
 
+    def test_every_warn_names_a_fix_command_or_says_manual(self):
+        (self.home / ".claude").mkdir()
+        (self.home / ".codex").mkdir()
+        (self.data / "profile").mkdir()
+        (self.data / "profile" / "language.md").write_text(
+            "<!-- vault:skeleton -->\n", encoding="utf-8")
+        out = self._doctor_full()
+        warns = [line for line in out.splitlines() if line.startswith("WARN")]
+        self.assertGreaterEqual(len(warns), 5, out)
+        for line in warns:
+            with self.subTest(line=line[:80]):
+                self.assertTrue(onboarding.has_fix(line), line)
+        # the Claude hook, Codex hook and Ollama lines in particular
+        self.assertTrue(any("agent-guard" in w and "update --all" in w for w in warns))
+        self.assertTrue(any("Codex" in w and "update --all" in w for w in warns))
+        self.assertTrue(any("Ollama" in w and "manual:" in w for w in warns))
+
+    def test_a_warn_without_a_fix_gets_a_manual_note(self):
+        self.assertFalse(onboarding.has_fix("something odd"))
+        self.assertTrue(onboarding.has_fix("run `python \"x/graph.py\" update --all`"))
+        self.assertTrue(onboarding.has_fix("manual: do it yourself"))
+
+    def _doctor_full(self, channel=None) -> str:
+        """doctor with the extension modules loaded the way graph.py does."""
+        import claude_hooks, models, update
+        modules = {"update": update, "claude_hooks": claude_hooks, "models": models}
+        with mock.patch.dict(sys.modules, modules):
+            if channel is None:
+                return self._doctor_with_agents()
+            with mock.patch.object(update, "channel", return_value=channel):
+                return self._doctor_with_agents()
+
+    def _doctor_on_dev(self) -> str:
+        return self._doctor_full(("dev", "main"))
+
+    def test_dev_channel_warns_with_the_switch_to_stable_command(self):
+        out = self._doctor_on_dev()
+        line = next(l for l in out.splitlines() if "channel: dev" in l)
+        self.assertTrue(line.startswith("WARN"), line)
+        self.assertIn("update --to", line)
+        self.assertIn("--engine-developer on", line)
+
+    def test_dev_channel_is_info_on_the_engine_developer_machine(self):
+        (self.data / ".graph").mkdir(exist_ok=True)
+        (self.data / ".graph" / "machine.json").write_text(
+            json.dumps({"engine_developer": True}), encoding="utf-8")
+        out = self._doctor_on_dev()
+        line = next(l for l in out.splitlines() if "channel: dev" in l)
+        self.assertTrue(line.startswith("INFO"), line)
+        self.assertIn("update --all", line)
+
     def test_codex_version_change_prints_retest_info(self):
         (self.data / ".graph").mkdir(exist_ok=True)
         hooks = sys.modules["codex_hooks"]  # the module doctor looks up
@@ -1024,7 +1075,7 @@ class TestDoctor(unittest.TestCase):
         code, out = self._doctor_without_vault_data({"VAULT_DATA": str(self.data)})
         self.assertEqual(code, 0, out)
         self.assertIn("WARN VAULT_DATA is set for the user but not in this process: "
-                      "restart the terminal and the agent", out)
+                      "manual: restart the terminal and the agent", out)
         self.assertIn(f"OK   data dir has AGENTS.md ({self.data})", out)
 
     def test_no_vault_data_anywhere_fails_and_names_data_flag(self):

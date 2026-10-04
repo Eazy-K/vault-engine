@@ -463,8 +463,8 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         fake_hooks = types.SimpleNamespace(
             status=lambda settings_path=None: ("WARN", "agent-guard hook not installed"))
         output = self._run_context_with_modules(claude_hooks=fake_hooks)
-        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
-        self.assertIn("update --claude-hooks --models", output)
+        self.assertIn("hooks, model or worker settings are out of date on this computer", output)
+        self.assertIn("update --all", output)
 
     def test_stale_models_prints_notice(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
@@ -473,7 +473,7 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         fake_models = types.SimpleNamespace(
             status=lambda data_dir, settings_path=None, agents_dir=None: ("WARN", "model config out of date"))
         output = self._run_context_with_modules(models=fake_models)
-        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
+        self.assertIn("hooks, model or worker settings are out of date on this computer", output)
 
     def test_stale_claude_agents_prints_notice(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
@@ -484,8 +484,29 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         fake_onboarding = types.SimpleNamespace(
             stale_claude_agents=lambda dest_dir: ["worker-low.md"])
         output = self._run_context_with_modules(claude_hooks=fake_hooks, onboarding=fake_onboarding)
-        self.assertIn("Claude Code hooks/model settings are out of date on this computer", output)
-        self.assertIn("update --claude-hooks --models --agents", output)
+        self.assertIn("hooks, model or worker settings are out of date on this computer", output)
+        self.assertIn("update --all", output)
+
+    def test_hint_is_the_single_update_command_on_every_channel(self):
+        claude_dir = self.tmp / "claude-home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        self._claude_dir = claude_dir
+        fake_hooks = types.SimpleNamespace(
+            status=lambda settings_path=None: ("WARN", "agent-guard hook not installed"))
+        outputs = []
+        update_mod = sys.modules.get("update")
+        for channel in (("dev", "main"), ("stable", "v0.1.0")):
+            with mock.patch.object(update_mod, "channel", return_value=channel)                     if update_mod is not None else mock.patch("os.getcwd"):
+                outputs.append(self._run_context_with_modules(claude_hooks=fake_hooks))
+        for output in outputs:
+            hint = [l for l in output.splitlines() if "out of date on this computer" in l]
+            self.assertEqual(len(hint), 1, output)
+            self.assertIn("update --all", hint[0])
+            for stale in ("--claude-hooks", "--models", "codex-hooks --install"):
+                self.assertNotIn(stale, hint[0])
+        hints = [[l for l in o.splitlines() if "out of date on this computer" in l][0]
+                 for o in outputs]
+        self.assertEqual(hints[0], hints[1])
 
     def test_up_to_date_is_quiet(self):
         claude_dir = self.tmp / "claude-home" / ".claude"
@@ -514,8 +535,8 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         fake_codex = types.SimpleNamespace(
             statuses=lambda: [("WARN", "hooks missing")])
         output = self._run_context_with_modules(codex_hooks=fake_codex)
-        self.assertIn("Codex hooks/model/worker settings are missing or out of date", output)
-        self.assertIn("codex-hooks --install", output)
+        self.assertIn("hooks, model or worker settings are out of date on this computer", output)
+        self.assertIn("update --all", output)
 
 
 class TestDetectAgent(unittest.TestCase):

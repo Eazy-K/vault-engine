@@ -107,7 +107,7 @@ for example `v0.3.0`. Switch to it:
 git checkout <the tag it printed>
 ```
 
-This switches to the latest released version, so the user never gets unfinished work from `main`. If the command above printed nothing, this repo has no release tags yet — skip the checkout. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
+This switches to the latest released version, so the user never gets unfinished work from `main`. New installs are on the stable channel (a release tag); that is the default and what you should leave the user on. If the command above printed nothing, this repo has no release tags yet — tell the user the engine will stay on `main` (the dev channel, which `doctor` warns about until a release exists) and skip the checkout. To update later use `python "<projects folder>/vault-engine/tools/graph.py" update`, which shows what changed and asks before switching to the new version — never `git pull` on this install (HEAD is detached at a tag, not on a branch). See "Updating (later sessions)" below.
 
 ---
 
@@ -344,9 +344,15 @@ available, want me to check what changed?"). If they agree:
 
 1. Run `python "<projects folder>/vault-engine/tools/graph.py" update --check` to see
    what's new, and summarize the changelog for the user in their own language.
-2. Only after the user agrees to proceed, run `update --yes` to actually switch versions.
-   It then runs the new version's `migrate`, `setup` (never environment variables or
-   shell startup files) and `doctor`, and lists every change.
+2. Only after the user agrees to proceed, run `update --all` to actually switch versions
+   (`update --yes` does the same but leaves `~/.claude` and `~/.codex` alone). It then runs
+   the new version's `migrate`, `setup` (never environment variables or shell startup
+   files), the `AGENTS.md` check, Claude subagent files, Codex workers, Claude Code hooks,
+   model settings, Codex hooks and finally `doctor`, and lists every change. The same
+   single command works on the dev channel (engine on `main`): with a clean tree it
+   fast-forwards from origin first; on another branch, with local changes or a diverged
+   `main` it stops and prints the exact fix command. Never update the engine by hand
+   (`git pull`/`merge`/`checkout`, ad-hoc branches).
 3. If the update shows a diff for `AGENTS.md` (or `doctor` warns that it is behind the
    template), explain in plain language what changed and ask before running
    `update --apply-agents`, which replaces the file with the template (it works even when
@@ -361,12 +367,13 @@ available, want me to check what changed?"). If they agree:
    computer's engine, run `update` on this computer too.
 5. If `context` output includes a line about Claude Code hooks, model settings or
    subagent files being out of date on this computer (only shown when `~/.claude`
-   exists), ask the user once, then run the `update` command it gives
-   (`--claude-hooks --models --agents`, which install/sync all three without further
-   prompting; `update` alone offers each interactively instead). `--agents` also
-   refreshes Codex worker profiles (`<CODEX_HOME>/agents/worker-*.toml`) that are missing
-   or an unedited older version, when Codex workers are already installed; edited ones
-   are kept, and `hooks.json` is left to `codex-hooks --install`.
+   exists), ask the user once, then run the `update` command it gives (`update --all`,
+   which installs/syncs the Claude and Codex hooks, model settings and agent/worker files
+   without further prompting; `update` alone offers each interactively instead). Codex
+   worker profiles (`<CODEX_HOME>/agents/worker-*.toml`) that are missing or an unedited
+   older version are refreshed, edited ones are kept, and the Codex hooks
+   (`hooks.json`, backed up first) are installed when `~/.codex` exists. Every `doctor`
+   `WARN` names its fix command (preferably `update --all`) or says `manual:`.
 
 Only 0.3.0 and later check for new versions and have `update`. On 0.1.0 and 0.2.0 you
 get no update line, and `update` fails with `invalid choice: 'update'`; use the next
@@ -429,7 +436,7 @@ after step 2.
    computer already pushed `main`): pull it first, `git pull --rebase origin main`, then
    push, or just follow the exact command `doctor` prints there, which includes the pull
    when it can tell `main` already exists on the remote.
-9. On another computer, after `git pull` in the engine and the data repo and a clean
+9. On another computer, after `update --all` and `git pull` in the data repo and a clean
    `doctor`, run `python "<projects folder>/vault-engine/tools/graph.py" user-config` to
    compare the Codex/Claude user-level config with the vault's `config/` templates and,
    after the user agrees, `user-config --install`. It backs up every file it changes and
@@ -552,5 +559,10 @@ config (skipped silently if `settings.json` doesn't exist yet).
 - **`git pull` says you are not on a branch**: stable installs are checked out at a
   release tag (detached HEAD) on purpose; use `update` instead of `git pull` (on 0.1.0
   or 0.2.0, see "Updating from 0.1.0 or 0.2.0").
+- **`doctor` warns that the engine is on the dev channel**: a clone that skipped the
+  release-tag checkout. Run the command in the warning (`update --to <latest tag> --yes`)
+  to move to the latest release; on the engine developer's own computer run
+  `python "<projects folder>/vault-engine/tools/graph.py" machine --engine-developer on`
+  instead. Existing installs are never switched automatically.
 - **`invalid choice: 'update'` (or `'migrate'`)**: the engine is 0.1.0 or 0.2.0, which
   have neither command. Follow "Updating from 0.1.0 or 0.2.0" above.
