@@ -4,6 +4,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-04
+
 ### Added
 - `update` works on the dev channel: on `main` with a clean tree it runs `git fetch` and `git pull --ff-only` without asking, then the same steps as the stable channel. On another branch, with local changes or when `main` cannot fast-forward it stops with the exact fix command; it never creates branches, merges or rebases. `update --to <tag>` moves a dev checkout to a release.
 - One shared post-update routine for both channels: migrate, setup, the `AGENTS.md` check, Claude subagent files, Codex workers, Claude Code hooks, model settings, Codex hooks (new), then `doctor`.
@@ -17,6 +19,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 
 ### Upgrade notes
 - On the dev channel `update` now pulls (it used to do nothing). Run `python tools/graph.py update --apply-agents` once to bring the vault's `AGENTS.md` to template revision 9. Existing installs are not switched to stable automatically.
+- Dev channel: the old dev `update` only prints a hint, so run `git -C <engine> pull` once to get the new `update`. After that, `update` pulls by itself.
+- Stable channel (from 0.12.0): the old `update` checks out the new tag and runs migrate, setup and doctor from the new checkout, but its hooks, model and worker steps still run the old code. Run `python tools/graph.py update` to reach 0.13.0, then `python tools/graph.py update --all` (or answer y to the prompts) to finish with the new routine, including the Codex hooks and the `AGENTS.md` revision 9 check.
 
 ### Fixed
 - The engine skips the `.claude` folder when scanning notes, so Claude Code worktrees (`.claude/worktrees/`) no longer duplicate every note or cause "ambiguous" link errors in `lint`.
