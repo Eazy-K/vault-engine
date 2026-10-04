@@ -66,6 +66,18 @@ class TestSkipDirs(unittest.TestCase):
             self.assertIn("Kept", titles)
             self.assertNotIn("Old", titles)
 
+    def test_claude_worktree_copy_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            note = "---\n---\n# Foo\n"
+            write(root / "profile" / "foo.md", note)
+            write(root / ".claude" / "worktrees" / "x" / "profile" / "foo.md", note)
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("VAULT_SKIP_DIRS", None)
+                notes = graph._load_notes_from(root, "test")
+            self.assertEqual(len(notes), 1)
+            self.assertFalse(any(".claude" in n.path.parts for n in notes.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

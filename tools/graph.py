@@ -180,7 +180,7 @@ KEEP_ALIVE = "30m"
 EMBED_TIMEOUT = 120  # first call may load the model from disk
 PROBE_TIMEOUT = 3  # "is anything answering at OLLAMA_URL" before that long wait (Windows
 # takes ~2 s to report a refused localhost connection)
-SKIP_DIRS = {".git", ".obsidian", ".graph", "tools", "__pycache__"}
+SKIP_DIRS = {".git", ".obsidian", ".graph", ".claude", "tools", "__pycache__"}
 SKIP_ROOT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md"}
 
 
