@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""PostToolUse hook for Claude Code: nudges the orchestrator to delegate once it has
+"""PostToolUse + Stop hook for Claude Code: nudges the orchestrator to delegate once it has
 made several tool calls in a row on the main thread for the same user message,
 instead of doing multi-step work itself.
 
-Matcher: Bash|Read|Edit|Write (see the installer's DELEGATION_WARN_MATCHER). Only
+Matcher: `*` (see the installer's DELEGATION_WARN_MATCHER): every tool call counts,
+except the delegation tools themselves (`Agent`, `Task`), since delegating is the
+desired behaviour. Only
 fires for the *orchestrator* -- a hook call from inside a subagent carries an
 `agent_id` field (see https://code.claude.com/docs/en/hooks: "agent_id ... is
 present only when the hook fires inside a subagent"), and this hook returns
@@ -19,13 +21,16 @@ already warned for this prompt_id. A new prompt_id (new user message) resets the
 counter and the "already warned" flag, so the warning can fire again on the next
 message but never spams every call within the same message.
 
-Measurement: when a new prompt_id replaces the previous one, one JSON line
-{"event": "orchestrator_prompt", "inline_calls": N, "warned": bool, ...} for the
-finished prompt is appended to `<data>/.graph/usage.log` (same file and ts/agent/
-session fields as graph.py's log_usage; `graph.py stats` summarises it). Only
-written if VAULT_DATA/VAULT_HOME points at an existing directory. Limitation: the
-last prompt of a session is never flushed (no later prompt triggers it, and this
-hook has no session-end registration).
+Measurement: one JSON line {"event": "orchestrator_prompt", "inline_calls": N,
+"warned": bool, ...} per finished prompt is appended to `<data>/.graph/usage.log`
+(same file and ts/agent/session fields as graph.py's log_usage; `graph.py stats`
+summarises it). Only written if VAULT_DATA/VAULT_HOME points at an existing
+directory. The line is flushed when the main agent's `Stop` event fires (the hook is
+also registered under Stop; per https://code.claude.com/docs/en/hooks Stop runs when
+the main agent has finished responding), so the last prompt of a session is logged.
+SessionEnd was not chosen: it shares a 1.5 s budget and carries no per-prompt state.
+Stop does not fire on a user interrupt or API error; then the fallback still
+applies and the pending prompt is flushed when the next prompt_id arrives.
 
 On any parse error, missing/unwritable state, or unexpected input shape, this
 prints nothing and exits 0; a bug here can never block a tool call.
@@ -39,6 +44,9 @@ import tempfile
 from datetime import datetime
 
 WARN_AFTER = 3  # warn once the count exceeds this (i.e. on the 4th+ call)
+
+# Tools that are delegation itself; they never count as inline work.
+DELEGATION_TOOLS = {"Agent", "Task"}
 
 WARNING_MESSAGE = (
     "4+ tool calls in this request: delegate the rest to a worker "
@@ -114,6 +122,17 @@ def main() -> None:
 
     sp = state_path(str(session_id))
     state = load_state(sp)
+
+    if payload.get("hook_event_name") == "Stop":
+        # Turn finished: flush the pending prompt, then forget it so the next
+        # prompt_id (or a late tool call) does not log it a second time.
+        if state.get("prompt_id") == prompt_id:
+            log_prompt(str(session_id), state)
+            save_state(sp, {})
+        return
+
+    if payload.get("tool_name") in DELEGATION_TOOLS:
+        return
 
     if state.get("prompt_id") != prompt_id:
         if state.get("prompt_id"):

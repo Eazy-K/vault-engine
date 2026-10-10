@@ -74,7 +74,7 @@ class TestMerge(unittest.TestCase):
         self.assertTrue(changed)
         entries = settings["hooks"]["PostToolUse"]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["matcher"], "Bash|Read|Edit|Write")
+        self.assertEqual(entries[0]["matcher"], "*")
         self.assertIn("delegation-warn.py", entries[0]["hooks"][0]["command"])
 
     def test_merge_delegation_warn_hook_is_idempotent(self):
@@ -98,6 +98,26 @@ class TestMerge(unittest.TestCase):
         post = settings["hooks"]["PostToolUse"]
         self.assertEqual(len(post), 1)
         self.assertEqual(post[0]["hooks"][0]["command"], claude_hooks._delegation_warn_command())
+
+    def test_merge_refreshes_stale_delegation_matcher(self):
+        existing = {"hooks": {"PostToolUse": [
+            {"matcher": "Bash|Read|Edit|Write",
+             "hooks": [{"type": "command", "command": claude_hooks._delegation_warn_command()}]}]}}
+        settings, changed = claude_hooks.merge(existing)
+        self.assertTrue(changed)
+        self.assertEqual(settings["hooks"]["PostToolUse"][0]["matcher"], "*")
+        self.assertEqual(len(settings["hooks"]["PostToolUse"]), 1)
+
+    def test_merge_adds_stop_flush_and_subagent_log_hooks(self):
+        settings, _ = claude_hooks.merge({})
+        stop_cmds = [h["command"] for e in settings["hooks"]["Stop"] for h in e["hooks"]]
+        self.assertTrue(any("delegation-warn.py" in c for c in stop_cmds))
+        self.assertTrue(any("reinforce-check.py" in c for c in stop_cmds))
+        sub = settings["hooks"]["SubagentStop"]
+        self.assertEqual(len(sub), 1)
+        self.assertIn("subagent-log.py", sub[0]["hooks"][0]["command"])
+        _, changed = claude_hooks.merge(settings)
+        self.assertFalse(changed)
 
     def test_merge_sets_statusline_when_absent(self):
         settings, changed = claude_hooks.merge({})
@@ -298,7 +318,15 @@ class TestStatus(unittest.TestCase):
         self.assertIn("reinforce-check.py", settings["hooks"]["Stop"][0]["hooks"][0]["command"])
         settings2, changed = claude_hooks.merge(settings)
         self.assertFalse(changed)
-        self.assertEqual(len(settings2["hooks"]["Stop"]), 1)
+        reinforce = [e for e in settings2["hooks"]["Stop"]
+                     if "reinforce-check.py" in e["hooks"][0]["command"]]
+        self.assertEqual(len(reinforce), 1)
+
+    def test_subagent_log_status_warn_then_ok(self):
+        self.assertEqual(claude_hooks.subagent_log_status(self.settings_path)[0], "WARN")
+        settings, _ = claude_hooks.merge({})
+        self.settings_path.write_text(json.dumps(settings), encoding="utf-8")
+        self.assertEqual(claude_hooks.subagent_log_status(self.settings_path)[0], "OK")
 
 
 if __name__ == "__main__":

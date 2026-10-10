@@ -29,8 +29,7 @@ AGENTS_DIR = g.ENGINE / "tools" / "codex-agents"
 # double count). Sub-agent spawns are a top-level `spawn_agent` function call in
 # the `collaboration` namespace, so the guard also accepts namespaced spellings.
 SPAWN_MATCHER = "^(Agent|(.*[._:/])?spawn_agent)$"
-INLINE_MATCHER = ("^(Bash|Read|Edit|Write|apply_patch|exec_command|shell_command"
-                  "|shell|local_shell)$")
+INLINE_MATCHER = "*"  # every tool; delegation-warn.py skips exec/spawn tools itself
 HOOKS = {
     "UserPromptSubmit": ("context-warn.py", None),
     "PreToolUse": ("agent-guard.py", SPAWN_MATCHER),
@@ -40,6 +39,10 @@ HOOKS = {
 GIT_MATCHER = "^(Bash|exec_command|shell_command|shell|local_shell)$"
 HOOK_LIST = [(event, filename, matcher) for event, (filename, matcher) in HOOKS.items()]
 HOOK_LIST.append(("PreToolUse", "git-guard.py", GIT_MATCHER))
+# Measurement: Stop flushes the last turn's orchestrator_prompt event; SubagentStop
+# logs one subagent_stop event per finished subagent (both documented Codex events).
+HOOK_LIST.append(("Stop", "delegation-warn.py", None))
+HOOK_LIST.append(("SubagentStop", "subagent-log.py", None))
 EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 _SAFE_ARG = re.compile(r"[A-Za-z0-9_./:~+-]+")
 

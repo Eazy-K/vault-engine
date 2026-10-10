@@ -28,9 +28,11 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.data.mkdir()
         self.env["VAULT_DATA"] = str(self.data)
 
-    def _run(self, turn_id="turn-1", tool_name="Bash", agent_id=None):
+    def _run(self, turn_id="turn-1", tool_name="Bash", agent_id=None, event=None):
         payload = {"session_id": self.session, "turn_id": turn_id,
                    "tool_name": tool_name, "tool_input": {}}
+        if event:
+            payload["hook_event_name"] = event
         if agent_id:
             payload["agent_id"] = agent_id
         if getattr(self, "transcript", None):
@@ -89,11 +91,29 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.session += "-2"
         self.assertTrue(any(self._run().stdout.strip() for _ in range(4)))
 
-    def test_subagent_and_unmatched_tool_calls_are_ignored(self):
+    def test_subagent_and_delegation_tool_calls_are_ignored(self):
         for _ in range(5):
             self.assertEqual(self._run(agent_id="worker").stdout.strip(), "")
-            self.assertEqual(self._run(tool_name="Other").stdout.strip(), "")
+            self.assertEqual(self._run(tool_name="spawn_agent").stdout.strip(), "")
+            self.assertEqual(self._run(tool_name="collaboration.spawn_agent").stdout.strip(), "")
         self.assertFalse((self.data / ".graph" / "usage.log").exists())
+
+    def test_any_other_tool_counts(self):
+        outs = [self._run(turn_id="t9", tool_name="Other") for _ in range(4)]
+        self.assertTrue(outs[3].stdout.strip())
+
+    def test_stop_flushes_last_turn_once_and_prints_json(self):
+        for _ in range(4):
+            self._run()
+        stop = self._run(event="Stop")
+        self.assertEqual(json.loads(stop.stdout), {})
+        log = self.data / ".graph" / "usage.log"
+        events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(e["event"], e["agent"], e["inline_calls"]) for e in events],
+                         [("orchestrator_prompt", "codex", 4)])
+        self._run(event="Stop")
+        self._run(turn_id="turn-2")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
 
 
 if __name__ == "__main__":

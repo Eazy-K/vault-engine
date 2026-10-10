@@ -75,6 +75,14 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(delegation_entries[0]["hooks"][0]["command"],
                          codex_hooks._command(codex_hooks.HOOKS_DIR / "delegation-warn.py"))
 
+    def test_merge_adds_stop_and_subagent_stop_hooks(self):
+        merged, _ = codex_hooks.merge({})
+        stop = merged["hooks"]["Stop"]
+        self.assertIn("delegation-warn.py", stop[0]["hooks"][0]["command"])
+        sub = merged["hooks"]["SubagentStop"]
+        self.assertIn("subagent-log.py", sub[0]["hooks"][0]["command"])
+        self.assertEqual(codex_hooks.INLINE_MATCHER, "*")
+
     def test_merge_refuses_malformed_hooks_member(self):
         with self.assertRaises(ValueError):
             codex_hooks.merge({"hooks": "broken"})
@@ -419,14 +427,12 @@ class TestDenyProbe(unittest.TestCase):
     def test_matchers_cover_real_codex_tool_names(self):
         import re
         spawn = re.compile(codex_hooks.SPAWN_MATCHER)
-        inline = re.compile(codex_hooks.INLINE_MATCHER)
         for name in ("Agent", "spawn_agent", "collaboration.spawn_agent", "collaboration__spawn_agent"):
             self.assertTrue(spawn.search(name), name)
         for name in ("exec", "exec_command", "wait_agent", "followup_task", "spawn_agent_x"):
             self.assertFalse(spawn.search(name), name)
-        for name in ("Bash", "apply_patch", "exec_command", "shell_command"):
-            self.assertTrue(inline.search(name), name)
-        self.assertFalse(inline.search("exec"))
+        # every tool is matched; delegation-warn.py itself skips exec/spawn tools
+        self.assertEqual(codex_hooks.INLINE_MATCHER, "*")
         self.assertIn("|exec)", codex_hooks.PROBE_MATCHER)
 
     def test_run_error_records_nothing(self):

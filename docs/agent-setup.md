@@ -498,11 +498,16 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   context-usage warning tells the model to write the current state to the vault's
   status note, then suggest the user start a new session or run `/compact`. Neither
   part of this hook ever blocks the prompt.
-- a `PostToolUse` hook (`delegation-warn.py`, matcher `Bash|Read|Edit|Write`) that
-  counts tool calls made directly by the orchestrator (not inside a subagent) for the
+- a `PostToolUse` hook (`delegation-warn.py`, matcher `*`) that
+  counts tool calls (any tool except `Agent`/`Task`) made directly by the orchestrator (not inside a subagent) for the
   current user message and, once that count exceeds 3, adds a short one-time warning
   suggesting the rest of the work be delegated to a worker. The counter resets on
   every new user message. It never blocks a tool call, only adds context for the model.
+  The same script is registered under `Stop` (Codex: `Stop` too) to flush the last
+  prompt's `orchestrator_prompt` event to `.graph/usage.log`.
+- a `SubagentStop` hook (`subagent-log.py`, Claude and Codex) that appends one
+  `subagent_stop` event (agent type, agent id, length of the final message) to
+  `.graph/usage.log`. It never blocks.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
   `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
