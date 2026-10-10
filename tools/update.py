@@ -412,6 +412,9 @@ def _claude_hooks_step(engine: Path, data: Path, args) -> None:
     if not (engine / "tools" / "claude_hooks.py").exists() or not _claude_in_use(data):
         return
     result = run_step(engine, data, ["claude-hooks"])
+    for line in result.stdout.splitlines():
+        if line.startswith("WARN "):  # e.g. settings still allow `gh pr merge`
+            print(line)
     if result.returncode != 0 or "would update" not in result.stdout:
         return
     print("\nClaude Code hooks (agent-guard, context-warn, status line) are missing or out of date:")

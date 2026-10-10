@@ -1178,6 +1178,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(*claude_hooks.context_warn_status(settings))
             check(*claude_hooks.delegation_warn_status(settings))
             check(*claude_hooks.reinforce_check_status(settings))
+            check(*claude_hooks.git_guard_status(settings))
+            check(*claude_hooks.merge_permission_status(settings))
         if models is not None and data is not None:
             result = models.status(data, settings, claude_dir / "agents")
             if result is not None:
@@ -1200,6 +1202,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if codex_hooks is not None and codex_home.is_dir():
         for result in codex_hooks.statuses():
             check(*result)
+        check(*codex_hooks.rules_status())
 
     if codex_hooks is not None and found.get("codex"):
         try:
