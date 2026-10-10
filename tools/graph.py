@@ -1813,7 +1813,8 @@ def log_show(paths: Paths, nid: str) -> None:
     task, from_omitted = "", False
     if session:
         for e in reversed(read_usage(paths)):
-            if e.get("event") == "context" and e.get("agent") == agent                     and e.get("session") == session:
+            if (e.get("event") == "context" and e.get("agent") == agent
+                    and e.get("session") == session):
                 task = e.get("task") or ""
                 from_omitted = nid in (e.get("omitted") or [])
                 break
