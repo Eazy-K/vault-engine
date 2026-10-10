@@ -5,6 +5,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ## [Unreleased]
 
 ### Added
+- `git-guard`, a `PreToolUse` hook for Claude Code (`Bash`) and Codex (shell tools): denies `git push` with a force flag anywhere in the command (`-f`, `--force`, `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or `commit -n`, including inside `&&`, `;`, `|` chains and `bash -c`. Prefix permission rules miss flags placed at the end. `VAULT_GIT_GUARD=off` disables it. Installed by `claude-hooks --install`, `codex-hooks --install` and `update --all`.
+- `doctor` / `update` warn when Claude settings still allow `gh pr merge` or `git merge` (fix: `claude-hooks --fix-permissions --install` moves them to deny / ask) or when Codex rules do not forbid `gh pr merge` and prompt for `git merge` (decision: the user merges PRs, the agent reports and gives the command). The engine ships no permission or rules template itself: those live in the data repo's `config/claude/settings.json` and `config/codex/default.rules`.
 - `reinforce-check`, a Claude Code `Stop` hook: when a turn ends with `git commit`, `git push` or `gh pr create` and a `context` task id was never reinforced, it blocks once per id and asks the agent to run `reinforce --task <id>` and mention it in the final report. Installed by `claude-hooks --install` / `update --all`, checked by `doctor`, logs `reinforce_check` events to `usage.log`.
 
 ### Fixed

@@ -41,6 +41,10 @@ GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "agent-guard.py"
 GUARD_MATCHER = "Agent"
 GUARD_MARKER = "agent-guard.py"  # substring identifying our hook's command, for idempotent merges
 
+GIT_GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "git-guard.py"
+GIT_GUARD_MATCHER = "Bash"
+GIT_GUARD_MARKER = "git-guard.py"
+
 CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
 
@@ -89,6 +93,10 @@ def _guard_command() -> str:
     return _command(GUARD_SCRIPT)
 
 
+def _git_guard_command() -> str:
+    return _command(GIT_GUARD_SCRIPT)
+
+
 def _context_warn_command() -> str:
     return _command(CONTEXT_WARN_SCRIPT)
 
@@ -127,6 +135,20 @@ def _find_guard_hook(settings: dict) -> dict | None:
             continue
         for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
             if isinstance(hook, dict) and GUARD_MARKER in str(hook.get("command", "")):
+                return hook
+    return None
+
+
+def _find_git_guard_hook(settings: dict) -> dict | None:
+    """Same idea as _find_guard_hook, for the git-guard PreToolUse hook."""
+    pre = settings.get("hooks", {}).get("PreToolUse", [])
+    if not isinstance(pre, list):
+        return None
+    for entry in pre:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
+            if isinstance(hook, dict) and GIT_GUARD_MARKER in str(hook.get("command", "")):
                 return hook
     return None
 
@@ -187,6 +209,22 @@ def _merge_guard(settings: dict) -> bool:
     hooks = settings.setdefault("hooks", {})
     pre = hooks.setdefault("PreToolUse", [])
     pre.append({"matcher": GUARD_MATCHER, "hooks": [{"type": "command", "command": command}]})
+    return True
+
+
+def _merge_git_guard(settings: dict) -> bool:
+    """Merge in the git-guard PreToolUse hook (Bash). Returns True if changed."""
+    command = _git_guard_command()
+    existing = _find_git_guard_hook(settings)
+    if existing is not None:
+        if existing.get("command") == command and existing.get("type") == "command":
+            return False
+        existing["type"] = "command"
+        existing["command"] = command
+        return True
+    pre = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+    pre.append({"matcher": GIT_GUARD_MATCHER,
+                "hooks": [{"type": "command", "command": command}]})
     return True
 
 
@@ -263,6 +301,7 @@ def merge(settings: dict) -> tuple[dict, bool]:
     is configured) the statusLine command, without touching any other existing hook
     or an existing statusLine. Returns (new_settings, changed)."""
     changed = _merge_guard(settings)
+    changed = _merge_git_guard(settings) or changed
     changed = _merge_context_warn(settings) or changed
     changed = _merge_delegation_warn(settings) or changed
     changed = _merge_reinforce_check(settings) or changed
@@ -279,6 +318,55 @@ def status(settings_path: Path | None = None) -> tuple[str, str]:
         return "OK", f"agent-guard hook installed ({settings_path})"
     return "WARN", (f"agent-guard hook not installed in {settings_path}: run "
                      f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to stop expensive subagents")
+
+
+def git_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the git-guard hook is installed."""
+    settings_path = settings_path or default_settings()
+    hook = _find_git_guard_hook(_load(settings_path))
+    if hook is not None and hook.get("command") == _git_guard_command():
+        return "OK", f"git-guard hook installed ({settings_path})"
+    return "WARN", (f"git-guard hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to block "
+                     "force push and --no-verify")
+
+
+def merge_permission_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: the user's settings must not allow
+    `gh pr merge` or `git merge` without asking (decision 0008: the user merges)."""
+    settings_path = settings_path or default_settings()
+    perms = _load(settings_path).get("permissions", {})
+    perms = perms if isinstance(perms, dict) else {}
+    allow = perms.get("allow")
+    bad = [r for r in (allow if isinstance(allow, list) else []) if isinstance(r, str)
+           and re.match(r"^Bash\((gh pr merge|git merge)", r)]
+    if bad:
+        return "WARN", (f"{settings_path} allows {', '.join(bad)} without asking; move `gh pr merge` "
+                         "to permissions.deny and `git merge` to permissions.ask; fix: "
+                         f'python "{g.ENGINE / "tools" / "graph.py"}" '
+                         "claude-hooks --fix-permissions --install")
+    return "OK", f"no allow rule for gh pr merge / git merge ({settings_path})"
+
+
+def fix_merge_permissions(settings: dict) -> bool:
+    """Move allow rules for `gh pr merge` -> deny and `git merge` -> ask. True if changed."""
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict) or not isinstance(perms.get("allow"), list):
+        return False
+    changed = False
+    for rule in list(perms["allow"]):
+        if not isinstance(rule, str):
+            continue
+        target = ("deny" if re.match(r"^Bash\(gh pr merge", rule) else
+                  "ask" if re.match(r"^Bash\(git merge", rule) else None)
+        if target is None:
+            continue
+        perms["allow"].remove(rule)
+        bucket = perms.setdefault(target, [])
+        if rule not in bucket:
+            bucket.append(rule)
+        changed = True
+    return changed
 
 
 def context_warn_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -332,6 +420,12 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     had_statusline = bool(current) and not (
         isinstance(current, dict) and STATUSLINE_MARKER in str(current.get("command", "")))
     merged, changed = merge(settings)
+    perm_warn = merge_permission_status(settings_path)
+    if getattr(args, "fix_permissions", False):
+        changed = fix_merge_permissions(merged) or changed
+        perm_warn = ("OK", "")
+    if perm_warn[0] != "OK":
+        print(f"WARN {perm_warn[1]}")
 
     if not args.install:
         if not changed:
@@ -387,6 +481,9 @@ def register(sub: argparse._SubParsersAction) -> None:
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")
+    p.add_argument("--fix-permissions", action="store_true",
+                    help="also move allow rules for `gh pr merge` to deny and `git merge` to "
+                         "ask (the user merges PRs; see decision 0008)")
     p.add_argument("--settings", help="settings.json path (default: settings.json in every "
                                        "registered Claude config dir, see `claude-dirs`; "
                                        "~/.claude or $CLAUDE_CONFIG_DIR)")

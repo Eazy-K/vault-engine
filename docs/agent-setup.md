@@ -503,6 +503,15 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   current user message and, once that count exceeds 3, adds a short one-time warning
   suggesting the rest of the work be delegated to a worker. The counter resets on
   every new user message. It never blocks a tool call, only adds context for the model.
+- a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
+  `git push` with a force flag anywhere in the command (`-f`, `--force`,
+  `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
+  `commit -n`, also inside `&&`, `;`, `|` chains. Fails open; `VAULT_GIT_GUARD=off`
+  disables it. Merging is the user's job: keep `gh pr merge` in the Claude
+  `permissions.deny` list (`git merge` in `ask`) and `forbidden` / `prompt` in the Codex
+  rules; `doctor` warns otherwise and `claude-hooks --fix-permissions --install` repairs
+  the Claude side. The engine ships no such templates; they come from the data repo's
+  `config/claude/settings.json` and `config/codex/default.rules`.
 - a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
   `git push` or `gh pr create` and a `context` call in the session printed a task id
   that has no `reinforce --task <id>` yet, blocks the stop once per id and asks the
