@@ -75,6 +75,34 @@ class TestUpdateDevChannel(DevChannelCase):
         self.run_update()
         self.assertIn("@main", workflow.read_text(encoding="utf-8"))
 
+    def _pin(self, ref: str) -> Path:
+        workflow = self.data / ".github" / "workflows" / "vault.yml"
+        _write(workflow, f"steps:\n  - uses: example/vault-engine@{ref}\n")
+        return workflow
+
+    def test_old_release_pin_moves_to_latest_reachable_tag(self):
+        workflow = self._pin("v0.3.0")
+        with mock.patch("update.latest_reachable_tag", return_value="v0.10.0"):
+            self.run_update()
+        self.assertIn("@v0.10.0", workflow.read_text(encoding="utf-8"))
+
+    def test_current_release_pin_is_unchanged(self):
+        workflow = self._pin("v0.10.0")
+        with mock.patch("update.latest_reachable_tag", return_value="v0.10.0"),                 mock.patch("update._rewrite_ci_pin") as rewrite:
+            self.run_update()
+        rewrite.assert_not_called()
+        self.assertIn("@v0.10.0", workflow.read_text(encoding="utf-8"))
+
+    def test_old_pin_stays_when_no_tag_is_reachable(self):
+        workflow = self._pin("v0.3.0")
+        with mock.patch("update.latest_reachable_tag", return_value=None):
+            self.run_update()
+        self.assertIn("@v0.3.0", workflow.read_text(encoding="utf-8"))
+
+    def test_latest_reachable_tag_reads_the_checkout(self):
+        self.assertEqual(update.latest_reachable_tag(self.engine), "v0.10.0")
+        self.assertIsNone(update.latest_reachable_tag(self.data / "nope"))
+
     def test_other_branch_stops_and_names_the_command(self):
         _run(["git", "checkout", "-q", "-b", "feature/x"], self.engine)
         head = self.head()
