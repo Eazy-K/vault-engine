@@ -4,9 +4,9 @@
 Current PostToolUse payloads do not include agent_id, so subagent calls are
 detected from the rollout's first record (session_meta with a subagent source
 or parent_thread_id) and skipped; whether Codex fires global hooks for
-subagents at all is unverified live. A completed turn is logged when the
-next turn's first matching tool call arrives; the final turn remains unlogged
-until that happens because this hook does not receive turn-stop events.
+subagents at all is unverified live. A completed turn is logged by the Stop
+event (this script is also registered under Stop); if Stop never fires (e.g. an
+interrupt) it is logged when the next turn's first tool call arrives.
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ from typing import Iterator
 from datetime import datetime
 
 THRESHOLD = 4
-# Codex code mode: inner tools.exec_command calls arrive as "Bash"; the outer
-# `exec` wrapper is not counted (it would double count its inner calls).
-MATCHED_TOOLS = {"Bash", "Read", "Edit", "Write", "apply_patch", "exec_command",
-                 "shell_command", "shell", "local_shell"}
+# Every tool counts except delegation itself and Codex code mode's outer `exec`
+# wrapper (it would double count its inner tools.exec_command/apply_patch calls,
+# which arrive as "Bash"/"apply_patch").
+EXCLUDED_TOOLS = {"exec", "Agent", "spawn_agent"}
 MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
 REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
 REPEAT_EVERY = 2
@@ -107,11 +107,7 @@ def _load_state(path: Path) -> dict:
 
 
 def _log_prompt(session_id: str, state: dict) -> None:
-    """Append a completed Codex turn to the local usage log, if configured.
-
-    PostToolUse has no final-turn callback, so the final turn may never be
-    flushed unless another turn begins in this session.
-    """
+    """Append a completed Codex turn to the local usage log, if configured."""
     try:
         raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
         if not raw:
@@ -154,7 +150,10 @@ def main() -> None:
     # Codex payloads currently carry no agent_id; subagents are detected via the rollout session_meta.
     if payload.get("agent_id") or _is_subagent_rollout(payload.get("transcript_path")):
         return
-    if payload.get("tool_name") not in MATCHED_TOOLS:
+    is_stop = payload.get("hook_event_name") == "Stop"
+    tool = payload.get("tool_name")
+    if not is_stop and (not isinstance(tool, str) or tool in EXCLUDED_TOOLS
+                        or tool.rsplit(".", 1)[-1].rsplit(":", 1)[-1] == "spawn_agent"):
         return
 
     path = _state_path(payload)
@@ -167,6 +166,13 @@ def main() -> None:
     try:
         with _locked(path):
             state = _load_state(path)
+            if is_stop:
+                # Codex requires JSON on stdout for Stop; "{}" is a no-op.
+                if state.get("turn_id") == turn_id:
+                    _log_prompt(session_id, state)
+                    _save_state(path, {"turn_id": None, "count": 0, "warned": False})
+                print("{}")
+                return
             if state.get("turn_id") != turn_id:
                 if state.get("turn_id") is not None:
                     _log_prompt(session_id, state)

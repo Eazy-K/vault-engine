@@ -34,9 +34,11 @@ class TestDelegationWarn(unittest.TestCase):
         self.env["TMP"] = str(self.tmp)
 
     def _run(self, prompt_id="p1", tool_name="Bash", agent_id=None,
-              env_extra=None) -> subprocess.CompletedProcess:
+              env_extra=None, event=None) -> subprocess.CompletedProcess:
         payload = {"session_id": self.session_id, "prompt_id": prompt_id,
                    "tool_name": tool_name, "tool_input": {}}
+        if event:
+            payload["hook_event_name"] = event
         if agent_id is not None:
             payload["agent_id"] = agent_id
         env = dict(self.env)
@@ -160,6 +162,35 @@ class TestDelegationWarn(unittest.TestCase):
         data, env = self._data_env()
         for pid in ("p1", "p2", "p3"):
             self._run(prompt_id=pid, agent_id="sub-1", env_extra=env)
+        self.assertEqual(self._log(data), [])
+
+
+    def test_every_tool_counts_except_delegation_tools(self):
+        for tool in ("Grep", "Glob", "WebFetch"):
+            self.assertEqual(self._run(prompt_id="a", tool_name=tool).stdout.strip(), "")
+        self.assertNotEqual(self._run(prompt_id="a", tool_name="mcp__x__y").stdout.strip(), "")
+        for _ in range(6):  # delegating never counts
+            self.assertEqual(self._run(prompt_id="b", tool_name="Agent").stdout.strip(), "")
+            self.assertEqual(self._run(prompt_id="b", tool_name="Task").stdout.strip(), "")
+
+    def test_stop_flushes_last_prompt_once(self):
+        data, env = self._data_env()
+        for _ in range(4):
+            self._run(prompt_id="p1", env_extra=env)
+        stop = self._run(prompt_id="p1", env_extra=env, event="Stop")
+        self.assertEqual((stop.returncode, stop.stdout.strip()), (0, ""))
+        events = self._log(data)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "orchestrator_prompt")
+        self.assertEqual(events[0]["inline_calls"], 4)
+        self.assertTrue(events[0]["warned"])
+        self._run(prompt_id="p1", env_extra=env, event="Stop")  # no double log
+        self._run(prompt_id="p2", env_extra=env)  # nothing pending to flush
+        self.assertEqual(len(self._log(data)), 1)
+
+    def test_stop_without_pending_prompt_logs_nothing(self):
+        data, env = self._data_env()
+        self._run(prompt_id="p1", env_extra=env, event="Stop")
         self.assertEqual(self._log(data), [])
 
 

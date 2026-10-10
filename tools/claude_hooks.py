@@ -49,8 +49,11 @@ CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
 
 DELEGATION_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "delegation-warn.py"
-DELEGATION_WARN_MATCHER = "Bash|Read|Edit|Write"
+DELEGATION_WARN_MATCHER = "*"  # every tool; the script skips Agent/Task itself
 DELEGATION_WARN_MARKER = "delegation-warn.py"
+
+SUBAGENT_LOG_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "subagent-log.py"
+SUBAGENT_LOG_MARKER = "subagent-log.py"
 
 REINFORCE_CHECK_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "reinforce-check.py"
 REINFORCE_CHECK_MARKER = "reinforce-check.py"
@@ -103,6 +106,10 @@ def _context_warn_command() -> str:
 
 def _delegation_warn_command() -> str:
     return _command(DELEGATION_WARN_SCRIPT)
+
+
+def _subagent_log_command() -> str:
+    return _command(SUBAGENT_LOG_SCRIPT)
 
 
 def _reinforce_check_command() -> str:
@@ -167,18 +174,35 @@ def _find_context_warn_hook(settings: dict) -> dict | None:
     return None
 
 
-def _find_delegation_warn_hook(settings: dict) -> dict | None:
-    """Same idea as _find_guard_hook, but for the PostToolUse hook list."""
-    entries = settings.get("hooks", {}).get("PostToolUse", [])
+def _find_entry_hook(settings: dict, event: str, marker: str) -> tuple[dict, dict] | None:
+    """(entry, hook) of the first `event` hook whose command contains `marker`."""
+    entries = settings.get("hooks", {}).get(event, [])
     if not isinstance(entries, list):
         return None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
-            if isinstance(hook, dict) and DELEGATION_WARN_MARKER in str(hook.get("command", "")):
-                return hook
+            if isinstance(hook, dict) and marker in str(hook.get("command", "")):
+                return entry, hook
     return None
+
+
+def _find_delegation_warn_hook(settings: dict) -> dict | None:
+    """Same idea as _find_guard_hook, but for the PostToolUse hook list."""
+    found = _find_entry_hook(settings, "PostToolUse", DELEGATION_WARN_MARKER)
+    return found[1] if found else None
+
+
+def _find_delegation_flush_hook(settings: dict) -> dict | None:
+    """delegation-warn.py registered under Stop (flushes the last prompt's event)."""
+    found = _find_entry_hook(settings, "Stop", DELEGATION_WARN_MARKER)
+    return found[1] if found else None
+
+
+def _find_subagent_log_hook(settings: dict) -> dict | None:
+    found = _find_entry_hook(settings, "SubagentStop", SUBAGENT_LOG_MARKER)
+    return found[1] if found else None
 
 
 def _find_reinforce_check_hook(settings: dict) -> dict | None:
@@ -245,22 +269,43 @@ def _merge_context_warn(settings: dict) -> bool:
     return True
 
 
+def _merge_simple(settings: dict, event: str, marker: str, command: str,
+                  matcher: str | None = None) -> bool:
+    """Add or refresh one command hook (and its matcher, if given). True if changed."""
+    found = _find_entry_hook(settings, event, marker)
+    if found is not None:
+        entry, existing = found
+        changed = existing.get("command") != command or existing.get("type") != "command"
+        existing["type"] = "command"
+        existing["command"] = command
+        if matcher is not None and entry.get("matcher") != matcher:
+            entry["matcher"] = matcher
+            changed = True
+        return changed
+    entry = {"hooks": [{"type": "command", "command": command}]}
+    if matcher is not None:
+        entry["matcher"] = matcher
+    settings.setdefault("hooks", {}).setdefault(event, []).append(entry)
+    return True
+
+
 def _merge_delegation_warn(settings: dict) -> bool:
     """Merge in the delegation-warn PostToolUse hook. Returns True if changed."""
     command = _delegation_warn_command()
-    existing = _find_delegation_warn_hook(settings)
-    if existing is not None:
-        if existing.get("command") == command and existing.get("type") == "command":
-            return False
-        existing["type"] = "command"
-        existing["command"] = command
-        return True
+    return _merge_simple(settings, "PostToolUse", DELEGATION_WARN_MARKER, command,
+                         DELEGATION_WARN_MATCHER)
 
-    hooks = settings.setdefault("hooks", {})
-    post = hooks.setdefault("PostToolUse", [])
-    post.append({"matcher": DELEGATION_WARN_MATCHER,
-                 "hooks": [{"type": "command", "command": command}]})
-    return True
+
+def _merge_delegation_flush(settings: dict) -> bool:
+    """Merge in delegation-warn under Stop (flushes the last prompt's event)."""
+    return _merge_simple(settings, "Stop", DELEGATION_WARN_MARKER,
+                         _delegation_warn_command())
+
+
+def _merge_subagent_log(settings: dict) -> bool:
+    """Merge in the subagent-log SubagentStop hook. Returns True if changed."""
+    return _merge_simple(settings, "SubagentStop", SUBAGENT_LOG_MARKER,
+                         _subagent_log_command())
 
 
 def _merge_reinforce_check(settings: dict) -> bool:
@@ -305,6 +350,8 @@ def merge(settings: dict) -> tuple[dict, bool]:
     changed = _merge_context_warn(settings) or changed
     changed = _merge_delegation_warn(settings) or changed
     changed = _merge_reinforce_check(settings) or changed
+    changed = _merge_delegation_flush(settings) or changed
+    changed = _merge_subagent_log(settings) or changed
     changed = _merge_statusline(settings) or changed
     return settings, changed
 
@@ -386,11 +433,27 @@ def delegation_warn_status(settings_path: Path | None = None) -> tuple[str, str]
     settings_path = settings_path or default_settings()
     settings = _load(settings_path)
     hook = _find_delegation_warn_hook(settings)
-    if hook is not None and hook.get("command") == _delegation_warn_command():
+    flush = _find_delegation_flush_hook(settings)
+    found = _find_entry_hook(settings, "PostToolUse", DELEGATION_WARN_MARKER)
+    if (hook is not None and hook.get("command") == _delegation_warn_command()
+            and flush is not None and flush.get("command") == _delegation_warn_command()
+            and found[0].get("matcher") == DELEGATION_WARN_MATCHER):
         return "OK", f"delegation-warn hook installed ({settings_path})"
     return "WARN", (f"delegation-warn hook not installed in {settings_path}: run "
                      f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to nudge delegation of "
                      "multi-step work")
+
+
+def subagent_log_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the subagent-log SubagentStop hook
+    is installed."""
+    settings_path = settings_path or default_settings()
+    hook = _find_subagent_log_hook(_load(settings_path))
+    if hook is not None and hook.get("command") == _subagent_log_command():
+        return "OK", f"subagent-log hook installed ({settings_path})"
+    return "WARN", (f"subagent-log hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to log "
+                     "subagent runs to usage.log")
 
 
 def reinforce_check_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -437,6 +500,8 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
             print(f"  matcher: {DELEGATION_WARN_MATCHER}  "
                   f"command: {_delegation_warn_command()}")
             print(f"  matcher: Stop  command: {_reinforce_check_command()}")
+            print(f"  matcher: Stop  command: {_delegation_warn_command()}")
+            print(f"  matcher: SubagentStop  command: {_subagent_log_command()}")
             if not had_statusline:
                 print(f"  statusLine: {_statusline_command()}")
             print("(dry run: pass --install to write it)")
@@ -469,6 +534,8 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
     print(f"  matcher: {DELEGATION_WARN_MATCHER}  command: {_delegation_warn_command()}")
     print(f"  matcher: Stop  command: {_reinforce_check_command()}")
+    print(f"  matcher: Stop  command: {_delegation_warn_command()}")
+    print(f"  matcher: SubagentStop  command: {_subagent_log_command()}")
     if not had_statusline:
         print(f"  statusLine: {_statusline_command()}")
     else:
@@ -477,7 +544,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn, "
-                                             "delegation-warn, reinforce-check hooks and a statusLine "
+                                             "delegation-warn, reinforce-check, subagent-log hooks and a statusLine "
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")
