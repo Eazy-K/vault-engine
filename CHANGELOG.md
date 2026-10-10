@@ -2,19 +2,30 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
-## [Unreleased]
+## [0.14.0] - 2026-10-11
 
 ### Added
 - `git-guard`, a `PreToolUse` hook for Claude Code (`Bash`) and Codex (shell tools): denies `git push` with a force flag anywhere in the command (`-f`, `--force`, `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or `commit -n`, including inside `&&`, `;`, `|` chains and `bash -c`. Prefix permission rules miss flags placed at the end. `VAULT_GIT_GUARD=off` disables it. Installed by `claude-hooks --install`, `codex-hooks --install` and `update --all`.
 - `doctor` / `update` warn when Claude settings still allow `gh pr merge` or `git merge` (fix: `claude-hooks --fix-permissions --install` moves them to deny / ask) or when Codex rules do not forbid `gh pr merge` and prompt for `git merge` (decision: the user merges PRs, the agent reports and gives the command). The engine ships no permission or rules template itself: those live in the data repo's `config/claude/settings.json` and `config/codex/default.rules`.
 - `reinforce-check`, a Claude Code `Stop` hook: when a turn ends with `git commit`, `git push` or `gh pr create` and a `context` task id was never reinforced, it blocks once per id and asks the agent to run `reinforce --task <id>` and mention it in the final report. Installed by `claude-hooks --install` / `update --all`, checked by `doctor`, logs `reinforce_check` events to `usage.log`.
+- `show --body` writes a `show` event to `usage.log` (`note`, `task`, `from_omitted`); `task` is the latest `context` event of the same agent and session, empty without a session id. Plain `show` is not logged. `context` events gain `core`, per-note `scores` (`{id: [rank, activation, via, learned_share]}`) and `fallback_reason` (empty when semantic). `reinforce --task X` warns when X matches no `context` event.
+- `stats --retrieval [--since D] [--until D] [--json]`: retrieval health from `usage.log` (precision and coverage proxies, reinforced-from-omitted share, `show` pulls, keyword fallback split into deliberate and failure, learned share, closure). Every line reports its n; events without the newer fields are skipped for that metric.
+- `reinforce --outcome ok|partial|fail` and `--rework` label a task in the `reinforce` event. `reinforce-check` prints a non-blocking message once per id and session when a task was reinforced without `--outcome`.
+- `subagent-log`, a `SubagentStop` hook for Claude Code and Codex: logs `subagent_stop` events (`agent_type`, `agent_id`, `stop_hook_active`, `last_message_chars`; never message text). When the payload has no `agent_type`, Claude falls back to `agentType` in the subagent meta file; a stop with no `agent_type` and no meta file (a Claude Code internal agent) is logged with `"internal": true`.
+- `doctor --live` (Claude only): runs a marked probe task through `context`, `show --body`, `reinforce --outcome ok` and `stats --retrieval`, checks the logged fields and the last non-internal `subagent_stop` record, prints one OK/FAIL/WARN line per check and exits 1 on any FAIL. Probe events (`"probe": true`) are ignored by `stats` and feedback metrics; the probe sends no feedback and writes no learned files or commits.
 
 ### Fixed
 - A learned-links file (or `machine.json`) with git conflict markers, truncated or empty content no longer crashes `context`: that file is skipped with a `WARN` on stderr and a fix hint. A corrupt `.graph/embeddings.json` is moved aside to `embeddings.json.corrupt-<timestamp>` and rebuilt on the next call when Ollama is reachable. State files under `.graph/` are now written atomically (temp file + `os.replace`), and `doctor` warns about state files that do not parse or contain conflict markers.
 - The vault CI pin no longer drifts on the dev channel: `doctor` warns when `.github/workflows/vault.yml` pins an older release than the newest tag reachable from the engine checkout (`git describe --tags --abbrev=0`) and prints the `update` fix command; `update` moves such a pin to that tag. A pin on `main` and the stable channel behave as before; no tags or no git: nothing happens.
+- `token_stats` cost estimate: prices are keyed by model version, cache writes are split into 5m (1.25x) and 1h (2x) with a `~` flag and warning when the breakdown is missing, cache-read multipliers are per model, and the Haiku 5.5 long-prompt tier applies per request. An unknown model gives no cost (`-`, warning, excluded from totals) instead of a silent $0. JSON adds `cache_write_5m`, `cache_write_1h`, `cache_write_unknown`.
 
 ### Changed
 - AGENTS.md template (revision 10): when the work seems finished but there was no commit, push or PR, the agent ends its report with one line offering to run `reinforce` and naming the notes it would pass.
+- `delegation-warn` is also registered under `Stop` and flushes the last prompt's `orchestrator_prompt` event; its inline tool counter now matches all tools except `Agent`/`Task` (Codex: all except `exec`, `Agent`, `spawn_agent`). `doctor` checks the new entries.
+- CI: the Windows job runs as 3 shards (`tests/run_shard.py`, weights in `tests/shard_weights.json`), the update tests build their git fixtures once per process, and a concurrency group cancels superseded PR runs.
+
+### Upgrade notes
+- Run `python tools/graph.py update --all` (or `claude-hooks --install` / `codex-hooks --install`) to install the `subagent-log` hook, the `Stop` entry for `delegation-warn` and the new `*` matcher, and to get the AGENTS.md template revision 10 (`update --apply-agents`). Then run any subagent once (records written before the `internal` flag are not reclassified) and `doctor --live` verifies the measurement pipeline.
 
 ## [0.13.0] - 2026-10-04
 
