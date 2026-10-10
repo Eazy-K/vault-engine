@@ -1687,6 +1687,122 @@ def cmd_reinforce(args) -> None:
     graph.commit_learned("chore: update learned links")
 
 
+DELIBERATE_FALLBACKS = {"disabled by --no-semantic", "no query text"}
+
+
+def _in_range(event: dict, since: str | None, until: str | None) -> bool:
+    if not since and not until:
+        return True
+    day = str(event.get("ts") or "")[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return False
+    return not ((since and day < since) or (until and day > until))
+
+
+def retrieval_stats(events: list[dict], since: str | None = None,
+                    until: str | None = None) -> dict:
+    """Retrieval health proxies from usage.log events. Each metric skips events that lack
+    the fields it needs and reports its own sample size `n`; nothing here raises on old logs."""
+    events = [e for e in events if isinstance(e, dict) and _in_range(e, since, until)]
+    contexts = {}
+    for e in events:
+        if e.get("event") == "context" and e.get("task"):
+            contexts.setdefault(e["task"], e)
+    all_ctx = [e for e in events if e.get("event") == "context"]
+    reinforces = [e for e in events if e.get("event") == "reinforce"]
+    reinforced: dict[str, set] = {}
+    for e in reinforces:
+        if e.get("task"):
+            reinforced.setdefault(e["task"], set()).update(e.get("notes") or [])
+
+    def ratio(num, den):
+        return round(num / den, 3) if den else None
+
+    prec, hit, loaded_sum = [], 0, 0
+    cov, cov_hit, cov_sum = [], 0, 0
+    om_hit, om_den, ranks = 0, 0, []
+    for task, ctx in contexts.items():
+        if task not in reinforced or "notes" not in ctx:
+            continue
+        loaded, used = set(ctx["notes"]), reinforced[task]
+        if loaded:
+            prec.append(len(used & loaded) / len(loaded))
+            hit += len(used & loaded)
+            loaded_sum += len(loaded)
+        if "core" not in ctx:
+            continue
+        wanted = used - set(ctx["core"])
+        omitted = list(ctx.get("omitted") or [])
+        if wanted:
+            cov.append(len(wanted & loaded) / len(wanted))
+            cov_hit += len(wanted & loaded)
+            cov_sum += len(wanted)
+        om_den += len(wanted)
+        for nid in wanted & set(omitted):
+            om_hit += 1
+            score = (ctx.get("scores") or {}).get(nid)
+            ranks.append(score[0] if score else omitted.index(nid) + 1)
+
+    shows = [e for e in events if e.get("event") == "show" and "from_omitted" in e]
+    shown_closed = [e for e in shows if e.get("task") in reinforced]
+    shown_used = sum(1 for e in shown_closed if e.get("note") in reinforced[e["task"]])
+
+    modes = [c for c in all_ctx if "retrieval" in c]
+    keyword = [c for c in modes if c["retrieval"] != "semantic"]
+    deliberate = sum(1 for c in keyword if c.get("fallback_reason") in DELIBERATE_FALLBACKS)
+    unspecified = sum(1 for c in keyword if not c.get("fallback_reason"))
+
+    shares = [sc[3] for c in all_ctx if c.get("scores")
+              for nid in c.get("notes") or [] if isinstance(sc := c["scores"].get(nid), list)
+              and len(sc) > 3 and isinstance(sc[3], (int, float))]
+    scored = sum(1 for c in all_ctx if c.get("scores"))
+
+    closed = sum(1 for c in all_ctx if c.get("task") in reinforced)
+    return {
+        "precision": {"n": len(prec), "macro": ratio(sum(prec), len(prec)),
+                      "micro": ratio(hit, loaded_sum)},
+        "coverage": {"n": len(cov), "macro": ratio(sum(cov), len(cov)),
+                     "micro": ratio(cov_hit, cov_sum)},
+        "reinforced_from_omitted": {"n": om_den, "count": om_hit, "share": ratio(om_hit, om_den),
+                                    "median_rank": statistics.median(ranks) if ranks else None},
+        "show": {"n": len(shows), "from_omitted": ratio(sum(1 for e in shows if e["from_omitted"]),
+                                                       len(shows)),
+                 "later_reinforced": ratio(shown_used, len(shown_closed)),
+                 "closed_n": len(shown_closed)},
+        "keyword_fallback": {"n": len(modes), "count": len(keyword), "rate": ratio(len(keyword), len(modes)),
+                             "deliberate": deliberate, "unspecified": unspecified,
+                             "failure": len(keyword) - deliberate - unspecified},
+        "learning": {"n": scored, "notes": len(shares),
+                     "mean_learned_share": ratio(sum(shares), len(shares))},
+        "closure": {"contexts": len(all_ctx), "closed": closed, "rate": ratio(closed, len(all_ctx)),
+                    "reinforces": len(reinforces),
+                    "empty_reinforces": sum(1 for e in reinforces if not e.get("notes"))},
+    }
+
+
+def format_retrieval_stats(r: dict) -> str:
+    def pct(v):
+        return "-" if v is None else f"{v:.0%}"
+
+    p, c, o, s = r["precision"], r["coverage"], r["reinforced_from_omitted"], r["show"]
+    k, lrn, cl = r["keyword_fallback"], r["learning"], r["closure"]
+    rank = "-" if o["median_rank"] is None else f"{o['median_rank']:g}"
+    return "\n".join([
+        f"precision proxy:    macro {pct(p['macro'])}, micro {pct(p['micro'])} (n={p['n']} tasks)",
+        f"coverage proxy:     macro {pct(c['macro'])}, micro {pct(c['micro'])} (n={c['n']} tasks)",
+        f"reinforced from omitted: {pct(o['share'])} ({o['count']}/{o['n']} notes), "
+        f"median omitted rank {rank}",
+        f"show pulls:         {s['n']}, from omitted {pct(s['from_omitted'])}, "
+        f"later reinforced {pct(s['later_reinforced'])} (n={s['closed_n']})",
+        f"keyword fallback:   {k['count']}/{k['n']} ({pct(k['rate'])}), deliberate {k['deliberate']}, "
+        f"failure {k['failure']}, unspecified {k['unspecified']}",
+        f"learned share:      mean {pct(lrn['mean_learned_share'])} of {lrn['notes']} loaded notes "
+        f"({lrn['n']} contexts with scores)",
+        f"closure:            {cl['closed']}/{cl['contexts']} contexts reinforced ({pct(cl['rate'])}), "
+        f"{cl['empty_reinforces']}/{cl['reinforces']} reinforces empty",
+    ])
+
+
 def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
@@ -1706,6 +1822,10 @@ def cmd_stats(args) -> None:
             return
         print(token_stats.run(projects_dir, since=since, top=args.top, as_json=args.json,
                                codex_dir=codex_dir))
+        return
+    if getattr(args, "retrieval", False):
+        result = retrieval_stats(read_usage(default_paths()), args.since, args.until)
+        print(json.dumps(result, indent=2) if args.json else format_retrieval_stats(result))
         return
     events = read_usage(default_paths())
     contexts = [e for e in events if e.get("event") == "context"]
@@ -1977,6 +2097,10 @@ def main() -> None:
     p.add_argument("--codex-dir", default=str(Path("~/.codex/sessions").expanduser()),
                    help="Codex rollout sessions root, experimental (default: ~/.codex/sessions)")
     p.add_argument("--since", help="only count calls on/after this date (YYYY-MM-DD)")
+    p.add_argument("--retrieval", action="store_true",
+                   help="retrieval health from usage.log (precision/coverage proxies, "
+                        "fallbacks, show pulls); honors --since/--until")
+    p.add_argument("--until", help="with --retrieval: only events on/before this date (YYYY-MM-DD)")
     p.add_argument("--top", type=int, default=5, help="how many top sessions to list")
     p.add_argument("--session", metavar="ID|current",
                    help="with --tokens: report one Claude/Codex session ('current' = from "
