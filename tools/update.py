@@ -80,6 +80,19 @@ def channel(engine: Path) -> tuple[str, str | None]:
     return "unknown", None
 
 
+def latest_reachable_tag(engine: Path) -> str | None:
+    """The newest SemVer release tag reachable from HEAD (`git describe --tags
+    --abbrev=0`), or None without git, tags or a repo. Never raises."""
+    try:
+        out = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"],
+                             cwd=engine, capture_output=True, text=True, encoding="utf-8",
+                             timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    tag = out.stdout.strip() if out.returncode == 0 else ""
+    return tag if parse_version(tag) is not None else None
+
+
 # --- settings ------------------------------------------------------------
 
 DEFAULT_SETTINGS = {"check": True}
@@ -593,6 +606,15 @@ def _pin_is_dirty(data: Path) -> bool:
     return out.returncode == 0 and bool(out.stdout.strip())
 
 
+def _pinned_ref(data: Path) -> str | None:
+    """The ref the data repo's CI workflow pins the engine to, or None."""
+    try:
+        m = _CI_PIN_RE.search((data / CI_WORKFLOW).read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return m.group(2) if m else None
+
+
 def _rewrite_ci_pin(data: Path, new_ref: str) -> bool:
     """Move the data repo's CI pin (`uses: <owner>/vault-engine@<ref>` in
     <data>/.github/workflows/vault.yml) to the newly installed engine ref, so the
@@ -927,7 +949,14 @@ def _update_dev(engine: Path, branch: str, args) -> None:
         moved = True
         print(f"pulled main: {before} -> {_short_head(engine)}")
     paths = _data_paths(args)
-    # The CI pin stays at main on this channel.
+    # A pin on an older release moves to the newest release tag reachable here
+    # (a pin on `main` stays); no tag or no git: nothing to do.
+    tag = latest_reachable_tag(engine)
+    if tag:
+        pin = _pinned_ref(paths.data)
+        pin_v = parse_version(pin) if pin else None
+        if pin_v is not None and pin_v < parse_version(tag):
+            _rewrite_ci_pin(paths.data, tag)
     if not _post_update(engine, paths.data, args, moved=moved,
                         rollback=f"go back with: {q} reset --hard {before}" if moved else ""):
         sys.exit(1)
