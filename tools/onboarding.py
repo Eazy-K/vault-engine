@@ -1070,6 +1070,17 @@ def state_file_problems(paths: "g.Paths") -> list[tuple[Path, str]]:
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
+    if getattr(args, "live", False):
+        # Only the live pipeline checks (probe task + SubagentStop record), nothing else.
+        data = _doctor_data_dir(getattr(args, "data", None),
+                                _rc_file_for_shell(_shell_name(), sys.platform, Path.home()))[0]
+        if data is None:
+            sys.exit("FAIL data: no data folder found; set VAULT_DATA or pass --data")
+        os.environ["VAULT_DATA"] = str(data)
+        live = g.live_checks(g.Paths(g.ENGINE, data))
+        for status, msg in live:
+            print(f"{status:<4} {msg}")
+        sys.exit(1 if any(status == "FAIL" for status, _ in live) else 0)
     checks: list[tuple[str, str]] = []
 
     def check(status: str, msg: str) -> None:
@@ -1636,6 +1647,10 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     p = sub.add_parser("doctor", help="check the onboarding setup, one line per check")
     p.add_argument("--data", help="data dir (default: resolve_data_dir())")
+    p.add_argument("--live", action="store_true",
+                   help="instead of the setup checks, run a marked probe task through context / "
+                        "show --body / reinforce / stats --retrieval and check the SubagentStop "
+                        "log record (Claude only)")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("onboard", help="fill in profile/ from a few questions")
