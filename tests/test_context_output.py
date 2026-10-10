@@ -229,6 +229,53 @@ class TestShowBody(_Ctx):
         self.assertEqual(ev[-1]["core"], ["c"])
         self.assertNotIn("c", ev[-1]["notes"])
 
+    def linked_note(self, nid, target):
+        text = "---" + chr(10) + "links: [\"[[" + target + "]]\"]" + chr(10) + "---" + chr(10) + "# " + nid + chr(10) + "alpha" + chr(10)
+        (self.data / f"{nid}.md").write_text(text, encoding="utf-8")
+
+    def _ctx_event(self, **kw):
+        self.run_context(no_log=False, **kw)
+        return [e for e in graph.read_usage(self.paths) if e.get("event") == "context"][-1]
+
+    def test_context_logs_scores_and_fallback_reason(self):
+        self.linked_note("a", "b")
+        self.note("b", "beta")
+        ev = self._ctx_event(seed=["a"])
+        self.assertEqual(ev["scores"]["a"][:3], [1, 1.0, None])
+        self.assertEqual(ev["scores"]["b"][0], 2)
+        self.assertEqual(ev["scores"]["b"][2], "a")
+        self.assertEqual(ev["scores"]["b"][3], 0.0)
+        self.assertEqual(ev["fallback_reason"], "disabled by --no-semantic")
+
+    def test_learned_share_reflects_learned_edge(self):
+        self.linked_note("a", "b")
+        self.note("b", "beta")
+        g = graph.Graph(self.paths)
+        key = graph.pair("a", "b")
+        g.add_learned(key, g.base[key])
+        g.save_learned()
+        ev = self._ctx_event(seed=["a"])
+        self.assertAlmostEqual(ev["scores"]["b"][3], 0.5, places=1)
+
+    def test_scores_include_omitted_notes(self):
+        self.linked_note("a", "b")
+        self.note("b", "beta " + "word " * 500)
+        ev = self._ctx_event(seed=["a"], budget=10)
+        self.assertIn("b", ev["scores"])
+        self.assertTrue(set(ev["omitted"]) <= set(ev["scores"]))
+
+    def test_reinforce_warns_on_unknown_task(self):
+        self.note("a", "x")
+        graph.log_usage(self.paths, {"event": "context", "task": "known"})
+        def run(task):
+            err = StringIO()
+            args = Namespace(notes=["a"], task=task, rate=0.1)
+            with mock.patch.object(graph, "default_paths", return_value=self.paths),                  mock.patch.object(graph, "maybe_auto_decay"),                  redirect_stdout(StringIO()), redirect_stderr(err):
+                graph.cmd_reinforce(args)
+            return err.getvalue()
+        self.assertIn("WARN", run("nope"))
+        self.assertNotIn("WARN", run("known"))
+
 
 if __name__ == "__main__":
     unittest.main()
