@@ -844,9 +844,9 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
     def _on_branch(self, name: str) -> None:
         git(["symbolic-ref", "HEAD", f"refs/heads/{name}"], self.data)
 
-    def _run_doctor_on(self, channel: tuple[str, str | None]) -> str:
+    def _run_doctor_on(self, channel: tuple[str, str | None], tag: str | None = None) -> str:
         import update
-        with mock.patch.object(update, "channel", return_value=channel), \
+        with mock.patch.object(update, "channel", return_value=channel),              mock.patch.object(update, "latest_reachable_tag", return_value=tag), \
              mock.patch.object(update, "record_check", return_value=None), \
              mock.patch.dict(sys.modules, {"update": update}):
             return self._run_doctor()
@@ -886,6 +886,32 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         self._workflow("main")
         self._on_branch("main")
         out = self._run_doctor_on(("dev", "main"))
+        self.assertNotIn("vault CI", out)
+
+    def test_old_ci_pin_on_dev_channel_warns(self):
+        self._workflow("v0.3.0")
+        self._on_branch("main")
+        out = self._run_doctor_on(("dev", "main"), tag="v0.13.0")
+        self.assertIn("WARN vault CI runs the engine at @v0.3.0, this engine is v0.13.0: run "
+                      "python", out)
+        self.assertIn("graph.py\" update (re-pins it", out)
+
+    def test_current_ci_pin_on_dev_channel_is_not_flagged(self):
+        self._workflow("v0.13.0")
+        self._on_branch("main")
+        out = self._run_doctor_on(("dev", "main"), tag="v0.13.0")
+        self.assertNotIn("vault CI", out)
+
+    def test_main_ci_pin_on_dev_channel_is_not_flagged(self):
+        self._workflow("main")
+        self._on_branch("main")
+        out = self._run_doctor_on(("dev", "main"), tag="v0.13.0")
+        self.assertNotIn("vault CI", out)
+
+    def test_dev_channel_without_tags_is_not_flagged(self):
+        self._workflow("v0.3.0")
+        self._on_branch("main")
+        out = self._run_doctor_on(("dev", "main"), tag=None)
         self.assertNotIn("vault CI", out)
 
     def test_master_branch_without_a_remote_only_suggests_the_rename(self):

@@ -36,6 +36,10 @@ HOOKS = {
     "PreToolUse": ("agent-guard.py", SPAWN_MATCHER),
     "PostToolUse": ("delegation-warn.py", INLINE_MATCHER),
 }
+# Shell calls only: denies force push / --no-verify (see codex-hooks/git-guard.py).
+GIT_MATCHER = "^(Bash|exec_command|shell_command|shell|local_shell)$"
+HOOK_LIST = [(event, filename, matcher) for event, (filename, matcher) in HOOKS.items()]
+HOOK_LIST.append(("PreToolUse", "git-guard.py", GIT_MATCHER))
 EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 _SAFE_ARG = re.compile(r"[A-Za-z0-9_./:~+-]+")
 
@@ -113,7 +117,7 @@ def _upsert_hook(settings: dict, event: str, filename: str, matcher: str | None)
 def merge(settings: dict) -> tuple[dict, bool]:
     """Return settings with Codex hooks installed, preserving unrelated entries."""
     changed = False
-    for event, (filename, matcher) in HOOKS.items():
+    for event, filename, matcher in HOOK_LIST:
         changed = _upsert_hook(settings, event, filename, matcher) or changed
     return settings, changed
 
@@ -236,16 +240,14 @@ def hooks_status(hooks_path: Path | None = None) -> tuple[str, str]:
     settings = _load_json(hooks_path)
     if settings is None:
         return "WARN", f"Codex hooks.json is not valid JSON ({hooks_path})"
-    expected = merge({})[0]["hooks"]
     actual = settings.get("hooks", {})
-    for event, (filename, _matcher) in HOOKS.items():
-        expected_command = expected[event][0]["hooks"][0]["command"]
+    for event, filename, matcher in HOOK_LIST:
+        expected_command = _command(HOOKS_DIR / filename)
         entries = actual.get(event, []) if isinstance(actual, dict) else []
         found = any(filename in str(handler.get("command", ""))
                     and handler.get("command") == expected_command
                     and handler.get("commandWindows", expected_command) == expected_command
-                    and (expected[event][0].get("matcher") is None
-                         or entry.get("matcher") == expected[event][0]["matcher"])
+                    and (matcher is None or entry.get("matcher") == matcher)
                     for entry in entries if isinstance(entry, dict)
                     for handler in entry.get("hooks", []) if isinstance(handler, dict))
         if not found:
@@ -313,6 +315,34 @@ def workers_status(agents_dir: Path | None = None) -> tuple[str, str]:
 def statuses(hooks_path: Path | None = None, config_path: Path | None = None,
              agents_dir: Path | None = None) -> list[tuple[str, str]]:
     return [hooks_status(hooks_path), model_status(config_path), workers_status(agents_dir)]
+
+
+def rules_status(rules_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: the user's Codex rules must forbid
+    `gh pr merge` and prompt (or forbid) `git merge`; the strictest rule wins, so a
+    broad allow rule is fine next to them (decision 0008: the user merges PRs)."""
+    rules_path = rules_path or (codex_home() / "rules" / "default.rules")
+    try:
+        text = rules_path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return "OK", f"no Codex rules file to check ({rules_path})"
+    lines = [ln for ln in text.splitlines() if ln.lstrip().startswith("prefix_rule(")]
+
+    def covered(pattern: str, decisions: tuple[str, ...]) -> bool:
+        return any(pattern in ln and any(f'decision="{d}"' in ln for d in decisions)
+                   for ln in lines)
+
+    missing = []
+    if not covered('"gh", "pr", "merge"', ("forbidden",)):
+        missing.append('prefix_rule(pattern=["gh", "pr", "merge"], decision="forbidden", '
+                       'justification="user merges PRs")')
+    if not covered('"git", "merge"', ("prompt", "forbidden")):
+        missing.append('prefix_rule(pattern=["git", "merge"], decision="prompt", '
+                       'justification="merge requires user approval")')
+    if missing:
+        return "WARN", (f"Codex rules {rules_path} do not stop the agent from merging; add "
+                        "outside the vault-engine block: " + " ".join(missing))
+    return "OK", f"Codex rules forbid gh pr merge and prompt for git merge ({rules_path})"
 
 
 # --- PreToolUse deny probe ---------------------------------------------------------------

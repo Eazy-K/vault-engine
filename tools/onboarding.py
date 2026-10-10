@@ -901,6 +901,11 @@ def _local_ref_exists(data: Path, ref: str) -> bool:
     return out.returncode == 0
 
 
+def _version_tuple(ref: str) -> tuple[int, int, int] | None:
+    m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", ref)
+    return tuple(int(x) for x in m.groups()) if m else None  # type: ignore[return-value]
+
+
 def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[tuple[str, str]]:
     """Problems an older vault's CI workflow carries over: the engine pin lags
     behind a stable install, the data repo is on the legacy `master` branch
@@ -918,7 +923,15 @@ def _vault_ci_checks(data: Path, channel: str, engine_ref: str | None) -> list[t
                               ".github/workflows/vault.yml and set `uses:` to "
                               "<owner>/vault-engine@<ref> by hand, then commit and push"))
     pin = _CI_PIN_RE.search(text)
-    if channel == "stable" and engine_ref and pin and pin.group(1) != engine_ref:
+    stale = False
+    if channel == "stable":
+        stale = bool(engine_ref and pin and pin.group(1) != engine_ref)
+    elif channel == "dev" and engine_ref and pin:
+        # Dev: the reference is the newest release tag reachable from HEAD; only
+        # a pin on an older release counts (`main` is a deliberate dev pin).
+        have, want = _version_tuple(pin.group(1)), _version_tuple(engine_ref)
+        stale = have is not None and want is not None and have < want
+    if stale:
         found.append(("WARN", f"vault CI runs the engine at @{pin.group(1)}, this engine is "
                               f"{engine_ref}: run {_graph_cmd('update')} (re-pins it and commits "
                               ".github/workflows/vault.yml), then push"))
@@ -1190,6 +1203,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(*claude_hooks.context_warn_status(settings))
             check(*claude_hooks.delegation_warn_status(settings))
             check(*claude_hooks.reinforce_check_status(settings))
+            check(*claude_hooks.git_guard_status(settings))
+            check(*claude_hooks.merge_permission_status(settings))
         if models is not None and data is not None:
             result = models.status(data, settings, claude_dir / "agents")
             if result is not None:
@@ -1212,6 +1227,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if codex_hooks is not None and codex_home.is_dir():
         for result in codex_hooks.statuses():
             check(*result)
+        check(*codex_hooks.rules_status())
 
     if codex_hooks is not None and found.get("codex"):
         try:
@@ -1306,7 +1322,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                           "computer (ignored here): manual: run migrate on the computer they belong to")
 
     if data is not None:
-        for ci_status, msg in _vault_ci_checks(data, status, ref):
+        ci_ref = ref
+        if status == "dev":
+            try:
+                import update as update_mod
+                ci_ref = update_mod.latest_reachable_tag(g.ENGINE)
+            except Exception:
+                ci_ref = None
+        for ci_status, msg in _vault_ci_checks(data, status, ci_ref):
             check(ci_status, msg)
         for git_status, msg in _uncommitted_checks(data):
             check(git_status, msg)
