@@ -7,6 +7,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ### Added
 - `reinforce-check`, a Claude Code `Stop` hook: when a turn ends with `git commit`, `git push` or `gh pr create` and a `context` task id was never reinforced, it blocks once per id and asks the agent to run `reinforce --task <id>` and mention it in the final report. Installed by `claude-hooks --install` / `update --all`, checked by `doctor`, logs `reinforce_check` events to `usage.log`.
 
+### Fixed
+- A learned-links file (or `machine.json`) with git conflict markers, truncated or empty content no longer crashes `context`: that file is skipped with a `WARN` on stderr and a fix hint. A corrupt `.graph/embeddings.json` is moved aside to `embeddings.json.corrupt-<timestamp>` and rebuilt on the next call when Ollama is reachable. State files under `.graph/` are now written atomically (temp file + `os.replace`), and `doctor` warns about state files that do not parse or contain conflict markers.
+
 ### Changed
 - AGENTS.md template (revision 10): when the work seems finished but there was no commit, push or PR, the agent ends its report with one line offering to run `reinforce` and naming the notes it would pass.
 

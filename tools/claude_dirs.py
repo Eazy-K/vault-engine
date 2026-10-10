@@ -55,8 +55,8 @@ def _machine_file(data: Path) -> Path:
 
 def _load_machine(data: Path) -> dict:
     try:
-        loaded = json.loads(_machine_file(data).read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+        loaded = g.load_state_json(_machine_file(data))
+    except OSError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -133,8 +133,7 @@ def _write(data: Path, dirs: list[Path]) -> None:
     machine[KEY] = [str(d) for d in dirs]
     path = _machine_file(data)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(machine, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8", newline="\n")
+    g.atomic_write_text(path, json.dumps(machine, indent=2, ensure_ascii=False) + "\n")
 
 
 def add(path: Path, data: Path | None = None) -> bool:

@@ -116,8 +116,7 @@ def _load_state(paths: "g.Paths") -> dict:
 def _save_state(paths: "g.Paths", state: dict) -> None:
     try:
         _fb_dir(paths).mkdir(parents=True, exist_ok=True)
-        _state_file(paths).write_text(json.dumps(state, indent=2, ensure_ascii=False),
-                                       encoding="utf-8", newline="\n")
+        g.atomic_write_text(_state_file(paths), json.dumps(state, indent=2, ensure_ascii=False))
     except OSError:
         pass
 

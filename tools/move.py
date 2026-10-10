@@ -61,8 +61,7 @@ def _rewrite_learned(paths: g.Paths, old: str, new: str) -> int:
             k = g.pair(a, b)
             out[k] = out.get(k, 0.0) + float(value)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(out.items())}
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                        encoding="utf-8", newline="\n")
+        g.atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return changed
 
 

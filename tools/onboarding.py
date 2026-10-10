@@ -197,8 +197,8 @@ def _load_existing_config(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+        data = g.load_state_json(path)
+    except OSError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -210,8 +210,7 @@ def _write_machine_json(target: Path, updates: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = _load_existing_config(path)
     data.update(updates)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                     encoding="utf-8", newline="\n")
+    g.atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return path
 
 
@@ -1044,6 +1043,19 @@ def _graph_cmd(command: str) -> str:
     return f'python "{g.ENGINE / "tools" / "graph.py"}" {command}'
 
 
+def state_file_problems(paths: "g.Paths") -> list[tuple[Path, str]]:
+    """Shared state files under .graph/ that do not parse or hold git conflict markers."""
+    graph_dir = paths.data / ".graph"
+    candidates = sorted(paths.learned_dir.glob("*.json")) if paths.learned_dir.exists() else []
+    candidates += [graph_dir / "machine.json", paths.embed_cache, paths.config_file]
+    found = []
+    for path in candidates:
+        problem = g.state_json_problem(path)
+        if problem:
+            found.append((path, problem))
+    return found
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     checks: list[tuple[str, str]] = []
 
@@ -1260,6 +1272,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                               f"`{_graph_cmd('projects --skip <name>')}` to stop asking)")
             else:
                 check("OK", "every discovered project has notes")
+
+    if data is not None:
+        for path, problem in state_file_problems(g.Paths(g.ENGINE, data)):
+            check("WARN", f"state file {path} {problem}: {g.state_fix_hint(path)}")
 
     if data is not None:
         ok, summary = _lint_summary(data)
