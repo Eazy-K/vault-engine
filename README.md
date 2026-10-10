@@ -24,7 +24,7 @@ The agent will check what's on your computer, ask before installing anything or 
 | `defaults/` | General notes. A note at the same path in the data repo overrides these. |
 | `templates/` | Skeleton for a new data repository |
 | `.githooks/` | This repo's own hooks: `leakcheck` |
-| `tests/` | `python -m unittest discover -s tests` |
+| `tests/` | `python -m unittest discover -s tests` (or `python tests/run_shard.py --jobs 3` to run it as 3 parallel shards) |
 
 ## Setup
 1. Clone the engine and switch to the latest release: `git describe --tags --abbrev=0` in the engine folder prints it, then `git checkout <that tag>`. Without this step the engine stays on `main`, the development channel, and never announces new versions (see "Versions and updates"). Python 3.10+ is enough. Optional: Ollama + `ollama pull bge-m3` (without it, only keyword matching is used).

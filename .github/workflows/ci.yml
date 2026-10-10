@@ -4,16 +4,25 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded PR runs; never cancel runs on main.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }}${{ matrix.shard && format(', shard {0}/3', matrix.shard) || '' }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python: ["3.10", "3.13"]
         include:
-          - os: windows-latest  # the main development platform
-            python: "3.13"
+          # The main development platform; process spawning is slow on Windows,
+          # so the suite runs as 3 time-balanced shards (tests/run_shard.py).
+          - {os: windows-latest, python: "3.13", shard: 1}
+          - {os: windows-latest, python: "3.13", shard: 2}
+          - {os: windows-latest, python: "3.13", shard: 3}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +33,10 @@ jobs:
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.com
-      - run: python -m unittest discover -s tests -v
+      - if: ${{ !matrix.shard }}
+        run: python -m unittest discover -s tests -v
+      - if: ${{ matrix.shard }}
+        run: python tests/run_shard.py --shard ${{ matrix.shard }} --of 3
 
   # Users run the engine detached at a release tag (the stable channel), not on
   # a branch; run the suite that way too so no test assumes a branch checkout.

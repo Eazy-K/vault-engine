@@ -17,6 +17,7 @@ import json
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -61,21 +62,26 @@ def run_shard(modules: list[str]) -> int:
 def run_parallel(count: int) -> int:
     start = time.perf_counter()
     procs = []
-    for i in range(1, count + 1):
-        cmd = [sys.executable, str(Path(__file__).resolve()), "--shard", str(i), "--of", str(count)]
-        procs.append((i, subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                          text=True, encoding="utf-8", errors="replace")))
-    failed = []
-    for i, proc in procs:
-        out, _ = proc.communicate()
-        lines = [ln for ln in out.splitlines() if ln.strip()]
-        if proc.returncode != 0:
-            failed.append(i)
-            print(f"--- shard {i} output (failed) ---")
-            print(out)
-        ran = next((ln for ln in lines if ln.startswith("Ran ")), "no 'Ran' line")
-        verdict = next((ln for ln in reversed(lines) if ln.startswith(("OK", "FAILED"))), "no verdict line")
-        print(f"shard {i}/{count}: exit={proc.returncode} {ran} | {verdict}")
+    # Output goes to temp files, not pipes: an unread full pipe would stall a shard.
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(1, count + 1):
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--shard", str(i), "--of", str(count)]
+            log = open(Path(tmp) / f"shard{i}.log", "w+", encoding="utf-8", errors="replace")
+            procs.append((i, subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT), log))
+        failed = []
+        for i, proc, log in procs:
+            proc.wait()
+            log.seek(0)
+            out = log.read()
+            log.close()
+            lines = [ln for ln in out.splitlines() if ln.strip()]
+            if proc.returncode != 0:
+                failed.append(i)
+                print(f"--- shard {i} output (failed) ---")
+                print(out)
+            ran = next((ln for ln in lines if ln.startswith("Ran ")), "no 'Ran' line")
+            verdict = next((ln for ln in reversed(lines) if ln.startswith(("OK", "FAILED"))), "no verdict line")
+            print(f"shard {i}/{count}: exit={proc.returncode} {ran} | {verdict}")
     print(f"total wall time: {time.perf_counter() - start:.1f}s")
     if failed:
         print(f"FAILED shards: {failed}")
