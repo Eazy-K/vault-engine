@@ -41,6 +41,31 @@ class TestSubagentLog(unittest.TestCase):
         return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()] \
             if log.exists() else []
 
+    def test_agent_type_falls_back_to_meta_file(self):
+        sub = self.tmp / "proj" / "sess" / "subagents"
+        sub.mkdir(parents=True)
+        (sub / "agent-abc.meta.json").write_text(
+            json.dumps({"agentType": "worker-low", "description": "SECRET"}), encoding="utf-8")
+        (sub / "agent-abc.jsonl").write_text("TRANSCRIPT", encoding="utf-8")
+        for extra in ({"agent_transcript_path": str(sub / "agent-abc.jsonl")},
+                      {"transcript_path": str(self.tmp / "proj" / "sess.jsonl")}):
+            log = self.data / ".graph" / "usage.log"
+            if log.exists():
+                log.unlink()
+            payload = {"session_id": "s1", "agent_id": "abc", **extra}
+            self.assertEqual(self._run(json.dumps(payload)).returncode, 0)
+            (event,) = self._events()
+            self.assertEqual(event["agent_type"], "worker-low")
+            self.assertNotIn("SECRET", json.dumps(event))
+            self.assertNotIn("TRANSCRIPT", json.dumps(event))
+
+    def test_missing_meta_file_is_harmless(self):
+        payload = {"session_id": "s1", "agent_id": "zzz",
+                   "agent_transcript_path": str(self.tmp / "nope" / "agent-zzz.jsonl")}
+        self.assertEqual(self._run(json.dumps(payload)).returncode, 0)
+        (event,) = self._events()
+        self.assertNotIn("agent_type", event)
+
     def test_logs_documented_fields_only(self):
         payload = {"session_id": "s1", "hook_event_name": "SubagentStop",
                    "stop_hook_active": False, "agent_id": "def456", "agent_type": "Explore",

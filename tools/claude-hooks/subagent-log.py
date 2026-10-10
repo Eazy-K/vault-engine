@@ -9,7 +9,9 @@ Fields come from the documented SubagentStop payload
 `stop_hook_active`, `last_assistant_message`, `agent_transcript_path`. Logged:
 agent_type, agent_id, stop_hook_active and the *length* of last_assistant_message
 (not its text). The payload documents no status/outcome/duration/token field, so
-none is logged.
+none is logged. When the payload lacks agent_type, `agentType` is read from the
+subagent meta file (`agent-<id>.meta.json` next to the transcript); no transcript
+content is ever read.
 
 Never blocks: prints nothing and exits 0 on any problem.
 """
@@ -19,6 +21,29 @@ import json
 import os
 import sys
 from datetime import datetime
+
+
+def meta_agent_type(payload: dict) -> str:
+    """agentType from the subagent's `.meta.json`, or "" (reads only that one key)."""
+    try:
+        agent_id = str(payload.get("agent_id") or "")
+        paths = []
+        atp = payload.get("agent_transcript_path")
+        if atp:
+            paths.append(os.path.splitext(str(atp))[0] + ".meta.json")
+        tp = payload.get("transcript_path")
+        if tp and agent_id:
+            base = os.path.splitext(str(tp))[0]
+            paths.append(os.path.join(base, "subagents", "agent-" + agent_id + ".meta.json"))
+        for path in paths:
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
+                    value = json.load(f).get("agentType")
+                if isinstance(value, str) and value:
+                    return value
+    except Exception:
+        pass
+    return ""
 
 
 def log_event(payload: dict) -> None:
@@ -38,6 +63,10 @@ def log_event(payload: dict) -> None:
         for key in ("agent_type", "agent_id"):
             if payload.get(key):
                 event[key] = str(payload[key])
+        if "agent_type" not in event:
+            fallback = meta_agent_type(payload)
+            if fallback:
+                event["agent_type"] = fallback
         if "stop_hook_active" in payload:
             event["stop_hook_active"] = bool(payload["stop_hook_active"])
         last = payload.get("last_assistant_message")
