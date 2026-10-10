@@ -284,5 +284,22 @@ class TestStatus(unittest.TestCase):
         self.assertEqual(level, "OK")
 
 
+    def test_reinforce_check_status_warn_then_ok(self):
+        level, msg = claude_hooks.reinforce_check_status(self.settings_path)
+        self.assertEqual(level, "WARN")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            claude_hooks.cmd_claude_hooks(
+                Namespace(install=True, settings=str(self.settings_path)))
+        self.assertEqual(claude_hooks.reinforce_check_status(self.settings_path)[0], "OK")
+
+    def test_merge_adds_reinforce_check_stop_hook_idempotently(self):
+        settings, _ = claude_hooks.merge({})
+        self.assertIn("reinforce-check.py", settings["hooks"]["Stop"][0]["hooks"][0]["command"])
+        settings2, changed = claude_hooks.merge(settings)
+        self.assertFalse(changed)
+        self.assertEqual(len(settings2["hooks"]["Stop"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

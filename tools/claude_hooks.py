@@ -7,6 +7,9 @@
 - delegation-warn: a PostToolUse hook that additionally warns once a user
   message has driven several tool calls on the orchestrator's own thread,
   instead of delegating them.
+- reinforce-check: a Stop hook that asks the agent to run `reinforce` once a
+  task looks finished (a commit, push or PR in the turn) and `context` gave a
+  task id that was never reinforced.
 - statusLine: a command that shows context usage in the status line (only
   set if settings has no statusLine yet -- an existing one is left alone).
 
@@ -44,6 +47,9 @@ CONTEXT_WARN_MARKER = "context-warn.py"
 DELEGATION_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "delegation-warn.py"
 DELEGATION_WARN_MATCHER = "Bash|Read|Edit|Write"
 DELEGATION_WARN_MARKER = "delegation-warn.py"
+
+REINFORCE_CHECK_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "reinforce-check.py"
+REINFORCE_CHECK_MARKER = "reinforce-check.py"
 
 STATUSLINE_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "statusline.py"
 STATUSLINE_MARKER = "statusline.py"
@@ -89,6 +95,10 @@ def _context_warn_command() -> str:
 
 def _delegation_warn_command() -> str:
     return _command(DELEGATION_WARN_SCRIPT)
+
+
+def _reinforce_check_command() -> str:
+    return _command(REINFORCE_CHECK_SCRIPT)
 
 
 def _statusline_command() -> str:
@@ -149,6 +159,20 @@ def _find_delegation_warn_hook(settings: dict) -> dict | None:
     return None
 
 
+def _find_reinforce_check_hook(settings: dict) -> dict | None:
+    """Same idea as _find_guard_hook, but for the Stop hook list."""
+    entries = settings.get("hooks", {}).get("Stop", [])
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []) if isinstance(entry.get("hooks"), list) else []:
+            if isinstance(hook, dict) and REINFORCE_CHECK_MARKER in str(hook.get("command", "")):
+                return hook
+    return None
+
+
 def _merge_guard(settings: dict) -> bool:
     """Merge in the agent-guard PreToolUse hook. Returns True if it changed anything."""
     command = _guard_command()
@@ -201,6 +225,23 @@ def _merge_delegation_warn(settings: dict) -> bool:
     return True
 
 
+def _merge_reinforce_check(settings: dict) -> bool:
+    """Merge in the reinforce-check Stop hook. Returns True if changed."""
+    command = _reinforce_check_command()
+    existing = _find_reinforce_check_hook(settings)
+    if existing is not None:
+        if existing.get("command") == command and existing.get("type") == "command":
+            return False
+        existing["type"] = "command"
+        existing["command"] = command
+        return True
+
+    hooks = settings.setdefault("hooks", {})
+    entries = hooks.setdefault("Stop", [])
+    entries.append({"hooks": [{"type": "command", "command": command}]})
+    return True
+
+
 def _merge_statusline(settings: dict) -> bool:
     """Set statusLine to our command if none is configured yet, or refresh it if it
     is ours (a stale path or quoting). Returns True if changed; a statusLine that is
@@ -218,12 +259,13 @@ def _merge_statusline(settings: dict) -> bool:
 
 
 def merge(settings: dict) -> tuple[dict, bool]:
-    """Merge in the agent-guard, context-warn and delegation-warn hooks, and (if none
+    """Merge in the agent-guard, context-warn, delegation-warn and reinforce-check hooks, and (if none
     is configured) the statusLine command, without touching any other existing hook
     or an existing statusLine. Returns (new_settings, changed)."""
     changed = _merge_guard(settings)
     changed = _merge_context_warn(settings) or changed
     changed = _merge_delegation_warn(settings) or changed
+    changed = _merge_reinforce_check(settings) or changed
     changed = _merge_statusline(settings) or changed
     return settings, changed
 
@@ -263,6 +305,19 @@ def delegation_warn_status(settings_path: Path | None = None) -> tuple[str, str]
                      "multi-step work")
 
 
+def reinforce_check_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the reinforce-check Stop hook is
+    installed."""
+    settings_path = settings_path or default_settings()
+    settings = _load(settings_path)
+    hook = _find_reinforce_check_hook(settings)
+    if hook is not None and hook.get("command") == _reinforce_check_command():
+        return "OK", f"reinforce-check hook installed ({settings_path})"
+    return "WARN", (f"reinforce-check hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to remind "
+                     "the agent to run reinforce when a task is finished")
+
+
 def cmd_claude_hooks(args: argparse.Namespace) -> None:
     if args.settings:
         _apply_to(Path(args.settings).expanduser(), args)
@@ -287,6 +342,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
             print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
             print(f"  matcher: {DELEGATION_WARN_MATCHER}  "
                   f"command: {_delegation_warn_command()}")
+            print(f"  matcher: Stop  command: {_reinforce_check_command()}")
             if not had_statusline:
                 print(f"  statusLine: {_statusline_command()}")
             print("(dry run: pass --install to write it)")
@@ -318,6 +374,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
     print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
     print(f"  matcher: {DELEGATION_WARN_MATCHER}  command: {_delegation_warn_command()}")
+    print(f"  matcher: Stop  command: {_reinforce_check_command()}")
     if not had_statusline:
         print(f"  statusLine: {_statusline_command()}")
     else:
@@ -326,7 +383,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn, "
-                                             "delegation-warn hooks and a statusLine "
+                                             "delegation-warn, reinforce-check hooks and a statusLine "
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")

@@ -503,6 +503,12 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   current user message and, once that count exceeds 3, adds a short one-time warning
   suggesting the rest of the work be delegated to a worker. The counter resets on
   every new user message. It never blocks a tool call, only adds context for the model.
+- a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
+  `git push` or `gh pr create` and a `context` call in the session printed a task id
+  that has no `reinforce --task <id>` yet, blocks the stop once per id and asks the
+  agent to run `reinforce` (naming the notes that helped) and mention it in its final
+  report. It never blocks twice for the same id, skips subagents, fails open, and logs
+  one `reinforce_check` line per decision to `.graph/usage.log`.
 - a `statusLine` command (`statusline.py`) that shows the model and effort, the current
   folder with its git branch, context usage, and session cost, e.g. `Opus 5.5·med │
   vault-engine (main) │ ctx 44K/200K 22% │ $1.42` (segments with missing data are
@@ -512,7 +518,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   left untouched (the installer prints a note when this happens).
 
 None of these touch any other hook or setting already there. `doctor` warns if any of
-the three hooks isn't installed.
+any of the hooks isn't installed.
 
 Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
 not three: `python tools/graph.py models` shows it (plus whether `settings.json` and
