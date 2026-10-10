@@ -8,6 +8,7 @@ tests always mock -- no test ever spawns a real `graph.py` subprocess.
 """
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import os
@@ -151,20 +152,19 @@ def _clone(bare: Path, dest: Path) -> None:
 _TEMPLATE: dict = {}
 
 
-def setUpModule():
-    """Build the origin + engine clone once; each test gets a cheap file copy
-    (about 25 git subprocesses per test is very slow on Windows)."""
-    root = Path(tempfile.mkdtemp())
-    origin = _build_origin(root)
-    engine = root / "engine"
-    _clone(origin["bare"], engine)
-    _run(["git", "checkout", "-q", "v0.1.0"], engine)
-    _TEMPLATE.update(root=root, branch=origin["branch"], untagged_sha=origin["untagged_sha"])
-
-
-def tearDownModule():
-    shutil.rmtree(_TEMPLATE.pop("root"), ignore_errors=True)
-    _TEMPLATE.clear()
+def _template() -> dict:
+    """Build the origin + engine clone once per process (lazily, because other
+    test modules reuse UpdateTestCase); each test gets a cheap file copy.
+    About 25 git subprocesses per test is very slow on Windows."""
+    if not _TEMPLATE:
+        root = Path(tempfile.mkdtemp())
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        origin = _build_origin(root)
+        engine = root / "engine"
+        _clone(origin["bare"], engine)
+        _run(["git", "checkout", "-q", "v0.1.0"], engine)
+        _TEMPLATE.update(root=root, branch=origin["branch"], untagged_sha=origin["untagged_sha"])
+    return _TEMPLATE
 
 
 class UpdateTestCase(unittest.TestCase):
@@ -174,9 +174,10 @@ class UpdateTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        shutil.copytree(_TEMPLATE["root"], self.tmp, dirs_exist_ok=True)
-        self.origin = {"bare": self.tmp / "origin.git", "untagged_sha": _TEMPLATE["untagged_sha"],
-                       "branch": _TEMPLATE["branch"]}
+        template = _template()
+        shutil.copytree(template["root"], self.tmp, dirs_exist_ok=True)
+        self.origin = {"bare": self.tmp / "origin.git", "untagged_sha": template["untagged_sha"],
+                       "branch": template["branch"]}
         self.engine = self.tmp / "engine"
         _run(["git", "remote", "set-url", "origin", str(self.origin["bare"])], self.engine)
 
