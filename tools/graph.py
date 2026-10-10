@@ -1399,11 +1399,18 @@ def cmd_leakcheck(args) -> None:
 
 # --- usage log ---------------------------------------------------------------
 
+# Set only while `doctor --live` runs its probe task in this process: every usage.log
+# event written meanwhile carries "probe": true and readers skip those by default.
+PROBE: dict = {"on": False, "task": ""}
+
+
 def log_usage(paths: Paths, event: dict) -> None:
     # Telemetry must never break retrieval, so write errors are ignored.
     agent, session = detect_agent()
     event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": agent,
              "session": session, "machine": machine_name(paths), **event}
+    if PROBE["on"]:
+        event["probe"] = True
     try:
         usage_log = paths.usage_log
         usage_log.parent.mkdir(exist_ok=True)
@@ -1455,16 +1462,19 @@ def trim_usage_log(paths: Paths, now: datetime | None = None) -> int:
         return 0
 
 
-def read_usage(paths: Paths) -> list[dict]:
+def read_usage(paths: Paths, include_probe: bool = False) -> list[dict]:
+    """usage.log events; the `doctor --live` probe events are left out unless asked for."""
     usage_log = paths.usage_log
     if not usage_log.exists():
         return []
     events = []
     for line in usage_log.read_text(encoding="utf-8").splitlines():
         try:
-            events.append(json.loads(line))
+            event = json.loads(line)
         except ValueError:
             continue
+        if include_probe or not (isinstance(event, dict) and event.get("probe")):
+            events.append(event)
     return events
 
 
@@ -1566,7 +1576,7 @@ def cmd_query(args, content: bool) -> None:
     if omitted or truncated:
         print(f"<!-- load a note: python \"{Path(__file__).resolve()}\" show --body <id> -->")
     if not args.no_log:
-        task = secrets.token_hex(3)
+        task = ("probe-" if PROBE["on"] else "") + secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
                           "notes": loaded, "core": core_loaded, "omitted": omitted,
                           "retrieval": RETRIEVAL["mode"],
@@ -1662,7 +1672,7 @@ def cmd_reinforce(args) -> None:
     # Fewer than two notes strengthens nothing but still closes the task in the
     # usage log: "only one note / no note helped" is a useful signal too.
     if args.task and not any(e.get("event") == "context" and e.get("task") == args.task
-                             for e in read_usage(paths)):
+                             for e in read_usage(paths, include_probe=True)):
         print(f"WARN: task {args.task} not found in any context event of usage.log",
               file=sys.stderr)
     event = {"event": "reinforce", "task": args.task, "notes": ids}
@@ -1671,6 +1681,11 @@ def cmd_reinforce(args) -> None:
     if getattr(args, "rework", False):
         event["rework"] = True
     log_usage(paths, event)
+    if PROBE["on"]:
+        # doctor --live: only the marked log line. No feedback send, update check, decay
+        # stamp/decay, learned-file write or commit.
+        print("probe: outcome recorded; nothing else touched")
+        return
     # A task just ended: the opt-in feedback module may send (throttled, never raises).
     feedback = sys.modules.get("feedback")
     if feedback is not None:
@@ -1964,10 +1979,13 @@ def log_show(paths: Paths, nid: str) -> None:
     `from_omitted` is whether the note was in that context's `omitted` list."""
     agent, session = detect_agent()
     task, from_omitted = "", False
+    if PROBE["on"]:  # the probe's own context event, whatever agent/session runs it
+        agent, session = None, PROBE["task"]
     if session:
-        for e in reversed(read_usage(paths)):
-            if (e.get("event") == "context" and e.get("agent") == agent
-                    and e.get("session") == session):
+        for e in reversed(read_usage(paths, include_probe=True)):
+            if (e.get("event") == "context"
+                    and ((e.get("task") == session) if PROBE["on"]
+                         else (e.get("agent") == agent and e.get("session") == session))):
                 task = e.get("task") or ""
                 from_omitted = nid in (e.get("omitted") or [])
                 break
@@ -1990,6 +2008,114 @@ def cmd_show(args) -> None:
         key = pair(nid, other)
         print(f"  {w:.3f}  {other}  (base {graph.base.get(key, 0.0):.3f}, "
               f"learned {graph.learned.get(key, 0.0):+.3f})")
+
+
+LIVE_PROBE_QUERY = "doctor live probe"
+
+
+def _probe_events(paths: Paths, kind: str, task: str | None = None) -> list[dict]:
+    return [e for e in read_usage(paths, include_probe=True)
+            if e.get("probe") and e.get("event") == kind
+            and (task is None or e.get("task") == task)]
+
+
+def live_checks(paths: Paths | None = None) -> list[tuple[str, str]]:
+    """`doctor --live`: run a probe task through the real context / show --body /
+    reinforce / stats --retrieval code paths and check what they logged, then check the
+    last SubagentStop record. Returns [(OK|FAIL|WARN, message)]. Every usage.log line the
+    probe writes carries "probe": true (readers skip them); reinforce returns before any
+    feedback send, update check, decay or commit, and the probe passes no note ids."""
+    from contextlib import redirect_stdout
+    from io import StringIO
+    paths = paths or default_paths()
+    checks: list[tuple[str, str]] = []
+
+    def check(ok: bool, field: str, why_ok: str, why_fail: str) -> None:
+        checks.append(("OK" if ok else "FAIL", f"{field}: {why_ok if ok else why_fail}"))
+
+    def run(func, ns: argparse.Namespace) -> tuple[bool, str]:
+        buf = StringIO()
+        try:
+            with redirect_stdout(buf):
+                func(ns)
+        except SystemExit as exc:
+            if exc.code not in (None, 0):
+                return False, str(exc.code)
+        except Exception as exc:  # a probe must report, not crash doctor
+            return False, f"{type(exc).__name__}: {exc}"
+        return True, buf.getvalue()
+
+    PROBE["on"], PROBE["task"] = True, ""
+    try:
+        # 1. context (keyword match: no embedding cache writes, no Ollama wait)
+        ok, out = run(lambda a: cmd_query(a, content=True), argparse.Namespace(
+            text=LIVE_PROBE_QUERY, seed=[], threshold=DEFAULT_THRESHOLD, depth=DEFAULT_DEPTH,
+            json=False, no_semantic=True, project=None, no_project=True, core=False,
+            budget=DEFAULT_BUDGET, no_log=False))
+        ctxs = _probe_events(paths, "context")
+        ctx = ctxs[-1] if ctxs else None
+        if not ok or ctx is None:
+            why = out if not ok else "no context event logged (empty vault, or no note to load)"
+            for field in ("core", "scores", "fallback_reason"):
+                checks.append(("FAIL", f"context {field}: {why}"))
+            note, task = None, ""
+        else:
+            task = ctx["task"]
+            PROBE["task"] = task
+            for field in ("core", "scores", "fallback_reason"):
+                check(field in ctx, f"context {field}", "logged", "missing from the context event")
+            note = next(iter(ctx.get("core") or ctx.get("notes") or list(ctx.get("scores") or {})),
+                        None)
+        # 2. show --body
+        shown = None
+        if note is None:
+            checks.append(("FAIL", "show task: no note in the context output to load"))
+            checks.append(("FAIL", "show from_omitted: no note in the context output to load"))
+        else:
+            ok, out = run(cmd_show, argparse.Namespace(note=note, body=True))
+            shown = (_probe_events(paths, "show", task) or [None])[-1] if ok else None
+            why = out if not ok else "no show event logged"
+            check(shown is not None and shown.get("task") == task, "show task",
+                  "logged with the probe task id", why if shown is None else
+                  f"logged task {shown.get('task')!r}, expected {task!r}")
+            check(shown is not None and "from_omitted" in shown, "show from_omitted",
+                  "logged", why if shown is None else "missing from the show event")
+        # 3. reinforce --task <id> --outcome ok, no notes
+        if not task:
+            checks.append(("FAIL", "reinforce outcome: no probe task to close"))
+        else:
+            ok, out = run(cmd_reinforce, argparse.Namespace(
+                notes=[], task=task, rate=LEARNING_RATE, outcome="ok", rework=False))
+            rein = (_probe_events(paths, "reinforce", task) or [None])[-1] if ok else None
+            check(rein is not None and rein.get("outcome") == "ok", "reinforce outcome",
+                  "logged without note ids", out if not ok else "outcome missing from the event")
+    finally:
+        PROBE["on"], PROBE["task"] = False, ""
+
+    # 4. stats --retrieval must run and ignore the probe events
+    ok, out = run(cmd_stats, argparse.Namespace(
+        tokens=False, retrieval=True, json=True, since=None, until=None))
+    expected = sum(1 for e in read_usage(paths) if e.get("event") == "context")
+    try:
+        got = json.loads(out)["closure"]["contexts"] if ok else None
+    except (ValueError, KeyError, TypeError):
+        got = None
+    check(ok and got == expected, "stats --retrieval",
+          f"runs, probe events excluded ({got} contexts)",
+          out if not ok else f"reported {got} contexts, expected {expected} without the probe")
+
+    # 5. SubagentStop hook: the last record needs a non-empty agent_type
+    stops = [e for e in read_usage(paths) if e.get("event") == "subagent_stop"]
+    if not stops:
+        checks.append(("WARN", "subagent_stop agent_type: no subagent_stop record in usage.log "
+                               "yet; run any subagent once, then rerun doctor --live"))
+    else:
+        agent_type = stops[-1].get("agent_type")
+        check(isinstance(agent_type, str) and bool(agent_type), "subagent_stop agent_type",
+              f"last record has agent_type {agent_type!r}",
+              "last subagent_stop record has no agent_type (hook payload and meta-file "
+              "fallback gave none)")
+    return checks
 
 
 def sentence_lengths(body: str) -> list[int]:
