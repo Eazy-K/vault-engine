@@ -1625,7 +1625,8 @@ def cmd_query(args, content: bool) -> None:
         # The command ends the line and runs as shown, so an agent that copies it
         # literally when no note helped still closes the task.
         print(f"<!-- when done, append the ids of the notes that actually helped (if none "
-              f"did, append nothing): python \"{Path(__file__).resolve()}\" reinforce "
+              f"did, append nothing; optionally add --outcome ok|partial|fail, and --rework "
+              f"if the work needed a redo): python \"{Path(__file__).resolve()}\" reinforce "
               f"--task {task} -->")
 
 
@@ -1641,6 +1642,7 @@ def cmd_index(_args) -> None:
 
 # Accepted in place of an empty note list, unless a note has that name.
 NO_NOTES_WORDS = {"none"}
+OUTCOMES = ("ok", "partial", "fail")
 
 
 def cmd_reinforce(args) -> None:
@@ -1663,7 +1665,12 @@ def cmd_reinforce(args) -> None:
                              for e in read_usage(paths)):
         print(f"WARN: task {args.task} not found in any context event of usage.log",
               file=sys.stderr)
-    log_usage(paths, {"event": "reinforce", "task": args.task, "notes": ids})
+    event = {"event": "reinforce", "task": args.task, "notes": ids}
+    if getattr(args, "outcome", None):
+        event["outcome"] = args.outcome
+    if getattr(args, "rework", False):
+        event["rework"] = True
+    log_usage(paths, event)
     # A task just ended: the opt-in feedback module may send (throttled, never raises).
     feedback = sys.modules.get("feedback")
     if feedback is not None:
@@ -2078,6 +2085,10 @@ def main() -> None:
     p.add_argument("notes", nargs="*")
     p.add_argument("--task", help="task id printed by `context`")
     p.add_argument("--rate", type=float, default=LEARNING_RATE)
+    p.add_argument("--outcome", choices=OUTCOMES,
+                   help="how the task went: ok, partial or fail (logged, optional)")
+    p.add_argument("--rework", action="store_true",
+                   help="the work needed a redo or correction (logged, optional)")
 
     p = sub.add_parser("decay", help="weaken all learned edges")
     p.add_argument("--rate", type=float, default=DECAY_RATE)

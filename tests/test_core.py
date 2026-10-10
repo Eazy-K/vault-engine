@@ -423,6 +423,7 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         expected = f'"{GRAPH_PATH}"'
         self.assertIn(expected, output)
         self.assertIn("reinforce --task", output)
+        self.assertIn("--outcome ok|partial|fail", output)
 
     def _run_context_with_modules(self, claude_hooks=None, models=None, onboarding=None,
                                   codex_hooks=None,
