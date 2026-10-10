@@ -65,6 +65,34 @@ class TestSubagentLog(unittest.TestCase):
         self.assertEqual(self._run(json.dumps(payload)).returncode, 0)
         (event,) = self._events()
         self.assertNotIn("agent_type", event)
+        if self.AGENT == "claude":
+            self.assertTrue(event.get("internal"))
+
+    def test_meta_exists_without_agent_type_not_internal(self):
+        if self.AGENT != "claude":
+            self.skipTest("claude only")
+        sub = self.tmp / "proj" / "sess" / "subagents"
+        sub.mkdir(parents=True)
+        (sub / "agent-abc.meta.json").write_text("{}", encoding="utf-8")
+        payload = {"session_id": "s1", "agent_id": "abc",
+                   "transcript_path": str(self.tmp / "proj" / "sess.jsonl")}
+        self.assertEqual(self._run(json.dumps(payload)).returncode, 0)
+        (event,) = self._events()
+        self.assertNotIn("agent_type", event)
+        self.assertNotIn("internal", event)
+
+    def test_meta_with_agent_type_not_internal(self):
+        if self.AGENT != "claude":
+            self.skipTest("claude only")
+        sub = self.tmp / "proj" / "sess" / "subagents"
+        sub.mkdir(parents=True)
+        (sub / "agent-abc.meta.json").write_text('{"agentType": "worker-low"}', encoding="utf-8")
+        payload = {"session_id": "s1", "agent_id": "abc",
+                   "transcript_path": str(self.tmp / "proj" / "sess.jsonl")}
+        self._run(json.dumps(payload))
+        (event,) = self._events()
+        self.assertEqual(event["agent_type"], "worker-low")
+        self.assertNotIn("internal", event)
 
     def test_logs_documented_fields_only(self):
         payload = {"session_id": "s1", "hook_event_name": "SubagentStop",

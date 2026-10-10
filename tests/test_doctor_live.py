@@ -103,6 +103,21 @@ class TestLiveChecks(LiveBase):
         self.log_stop(agent_type="new")
         self.assertEqual(self.by_field(self.live())["subagent_stop agent_type"], "OK")
 
+    def test_internal_records_are_skipped(self):
+        self.log_stop(agent_type="worker-low")
+        self.log_stop(internal=True)
+        self.assertEqual(self.by_field(self.live())["subagent_stop agent_type"], "OK")
+        self.log_stop()
+        self.assertEqual(self.by_field(self.live())["subagent_stop agent_type"], "FAIL")
+
+    def test_only_internal_records_warn(self):
+        self.log_stop(internal=True)
+        checks = self.live()
+        warn = [m for s, m in checks if s == "WARN"]
+        self.assertEqual(len(warn), 1)
+        self.assertIn("run any subagent", warn[0])
+        self.assertNotIn("FAIL", {s for s, _ in checks})
+
     def test_empty_vault_fails_context_show_reinforce(self):
         with mock.patch.object(graph, "retrieve", return_value=[]):  # nothing to load
             fields = self.by_field(self.live())
