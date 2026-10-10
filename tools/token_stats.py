@@ -32,6 +32,12 @@ usable ``token_count`` event always uses that instead (the two are never
 combined).
 Malformed or unrelated lines are skipped.
 
+Cost is a list-price estimate per request and model version (``MODEL_PRICES``).
+Cache writes are split by TTL (``usage.cache_creation.ephemeral_5m/1h_input_tokens``);
+without that breakdown they are priced as 5m and flagged. A model without a known
+price gets cost None plus a warning, never $0. Known limitation: fast mode and
+``inference_geo`` multipliers are not applied.
+
 This module never prints file contents or prompts -- only counts, ids and
 token numbers -- and never writes anything (read-only).
 
@@ -49,14 +55,47 @@ from pathlib import Path
 from statistics import median
 
 # --- prices (USD per million tokens), a clearly-labelled estimate only ----
-# input, output. Matched against message.model by substring (case-insensitive).
-PRICES = {
-    "opus": (5.0, 25.0),
-    "sonnet": (2.0, 10.0),
-    "haiku": (1.0, 5.0),
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked
+# 2026-10-10). Keyed by model id (version aware); the most specific key wins
+# and an optional ``-YYYYMMDD`` date suffix is ignored. Each entry is
+# (input, output, cache_read_multiplier). Cache writes: 5m = 1.25x input,
+# 1h = 2x input. A model that is not listed is NOT priced (cost None + warning).
+#
+# Known limitation: fast-mode and ``inference_geo`` (1.1x) multipliers, and
+# Batch/Flex discounts, are not applied -- the transcripts do not reliably
+# say which applied, so such calls are priced at standard rates.
+MODEL_PRICES = {
+    "claude-fable-5-1": (10.0, 50.0, 0.025),
+    "claude-mythos-5-1": (10.0, 50.0, 0.025),
+    "claude-fable-5": (10.0, 50.0, 0.1),
+    "claude-mythos-5": (10.0, 50.0, 0.1),
+    "claude-opus-5-5": (4.0, 20.0, 0.05),
+    "claude-opus-5": (5.0, 25.0, 0.1),
+    "claude-opus-4-8": (5.0, 25.0, 0.1),
+    "claude-opus-4-7": (5.0, 25.0, 0.1),
+    "claude-opus-4-6": (5.0, 25.0, 0.1),
+    "claude-opus-4-5": (5.0, 25.0, 0.1),
+    "claude-opus-4-1": (15.0, 75.0, 0.1),
+    "claude-opus-4": (15.0, 75.0, 0.1),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.05),
+    "claude-sonnet-5": (2.0, 10.0, 0.1),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.1),
+    "claude-sonnet-4-5": (3.0, 15.0, 0.1),
+    "claude-sonnet-4": (3.0, 15.0, 0.1),
+    "claude-haiku-5-5": (0.10, 0.50, 0.1),
+    "claude-haiku-4-5": (1.0, 5.0, 0.1),
+    "claude-haiku-3-5": (0.80, 4.0, 0.1),
+    "claude-3-5-haiku": (0.80, 4.0, 0.1),
 }
-CACHE_READ_MULTIPLIER = 0.1
-CACHE_WRITE_MULTIPLIER = 1.25
+# Per-request prompt-length tier: (input, output) used instead when the
+# request's whole prompt (input + cache read + cache write) is over the limit.
+LONG_PROMPT_TOKENS = 100_000
+LONG_PROMPT_PRICES = {
+    "claude-haiku-5-5": (0.50, 2.50),
+}
+CACHE_WRITE_5M_MULTIPLIER = 1.25
+CACHE_WRITE_1H_MULTIPLIER = 2.0
+CACHE_WRITE_MULTIPLIER = CACHE_WRITE_5M_MULTIPLIER  # kept for compatibility
 # Standard API list rates, USD per million tokens, verified from the official
 # model pages. These produce an API-equivalent estimate, never a billing claim.
 # Batch/Flex/Fast rates and long-context surcharges can differ.
@@ -71,24 +110,40 @@ CODEX_STANDARD_RATES = {
 PEAK_CONTEXT_ALERT = 150_000
 
 
-def _price_for(model: str | None) -> tuple[float, float] | None:
-    name = (model or "").lower()
-    for key, prices in PRICES.items():
-        if key in name:
-            return prices
-    return None
+def _price_key(model: str | None) -> str | None:
+    """Most specific MODEL_PRICES key for a model id, or None if unlisted."""
+    name = (model or "").lower().replace(".", "-")
+    name = re.sub(r"\[.*\]$", "", name)  # e.g. "[1m]" context suffix
+    best = None
+    for key in MODEL_PRICES:
+        if re.search(r"(?<![a-z0-9])" + re.escape(key) + r"(?:-\d{8}.*)?$", name):
+            if best is None or len(key) > len(best):
+                best = key
+    return best
 
 
 def estimate_cost_usd(input_tokens: int, cache_creation: int, cache_read: int,
-                       output_tokens: int, model: str | None) -> float:
-    """Estimated USD cost for one usage tuple, or 0.0 if the model is unknown."""
-    prices = _price_for(model)
-    if prices is None:
-        return 0.0
-    in_price, out_price = prices
+                       output_tokens: int, model: str | None,
+                       cache_write_1h: int = 0) -> float | None:
+    """Estimated USD cost of ONE request, or None if the model is unpriced.
+
+    ``cache_creation`` is the total of cache-write tokens; ``cache_write_1h``
+    is the part of it written with the 1h TTL (2x input), the rest is 5m
+    (1.25x input). Models with a prompt-length tier are priced per request.
+    """
+    key = _price_key(model)
+    if key is None:
+        return None
+    in_price, out_price, read_mult = MODEL_PRICES[key]
+    long_prices = LONG_PROMPT_PRICES.get(key)
+    if long_prices and input_tokens + cache_read + cache_creation > LONG_PROMPT_TOKENS:
+        in_price, out_price = long_prices
+    write_1h = min(max(cache_write_1h, 0), cache_creation)
+    write_5m = cache_creation - write_1h
     return (input_tokens * in_price
-            + cache_creation * in_price * CACHE_WRITE_MULTIPLIER
-            + cache_read * in_price * CACHE_READ_MULTIPLIER
+            + write_5m * in_price * CACHE_WRITE_5M_MULTIPLIER
+            + write_1h * in_price * CACHE_WRITE_1H_MULTIPLIER
+            + cache_read * in_price * read_mult
             + output_tokens * out_price) / 1_000_000
 
 
@@ -122,6 +177,28 @@ def pct(part: float, total: float) -> float | None:
     return round(part * 100.0 / total, 1)
 
 
+def fmt_usd(value: float | None) -> str:
+    """USD for text output; ``-`` when the model is unpriced (never $0.00)."""
+    return "-" if value is None else f"${value:,.2f}"
+
+
+def fmt_write_5m(row: dict) -> str:
+    """5m cache-write tokens; a trailing ``~`` marks tokens whose TTL is unknown."""
+    return f"{row['cache_write_5m']:,}" + ("~" if row.get("cache_write_unknown") else "")
+
+
+PRICE_FOOTNOTE = (
+    "* USD is a rough estimate from list prices per model version (see "
+    "MODEL_PRICES; e.g. opus 5.5 $4/$20, opus 4.5-5 $5/$25, sonnet 5/5.5 $2/$10, "
+    "sonnet 4.x $3/$15, haiku 5.5 $0.10/$0.50 and $0.50/$2.50 for prompts over "
+    "100K, fable 5.1 $10/$50 per MTok in/out). Cache write 5m 1.25x input, 1h 2x "
+    "input; cache read 0.1x input (0.05x opus/sonnet 5.5, 0.025x fable/mythos 5.1). "
+    "Known limitation: fast mode and inference_geo multipliers are not applied. "
+    "'-' = model without a known price (left out of totals). "
+    "~ = cache-write TTL unknown (no 5m/1h breakdown), priced as 5m. "
+    "Actual billing may differ.")
+
+
 def fmt_pct(value: float | None) -> str:
     """Formats a pct() value for text output; ``-`` when there is no share."""
     return "-" if value is None else f"{value:.1f}%"
@@ -145,6 +222,13 @@ class Call:
     cache_creation: int
     cache_read: int
     output: int
+    cache_write_1h: int = 0
+    # Cache-write tokens without a 5m/1h breakdown (priced as 5m, flagged).
+    cache_write_unknown: int = 0
+
+    @property
+    def cache_write_5m(self) -> int:
+        return self.cache_creation - self.cache_write_1h
 
     @property
     def context(self) -> int:
@@ -188,6 +272,18 @@ def load_calls(path: Path, since: date | None = None) -> list[Call]:
         if since is not None and (ts is None or ts.astimezone().date() < since):
             continue
         usage = message.get("usage") or {}
+        total_write = int(usage.get("cache_creation_input_tokens") or 0)
+        breakdown = usage.get("cache_creation")
+        write_1h = write_unknown = 0
+        if isinstance(breakdown, dict) and (
+                "ephemeral_5m_input_tokens" in breakdown
+                or "ephemeral_1h_input_tokens" in breakdown):
+            write_1h = int(breakdown.get("ephemeral_1h_input_tokens") or 0)
+            known = write_1h + int(breakdown.get("ephemeral_5m_input_tokens") or 0)
+            write_unknown = max(0, total_write - known)
+            total_write = max(total_write, known)
+        else:
+            write_unknown = total_write
         if msg_id not in by_id:
             order.append(msg_id)
         by_id[msg_id] = Call(
@@ -195,9 +291,11 @@ def load_calls(path: Path, since: date | None = None) -> list[Call]:
             model=message.get("model"),
             timestamp=ts,
             input=int(usage.get("input_tokens") or 0),
-            cache_creation=int(usage.get("cache_creation_input_tokens") or 0),
+            cache_creation=total_write,
             cache_read=int(usage.get("cache_read_input_tokens") or 0),
             output=int(usage.get("output_tokens") or 0),
+            cache_write_1h=write_1h,
+            cache_write_unknown=write_unknown,
         )
     return [by_id[i] for i in order]
 
@@ -711,26 +809,70 @@ def percentile(values: list[int | float], pct: float) -> float:
     return s[lo] * (hi - k) + s[hi] * (k - lo)
 
 
-def _model_rows(by_model: dict[str, dict[str, int]]) -> list[dict]:
+def _new_model_row() -> dict:
+    return {"calls": 0, "main_calls": 0, "sub_calls": 0, "input": 0,
+            "cache_creation": 0, "cache_write_5m": 0, "cache_write_1h": 0,
+            "cache_write_unknown": 0, "cache_read": 0, "output": 0,
+            "_cost": 0.0, "_priced": True}
+
+
+def _add_call(by_model: dict[str, dict], c: Call, is_main: bool) -> None:
+    """Adds one request to its model's counters. Cost is accumulated per
+    request because the Haiku 5.5 price tier depends on each request."""
+    model = c.model or "unknown"
+    row = by_model.setdefault(model, _new_model_row())
+    row["calls"] += 1
+    row["main_calls" if is_main else "sub_calls"] += 1
+    row["input"] += c.input
+    row["cache_creation"] += c.cache_creation
+    row["cache_write_5m"] += c.cache_write_5m
+    row["cache_write_1h"] += c.cache_write_1h
+    row["cache_write_unknown"] += c.cache_write_unknown
+    row["cache_read"] += c.cache_read
+    row["output"] += c.output
+    cost = _call_cost(c)
+    if cost is None:
+        row["_priced"] = False
+    else:
+        row["_cost"] += cost
+
+
+def _call_cost(c: Call) -> float | None:
+    return estimate_cost_usd(c.input, c.cache_creation, c.cache_read, c.output,
+                             c.model, cache_write_1h=c.cache_write_1h)
+
+
+def _model_rows(by_model: dict[str, dict]) -> tuple[list[dict], float, list[str]]:
     """Per-model rows (with total, est. USD and call/token/cost shares) from
-    per-model counters. Rows carry a private ``_cost`` (unrounded) that the
-    caller drops after summing."""
+    per-model counters, the summed cost of the priced models, and warnings.
+    An unpriced model gets ``est_usd`` None (never 0) and a warning."""
     rows = []
+    warnings = []
     for model, row in sorted(by_model.items()):
-        cost = estimate_cost_usd(row["input"], row["cache_creation"], row["cache_read"],
-                                  row["output"], model)
-        rows.append({**row, "model": model,
+        priced = row["_priced"]
+        cost = row["_cost"] if priced else None
+        public = {k: v for k, v in row.items() if not k.startswith("_")}
+        rows.append({**public, "model": model,
                      "total": row["input"] + row["cache_creation"]
                      + row["cache_read"] + row["output"],
-                     "est_usd": round(cost, 2), "_cost": cost})
+                     "est_usd": None if cost is None else round(cost, 2),
+                     "_cost": cost})
+        if not priced:
+            warnings.append(f"model '{model}' has no known price: its cost is "
+                            "not estimated and is left out of the totals")
+        if row["cache_write_unknown"]:
+            warnings.append(
+                f"model '{model}': {row['cache_write_unknown']:,} cache-write tokens "
+                "have no 5m/1h breakdown; priced at the 5m rate (1.25x)")
     all_calls = sum(r["calls"] for r in rows)
     all_tokens = sum(r["total"] for r in rows)
-    all_cost = sum(r["_cost"] for r in rows)
+    all_cost = sum(r["_cost"] for r in rows if r["_cost"] is not None)
     for r in rows:
         r["calls_pct"] = pct(r["calls"], all_calls)
         r["total_pct"] = pct(r["total"], all_tokens)
-        r["cost_pct"] = pct(r["_cost"], all_cost)
-    return rows
+        r["cost_pct"] = None if r["_cost"] is None else pct(r["_cost"], all_cost)
+        del r["_cost"]
+    return rows, all_cost, warnings
 
 
 def build_report(sessions: list[Session], top: int = 5) -> dict:
@@ -742,20 +884,8 @@ def build_report(sessions: list[Session], top: int = 5) -> dict:
     by_model: dict[str, dict[str, int]] = {}
     for s in sessions:
         for c in s.calls:
-            model = c.model or "unknown"
-            row = by_model.setdefault(model, {"calls": 0, "main_calls": 0, "sub_calls": 0,
-                                               "input": 0, "cache_creation": 0,
-                                               "cache_read": 0, "output": 0})
-            row["calls"] += 1
-            row["main_calls" if s.kind == "main" else "sub_calls"] += 1
-            row["input"] += c.input
-            row["cache_creation"] += c.cache_creation
-            row["cache_read"] += c.cache_read
-            row["output"] += c.output
-    model_rows = _model_rows(by_model)
-    total_cost = sum(r["_cost"] for r in model_rows)
-    for r in model_rows:
-        del r["_cost"]
+            _add_call(by_model, c, s.kind == "main")
+    model_rows, total_cost, warnings = _model_rows(by_model)
 
     top_main = sorted(main_sessions, key=lambda s: -s.total_tokens)[:top]
 
@@ -777,6 +907,9 @@ def build_report(sessions: list[Session], top: int = 5) -> dict:
     return {
         "by_model": model_rows,
         "est_total_usd": round(total_cost, 2),
+        "cost_estimate_status": "partial" if any(
+            r["est_usd"] is None for r in model_rows) else "complete",
+        "warnings": warnings,
         "main_sessions": {
             "count": len(main_sessions),
             "calls": sum(s.n_calls for s in main_sessions),
@@ -807,16 +940,21 @@ def format_report_text(report: dict, projects_dir: Path, since: date | None) -> 
     if since:
         lines.append(f"  since {since.isoformat()}")
     lines.append("")
-    lines.append("By model (calls, input, cache-write, cache-read, output, total, est. USD*, "
-                 "call %, token %, cost %, main/sub calls):")
+    lines.append("By model (calls, input, cache-write 5m, cache-write 1h, cache-read, output, "
+                 "total, est. USD*, call %, token %, cost %, main/sub calls):")
     for row in report["by_model"]:
         lines.append(f"  {row['model']:<24} {row['calls']:>6}  {row['input']:>12,}  "
-                      f"{row['cache_creation']:>12,}  {row['cache_read']:>12,}  "
-                      f"{row['output']:>10,}  {row['total']:>14,}  ${row['est_usd']:,.2f}  "
+                      f"{fmt_write_5m(row):>13}  {row['cache_write_1h']:>12,}  "
+                      f"{row['cache_read']:>12,}  "
+                      f"{row['output']:>10,}  {row['total']:>14,}  {fmt_usd(row['est_usd'])}  "
                       f"{fmt_pct(row['calls_pct']):>6}  {fmt_pct(row['total_pct']):>6}  "
                       f"{fmt_pct(row['cost_pct']):>6}  "
                       f"main {row['main_calls']:,} / sub {row['sub_calls']:,}")
-    lines.append(f"  est. total*: ${report['est_total_usd']:,.2f}")
+    lines.append(f"  est. total*: ${report['est_total_usd']:,.2f}"
+                 + (" (partial; priced models only)"
+                    if report.get("cost_estimate_status") == "partial" else ""))
+    for warning in report.get("warnings", []):
+        lines.append(f"  WARNING: {warning}")
     lines.append("")
 
     m = report["main_sessions"]
@@ -845,9 +983,7 @@ def format_report_text(report: dict, projects_dir: Path, since: date | None) -> 
                       f"median={row['median_turns']:.0f}  p90={row['p90_turns']:.1f}  "
                       f"max={row['max_turns']}")
     lines.append("")
-    lines.append("* USD is a rough estimate from list prices (opus $5/$25, sonnet $2/$10, "
-                 "haiku $1/$5 per MTok in/out; cache read 0.1x input, cache write 1.25x "
-                 "input) -- actual billing may differ.")
+    lines.append(PRICE_FOOTNOTE)
     return "\n".join(lines)
 
 
@@ -899,9 +1035,16 @@ def _newest_transcript(projects_dir: Path, cwd: Path) -> str | None:
     return max(pool, key=mtime)[2]
 
 
-def _cost_of(calls: list[Call]) -> float:
-    return sum(estimate_cost_usd(c.input, c.cache_creation, c.cache_read, c.output, c.model)
-               for c in calls)
+def _cost_of(calls: list[Call]) -> float | None:
+    """Summed cost of the calls; None if any call's model is unpriced."""
+    costs = [_call_cost(c) for c in calls]
+    if any(cost is None for cost in costs):
+        return None
+    return sum(costs)
+
+
+def _round_usd(cost: float | None) -> float | None:
+    return None if cost is None else round(cost, 2)
 
 
 def build_claude_session_report(found: list) -> dict:
@@ -921,19 +1064,8 @@ def build_claude_session_report(found: list) -> dict:
     by_model: dict[str, dict[str, int]] = {}
     for is_main, calls in [(True, main_calls)] + [(False, cs) for _, _, cs in subs]:
         for c in calls:
-            row = by_model.setdefault(c.model or "unknown", {
-                "calls": 0, "main_calls": 0, "sub_calls": 0, "input": 0,
-                "cache_creation": 0, "cache_read": 0, "output": 0})
-            row["calls"] += 1
-            row["main_calls" if is_main else "sub_calls"] += 1
-            row["input"] += c.input
-            row["cache_creation"] += c.cache_creation
-            row["cache_read"] += c.cache_read
-            row["output"] += c.output
-    model_rows = _model_rows(by_model)
-    total_cost = sum(r["_cost"] for r in model_rows)
-    for r in model_rows:
-        del r["_cost"]
+            _add_call(by_model, c, is_main)
+    model_rows, total_cost, warnings = _model_rows(by_model)
 
     total_tokens = sum(c.total for c in all_calls)
     stamps = sorted(c.timestamp for c in all_calls if c.timestamp)
@@ -946,7 +1078,7 @@ def build_claude_session_report(found: list) -> dict:
             "agent_id": agent_id, "agent_type": agent_type,
             "model": ", ".join(sorted({c.model or "unknown" for c in calls})) or "-",
             "calls": len(calls), "total_tokens": tokens,
-            "est_usd": round(_cost_of(calls), 2),
+            "est_usd": _round_usd(_cost_of(calls)),
             "tokens_pct": pct(tokens, total_tokens),
         })
     main_tokens = sum(c.total for c in main_calls)
@@ -960,15 +1092,18 @@ def build_claude_session_report(found: list) -> dict:
         "duration_seconds": int((end - start).total_seconds()) if start and end else None,
         "by_model": model_rows,
         "main": {"calls": len(main_calls), "total_tokens": main_tokens,
-                 "est_usd": round(_cost_of(main_calls), 2),
+                 "est_usd": _round_usd(_cost_of(main_calls)),
                  "tokens_pct": pct(main_tokens, total_tokens)},
         "subagents_total": {"runs": len(subs), "calls": sum(len(cs) for _, _, cs in subs),
                             "total_tokens": sub_tokens,
-                            "est_usd": round(sum(_cost_of(cs) for _, _, cs in subs), 2),
+                            "est_usd": _round_usd(_cost_of([c for _, _, cs in subs for c in cs])),
                             "tokens_pct": pct(sub_tokens, total_tokens)},
         "subagents": sub_rows,
         "total_tokens": total_tokens,
         "est_total_usd": round(total_cost, 2),
+        "cost_estimate_status": "partial" if any(
+            r["est_usd"] is None for r in model_rows) else "complete",
+        "warnings": warnings,
     }
 
 
@@ -1192,30 +1327,35 @@ def format_session_text(report: dict) -> str:
     lines.append(f"  end:      {report['end'] or '-'}")
     lines.append(f"  duration: {_fmt_duration(report['duration_seconds'])}")
     lines.append("")
-    lines.append("By model (calls, input, cache-write, cache-read, output, total, est. USD*, "
-                 "call %, token %, cost %):")
+    lines.append("By model (calls, input, cache-write 5m, cache-write 1h, cache-read, output, "
+                 "total, est. USD*, call %, token %, cost %):")
     for r in report["by_model"]:
         lines.append(f"  {r['model']:<24} {r['calls']:>6}  {r['input']:>12,}  "
-                     f"{r['cache_creation']:>12,}  {r['cache_read']:>12,}  {r['output']:>10,}  "
-                     f"{r['total']:>14,}  ${r['est_usd']:,.2f}  {fmt_pct(r['calls_pct']):>6}  "
+                     f"{fmt_write_5m(r):>13}  {r['cache_write_1h']:>12,}  "
+                     f"{r['cache_read']:>12,}  {r['output']:>10,}  "
+                     f"{r['total']:>14,}  {fmt_usd(r['est_usd'])}  {fmt_pct(r['calls_pct']):>6}  "
                      f"{fmt_pct(r['total_pct']):>6}  {fmt_pct(r['cost_pct']):>6}")
     lines.append(f"  est. total*: ${report['est_total_usd']:,.2f}  "
-                 f"({report['total_tokens']:,} tokens)")
+                 f"({report['total_tokens']:,} tokens)"
+                 + ("  (partial; priced models only)"
+                    if report.get("cost_estimate_status") == "partial" else ""))
+    for warning in report.get("warnings", []):
+        lines.append(f"  WARNING: {warning}")
     lines.append("")
     m, a = report["main"], report["subagents_total"]
     lines.append(f"Main (orchestrator): {m['calls']} calls, {m['total_tokens']:,} tokens "
-                 f"({fmt_pct(m['tokens_pct'])}), ${m['est_usd']:,.2f}")
+                 f"({fmt_pct(m['tokens_pct'])}), {fmt_usd(m['est_usd'])}")
     lines.append(f"Subagents:           {a['runs']} runs, {a['calls']} calls, "
-                 f"{a['total_tokens']:,} tokens ({fmt_pct(a['tokens_pct'])}), ${a['est_usd']:,.2f}")
+                 f"{a['total_tokens']:,} tokens ({fmt_pct(a['tokens_pct'])}), {fmt_usd(a['est_usd'])}")
     if report["subagents"]:
         lines.append("")
         lines.append("Subagent runs (type, model, calls, total tokens, est. USD*, token %):")
         for r in report["subagents"]:
             lines.append(f"  {r['agent_type']:<20} {r['model']:<24} {r['calls']:>5}  "
-                         f"{r['total_tokens']:>14,}  ${r['est_usd']:,.2f}  "
+                         f"{r['total_tokens']:>14,}  {fmt_usd(r['est_usd'])}  "
                          f"{fmt_pct(r['tokens_pct']):>6}")
     lines.append("")
-    lines.append("* USD is a rough estimate from list prices -- actual billing may differ.")
+    lines.append(PRICE_FOOTNOTE)
     return "\n".join(lines)
 
 
