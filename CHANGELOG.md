@@ -10,6 +10,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `reinforce-check`, a Claude Code `Stop` hook: when a turn ends with `git commit`, `git push` or `gh pr create` and a `context` task id was never reinforced, it blocks once per id and asks the agent to run `reinforce --task <id>` and mention it in the final report. Installed by `claude-hooks --install` / `update --all`, checked by `doctor`, logs `reinforce_check` events to `usage.log`.
 
 ### Fixed
+- A learned-links file (or `machine.json`) with git conflict markers, truncated or empty content no longer crashes `context`: that file is skipped with a `WARN` on stderr and a fix hint. A corrupt `.graph/embeddings.json` is moved aside to `embeddings.json.corrupt-<timestamp>` and rebuilt on the next call when Ollama is reachable. State files under `.graph/` are now written atomically (temp file + `os.replace`), and `doctor` warns about state files that do not parse or contain conflict markers.
 - The vault CI pin no longer drifts on the dev channel: `doctor` warns when `.github/workflows/vault.yml` pins an older release than the newest tag reachable from the engine checkout (`git describe --tags --abbrev=0`) and prints the `update` fix command; `update` moves such a pin to that tag. A pin on `main` and the stable channel behave as before; no tags or no git: nothing happens.
 
 ### Changed

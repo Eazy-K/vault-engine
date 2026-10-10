@@ -223,6 +223,87 @@ EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
 
 
+# --- state-file integrity -------------------------------------------------------
+# Shared state under <data>/.graph/ (learned links, machine.json, embeddings cache)
+# can end up with git conflict markers or half-written content. Readers skip such a
+# file with a WARN on stderr instead of crashing; writers replace atomically.
+
+CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|=======|>>>>>>>)", re.MULTILINE)
+_WARNED_STATE: set[str] = set()
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` via a temp file in the same folder + os.replace, so a
+    crash or a concurrent reader never sees a partial file."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def state_json_problem(path: Path, expect: type = dict) -> str | None:
+    """Why `path` is not usable state, or None if it is missing, empty or valid JSON
+    of type `expect`. Looks for git conflict markers first."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"cannot be read ({exc.__class__.__name__})"
+    if CONFLICT_MARKER_RE.search(text):
+        return "contains git conflict markers"
+    if not text.strip():
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return f"is not valid JSON ({exc})"
+    if not isinstance(data, expect):
+        return f"is not a JSON {expect.__name__}"
+    return None
+
+
+def state_fix_hint(path: Path) -> str:
+    path = Path(path)
+    if path.suffix == ".json" and path.parent.name == "learned":
+        return (f"resolve the conflict by hand or restore it with "
+                f'git -C "{path.parent.parent.parent}" checkout -- ".graph/learned/{path.name}"; '
+                "this machine's file is rewritten by the next reinforce")
+    if path.name == "embeddings.json":
+        return "it is rebuilt automatically when Ollama is reachable"
+    return f'fix or delete "{path}" (setup / machine --name write it again)'
+
+
+def warn_state_file(path: Path, problem: str) -> None:
+    key = f"{path}|{problem}"
+    if key in _WARNED_STATE:
+        return
+    _WARNED_STATE.add(key)
+    print(f"WARN: {path} {problem}; skipping it. Fix: {state_fix_hint(path)}", file=sys.stderr)
+
+
+def load_state_json(path: Path, expect: type = dict):
+    """Parsed JSON of a state file, or an empty `expect()` if it is missing, empty or
+    unusable (the latter with a WARN on stderr). Never raises."""
+    problem = state_json_problem(path, expect)
+    if problem:
+        if not problem.startswith("cannot be read"):
+            warn_state_file(path, problem)
+        return expect()
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return expect()
+    return json.loads(text) if text.strip() else expect()
+
+
 def sanitize_machine_name(raw: str) -> str:
     """The form a machine name takes in .graph/learned/<name>.json ("" if nothing is left)."""
     return re.sub(r"[^a-z0-9-]+", "-", str(raw).lower()).strip("-")
@@ -236,11 +317,8 @@ def machine_name(paths: Paths | None = None) -> str:
     then the hostname."""
     raw = os.environ.get("VAULT_MACHINE") or ""
     if not sanitize_machine_name(raw) and paths is not None:
-        try:
-            saved = json.loads((paths.data / ".graph" / "machine.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
-        name = saved.get("machine") if isinstance(saved, dict) else None
+        saved = load_state_json(paths.data / ".graph" / "machine.json")
+        name = saved.get("machine")
         raw = name if isinstance(name, str) else ""
     if not sanitize_machine_name(raw):
         raw = socket.gethostname()
@@ -463,13 +541,23 @@ class Graph:
         self.own_learned: dict[tuple[str, str], float] = {}  # this machine's file only
         learned_dir = self.paths.learned_dir
         for path in sorted(learned_dir.glob("*.json")) if learned_dir.exists() else []:
-            raw = json.loads(path.read_text(encoding="utf-8") or "{}")
-            for k, v in raw.items():
-                a, _, b = k.partition("|")
-                key = pair(a, b)
-                self.learned[key] = self.learned.get(key, 0.0) + float(v)
+            problem = state_json_problem(path)
+            entries: dict[tuple[str, str], float] = {}
+            if not problem:
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+                    for k, v in raw.items():
+                        a, _, b = k.partition("|")
+                        entries[pair(a, b)] = entries.get(pair(a, b), 0.0) + float(v)
+                except (OSError, ValueError, TypeError, AttributeError) as exc:
+                    problem, entries = f"has unusable content ({exc.__class__.__name__})", {}
+            if problem:
+                warn_state_file(path, problem)
+                continue  # skip only this machine's file
+            for key, v in entries.items():
+                self.learned[key] = self.learned.get(key, 0.0) + v
                 if path.stem == self.machine:
-                    self.own_learned[key] = float(v)
+                    self.own_learned[key] = v
 
         self.adjacency: dict[str, dict[str, float]] = {nid: {} for nid in self.notes}
         for a, b in set(self.base) | set(self.learned):
@@ -503,10 +591,8 @@ class Graph:
         learned_dir = self.paths.learned_dir
         learned_dir.mkdir(parents=True, exist_ok=True)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(self.own_learned.items())}
-        (learned_dir / f"{self.machine}.json").write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8", newline="\n",
-        )
+        atomic_write_text(learned_dir / f"{self.machine}.json",
+                          json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
     def commit_learned(self, message: str) -> None:
         """Commit this computer's learned file if it has uncommitted changes
@@ -755,14 +841,34 @@ def chunks(note: Note) -> list[str]:
     return out or [note.title]
 
 
+def quarantine_embeddings(embed_cache: Path, problem: str) -> Path | None:
+    """Move a corrupt embeddings cache aside (embeddings.json.corrupt-<timestamp>) so
+    the next successful embed call rebuilds it; keyword retrieval covers the gap."""
+    target = embed_cache.with_name(f"{embed_cache.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
+    try:
+        os.replace(embed_cache, target)
+    except OSError:
+        target = None
+    print(f"WARN: {embed_cache} {problem}; "
+          + (f"moved to {target.name}" if target else "could not move it aside")
+          + ", rebuilding when Ollama is reachable (keyword search until then)", file=sys.stderr)
+    return target
+
+
 def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, list | None]:
     """Embed changed notes (and the query) in one call. Returns (cache, query vector)."""
     embed_cache = graph.paths.embed_cache
     cache = {"model": EMBED_MODEL, "notes": {}}
-    if embed_cache.exists():
-        loaded = json.loads(embed_cache.read_text(encoding="utf-8") or "{}")
-        if loaded.get("model") == EMBED_MODEL:
-            cache = loaded
+    problem = state_json_problem(embed_cache)
+    loaded = {}
+    if not problem:
+        loaded = load_state_json(embed_cache)
+        if loaded.get("model") == EMBED_MODEL and not isinstance(loaded.get("notes"), dict):
+            problem = "has no usable \"notes\" table"
+    if problem:
+        quarantine_embeddings(embed_cache, problem)
+    elif loaded.get("model") == EMBED_MODEL:
+        cache = loaded
     notes = cache["notes"]
     stale, texts = [], []
     for nid, note in graph.notes.items():
@@ -781,7 +887,7 @@ def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, li
         del notes[nid]
     if stale or removed:
         embed_cache.parent.mkdir(exist_ok=True)
-        embed_cache.write_text(json.dumps(cache), encoding="utf-8", newline="\n")
+        atomic_write_text(embed_cache, json.dumps(cache))
     return cache, (vectors[-1] if query else None)
 
 
@@ -941,9 +1047,8 @@ def project_roots(paths: Paths) -> list[Path]:
     not hide this computer's projects. A source whose roots are all missing
     falls through to the next one."""
     for source in (paths.data / ".graph" / "machine.json", paths.config_file):
-        try:
-            raw = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        raw = load_state_json(source)
+        if not raw:
             continue
         roots = raw.get("project_roots") if isinstance(raw, dict) else None
         existing = [p for p in (_as_root(r) for r in _as_list(roots)) if p is not None]
@@ -1329,9 +1434,7 @@ def trim_usage_log(paths: Paths, now: datetime | None = None) -> int:
                 dropped += 1
             else:
                 kept.append(line)
-        tmp = usage_log.with_name(usage_log.name + ".tmp")
-        tmp.write_text("".join(kept), encoding="utf-8", newline="\n")
-        os.replace(tmp, usage_log)
+        atomic_write_text(usage_log, "".join(kept))
         return dropped
     except (OSError, ValueError):
         return 0
@@ -1640,8 +1743,7 @@ def apply_decay(graph: "Graph", rate: float) -> tuple[int, int]:
 def write_decay_stamp(paths: "Paths", now: datetime | None = None) -> None:
     stamp = paths.decay_stamp
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text((now or datetime.now()).isoformat(timespec="seconds") + "\n",
-                    encoding="utf-8", newline="\n")
+    atomic_write_text(stamp, (now or datetime.now()).isoformat(timespec="seconds") + "\n")
 
 
 def read_decay_stamp(paths: "Paths") -> datetime | None:

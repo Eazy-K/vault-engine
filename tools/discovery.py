@@ -167,8 +167,8 @@ def _machine_json_path(paths: g.Paths) -> Path:
 
 def _load_machine_json(paths: g.Paths) -> dict:
     try:
-        data = json.loads(_machine_json_path(paths).read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+        data = g.load_state_json(_machine_json_path(paths))
+    except OSError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -182,8 +182,7 @@ def _write_machine_json(paths: g.Paths, updates: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = _load_machine_json(paths)
     data.update(updates)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                     encoding="utf-8", newline="\n")
+    g.atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def skip_list(paths: g.Paths) -> list[str]:
@@ -234,8 +233,8 @@ def load_cached(paths: g.Paths, refresh: bool = False) -> list[dict]:
                 pass
     results = discover(paths)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps({"roots": signature, "projects": results}, indent=2,
-                                     ensure_ascii=False), encoding="utf-8", newline="\n")
+    g.atomic_write_text(cache_file, json.dumps({"roots": signature, "projects": results},
+                                               indent=2, ensure_ascii=False))
     return results
 
 

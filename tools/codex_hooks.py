@@ -381,8 +381,8 @@ def _machine_file(data: Path | None = None) -> Path | None:
 
 def _load_machine(path: Path) -> dict:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+        loaded = g.load_state_json(path)
+    except OSError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
@@ -411,8 +411,7 @@ def record_tested_version(version: str, data: Path | None = None,
     else:
         machine.pop(RESULT_KEY, None)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(machine, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8", newline="\n")
+    g.atomic_write_text(path, json.dumps(machine, indent=2, ensure_ascii=False) + "\n")
     return True
 
 
