@@ -101,15 +101,150 @@ class TestPercentile(unittest.TestCase):
 
 
 class TestCost(unittest.TestCase):
+    M = 1_000_000
+
     def test_estimate_matches_price_table(self):
         cost = token_stats.estimate_cost_usd(
             input_tokens=1_000_000, cache_creation=0, cache_read=0,
             output_tokens=0, model="claude-sonnet-5")
         self.assertAlmostEqual(cost, 2.0)
 
-    def test_unknown_model_costs_zero(self):
-        cost = token_stats.estimate_cost_usd(1_000_000, 0, 0, 0, "mystery-model")
-        self.assertEqual(cost, 0.0)
+    def test_unknown_model_is_not_priced(self):
+        self.assertIsNone(token_stats.estimate_cost_usd(self.M, 0, 0, 0, "mystery-model"))
+        self.assertIsNone(token_stats.estimate_cost_usd(self.M, 0, 0, 0, None))
+        # A future minor version must not fall back to its family neighbour.
+        self.assertIsNone(token_stats.estimate_cost_usd(self.M, 0, 0, 0, "claude-opus-5-9"))
+
+    def test_each_model_family_input_output(self):
+        cases = {
+            "claude-opus-5-5": (4.0, 20.0),
+            "claude-opus-5": (5.0, 25.0),
+            "claude-opus-4-8": (5.0, 25.0),
+            "claude-opus-4-5-20251101": (5.0, 25.0),
+            "claude-opus-4-1-20250805": (15.0, 75.0),
+            "claude-opus-4-20250514": (15.0, 75.0),
+            "claude-sonnet-5-5": (2.0, 10.0),
+            "claude-sonnet-5": (2.0, 10.0),
+            "claude-sonnet-4-6": (3.0, 15.0),
+            "claude-sonnet-4-5-20250929": (3.0, 15.0),
+            "claude-sonnet-4-20250514": (3.0, 15.0),
+            "claude-haiku-5-5": (0.10, 0.50),
+            "claude-haiku-4-5-20251001": (1.0, 5.0),
+            "claude-3-5-haiku-20241022": (0.80, 4.0),
+            "claude-fable-5-1": (10.0, 50.0),
+            "claude-fable-5": (10.0, 50.0),
+            "claude-mythos-5-1": (10.0, 50.0),
+            "claude-opus-5-5[1m]": (4.0, 20.0),
+        }
+        for model, (inp, out) in cases.items():
+            with self.subTest(model=model):
+                # 50K tokens keeps Haiku 5.5 in its base (<=100K) tier.
+                n = 50_000
+                self.assertAlmostEqual(
+                    token_stats.estimate_cost_usd(n, 0, 0, 0, model), inp * n / self.M)
+                self.assertAlmostEqual(
+                    token_stats.estimate_cost_usd(0, 0, 0, n, model), out * n / self.M)
+
+    def test_cache_read_multipliers(self):
+        cases = {
+            "claude-opus-5-5": 4.0 * 0.05,
+            "claude-sonnet-5-5": 2.0 * 0.05,
+            "claude-fable-5-1": 10.0 * 0.025,
+            "claude-mythos-5-1": 10.0 * 0.025,
+            "claude-fable-5": 10.0 * 0.1,
+            "claude-opus-5": 5.0 * 0.1,
+            "claude-sonnet-5": 2.0 * 0.1,
+            "claude-sonnet-4-6": 3.0 * 0.1,
+            "claude-haiku-4-5": 1.0 * 0.1,
+        }
+        for model, expected in cases.items():
+            with self.subTest(model=model):
+                self.assertAlmostEqual(
+                    token_stats.estimate_cost_usd(0, 0, self.M, 0, model), expected)
+
+    def test_cache_write_5m_and_1h_split(self):
+        # claude-opus-5: input $5 -> 5m $6.25, 1h $10 per MTok.
+        only_5m = token_stats.estimate_cost_usd(0, self.M, 0, 0, "claude-opus-5")
+        only_1h = token_stats.estimate_cost_usd(
+            0, self.M, 0, 0, "claude-opus-5", cache_write_1h=self.M)
+        mixed = token_stats.estimate_cost_usd(
+            0, 2 * self.M, 0, 0, "claude-opus-5", cache_write_1h=self.M)
+        self.assertAlmostEqual(only_5m, 6.25)
+        self.assertAlmostEqual(only_1h, 10.0)
+        self.assertAlmostEqual(mixed, 16.25)
+
+    def test_haiku_5_5_tier_boundary(self):
+        # Prompt = input + cache read + cache write; over 100,000 -> $0.50/$2.50.
+        at_limit = token_stats.estimate_cost_usd(
+            40_000, 30_000, 30_000, self.M, "claude-haiku-5-5")
+        over = token_stats.estimate_cost_usd(
+            40_000, 30_000, 30_001, self.M, "claude-haiku-5-5")
+        self.assertAlmostEqual(at_limit, (40_000 * 0.10 + 30_000 * 0.10 * 1.25
+                                          + 30_000 * 0.10 * 0.1 + self.M * 0.50) / self.M)
+        self.assertAlmostEqual(over, (40_000 * 0.50 + 30_000 * 0.50 * 1.25
+                                      + 30_001 * 0.50 * 0.1 + self.M * 2.50) / self.M)
+        # Only Haiku 5.5 has the tier.
+        self.assertAlmostEqual(
+            token_stats.estimate_cost_usd(200_000, 0, 0, 0, "claude-haiku-4-5"), 0.2)
+
+
+class TestCacheWriteBreakdown(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _load(self, usage, model="claude-opus-5"):
+        path = self.tmp / "s.jsonl"
+        path.write_text(json.dumps({
+            "type": "assistant", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {"id": "m1", "model": model, "usage": usage}}), encoding="utf-8")
+        return token_stats.load_calls(path)[0]
+
+    def test_breakdown_is_read(self):
+        c = self._load({"cache_creation_input_tokens": 300,
+                        "cache_creation": {"ephemeral_5m_input_tokens": 100,
+                                           "ephemeral_1h_input_tokens": 200}})
+        self.assertEqual((c.cache_creation, c.cache_write_5m, c.cache_write_1h,
+                          c.cache_write_unknown), (300, 100, 200, 0))
+
+    def test_missing_breakdown_falls_back_to_5m_and_flags(self):
+        c = self._load({"cache_creation_input_tokens": 300})
+        self.assertEqual((c.cache_write_5m, c.cache_write_1h, c.cache_write_unknown),
+                         (300, 0, 300))
+
+    def test_report_shows_split_flag_and_warnings(self):
+        projects = self.tmp / "p"
+        slug = projects / "slug"
+        slug.mkdir(parents=True)
+
+        def line(msg_id, model, usage, sec):
+            return json.dumps({"type": "assistant",
+                               "timestamp": f"2026-01-01T00:00:0{sec}.000Z",
+                               "message": {"id": msg_id, "model": model, "usage": usage}})
+
+        (slug / "a.jsonl").write_text("\n".join([
+            line("m1", "claude-opus-5", {
+                "cache_creation_input_tokens": 300,
+                "cache_creation": {"ephemeral_5m_input_tokens": 100,
+                                   "ephemeral_1h_input_tokens": 200}}, 0),
+            line("m2", "claude-sonnet-5", {"cache_creation_input_tokens": 50}, 1),
+            line("m3", "mystery-1", {"input_tokens": 10}, 2),
+        ]), encoding="utf-8")
+        report = token_stats.build_report(token_stats.collect_sessions(projects))
+        rows = {r["model"]: r for r in report["by_model"]}
+        self.assertEqual((rows["claude-opus-5"]["cache_write_5m"],
+                          rows["claude-opus-5"]["cache_write_1h"]), (100, 200))
+        self.assertEqual(rows["claude-sonnet-5"]["cache_write_unknown"], 50)
+        self.assertIsNone(rows["mystery-1"]["est_usd"])
+        self.assertIsNone(rows["mystery-1"]["cost_pct"])
+        self.assertEqual(report["cost_estimate_status"], "partial")
+        self.assertEqual(report["est_total_usd"], round(
+            (100 * 6.25 + 200 * 10.0) / 1e6 + 50 * 2.5 / 1e6, 2))
+        text = token_stats.format_report_text(report, projects, None)
+        self.assertIn("WARNING: model 'mystery-1' has no known price", text)
+        self.assertIn("no 5m/1h breakdown", text)
+        self.assertIn("fast mode", text)
+        self.assertIn("50~", text)
 
 
 class TestDiscoverAndReport(unittest.TestCase):

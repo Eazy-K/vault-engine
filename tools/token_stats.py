@@ -116,7 +116,7 @@ def _price_key(model: str | None) -> str | None:
     name = re.sub(r"\[.*\]$", "", name)  # e.g. "[1m]" context suffix
     best = None
     for key in MODEL_PRICES:
-        if re.search(r"(?<![a-z0-9])" + re.escape(key) + r"(?:-\d{8}.*)?$", name):
+        if re.search(r"(?<![a-z0-9])" + re.escape(key) + r"(?:-\d{8}(?!\d).*)?$", name):
             if best is None or len(key) > len(best):
                 best = key
     return best
