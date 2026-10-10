@@ -1177,6 +1177,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(*claude_hooks.status(settings))
             check(*claude_hooks.context_warn_status(settings))
             check(*claude_hooks.delegation_warn_status(settings))
+            check(*claude_hooks.reinforce_check_status(settings))
         if models is not None and data is not None:
             result = models.status(data, settings, claude_dir / "agents")
             if result is not None:

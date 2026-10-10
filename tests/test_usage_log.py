@@ -22,7 +22,7 @@ _spec.loader.exec_module(graph)
 
 HOOK_TEST_MODULES = ["test_agent_guard", "test_codex_agent_guard", "test_codex_context_warn",
                      "test_codex_delegation_warn", "test_context_warn", "test_delegation_warn",
-                     "test_statusline"]
+                     "test_reinforce_check", "test_statusline"]
 
 
 class TestTrim(unittest.TestCase):
