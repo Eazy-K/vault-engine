@@ -189,6 +189,46 @@ class TestShowBody(_Ctx):
         self.assertIn("Full text here.", out.getvalue())
         self.assertIn("## Sec", out.getvalue())
 
+    def _show_events(self):
+        return [e for e in graph.read_usage(self.paths) if e.get("event") == "show"]
+
+    def _show(self, nid, env):
+        with mock.patch.object(graph, "default_paths", return_value=self.paths),              mock.patch.dict(os.environ, env), redirect_stdout(StringIO()):
+            graph.cmd_show(Namespace(note=nid, body=True))
+
+    def test_show_body_logs_task_and_from_omitted(self):
+        self.note("a", "x")
+        self.note("b", "y")
+        env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "s1"}
+        for k in ("CODEX_THREAD_ID", "CODEX_SESSION_ID"):
+            os.environ.pop(k, None)
+        with mock.patch.dict(os.environ, env):
+            graph.log_usage(self.paths, {"event": "context", "task": "t1",
+                                         "notes": ["a"], "core": [], "omitted": ["b"]})
+        self._show("b", env)
+        self._show("a", env)
+        ev = self._show_events()
+        self.assertEqual([(e["note"], e["task"], e["from_omitted"]) for e in ev],
+                         [("b", "t1", True), ("a", "t1", False)])
+
+    def test_show_body_without_session_has_empty_task(self):
+        self.note("a", "x")
+        env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": ""}
+        self._show("a", env)
+        ev = self._show_events()
+        self.assertEqual((ev[0]["task"], ev[0]["from_omitted"]), ("", False))
+
+    def test_context_logs_core_ids_separately(self):
+        self.note("c", "core body")
+        self.note("a", "x")
+        path = self.data / "c.md"
+        path.write_text("---\ncore: true\n---\n# c\n\ncore body\n", encoding="utf-8")
+        with mock.patch.object(graph, "default_paths", return_value=self.paths):
+            self.run_context(seed=["a"], core=True, no_log=False)
+        ev = [e for e in graph.read_usage(self.paths) if e.get("event") == "context"]
+        self.assertEqual(ev[-1]["core"], ["c"])
+        self.assertNotIn("c", ev[-1]["notes"])
+
 
 if __name__ == "__main__":
     unittest.main()

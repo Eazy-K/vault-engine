@@ -1518,7 +1518,7 @@ def cmd_query(args, content: bool) -> None:
     # relevant small note never displaces a more relevant large one. If not even
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
-    used, omitted, loaded, truncated = 0, [], [], []
+    used, omitted, loaded, truncated, core_loaded = 0, [], [], [], []
     for r in results:
         note = graph.notes[r["id"]]
         if omitted:
@@ -1537,7 +1537,9 @@ def cmd_query(args, content: bool) -> None:
                 body = truncate_body(body, room)
                 truncated.append(note.id)
             used += len(header) + len(body)
-        if not r["core"]:
+        if r["core"]:
+            core_loaded.append(note.id)
+        else:
             loaded.append(note.id)
         print(header + body + "\n")
     if omitted:
@@ -1547,7 +1549,7 @@ def cmd_query(args, content: bool) -> None:
     if not args.no_log:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
-                          "notes": loaded, "omitted": omitted,
+                          "notes": loaded, "core": core_loaded, "omitted": omitted,
                           "retrieval": RETRIEVAL["mode"]})
         update = sys.modules.get("update")
         if update is not None:
@@ -1801,6 +1803,24 @@ def cmd_tasks(args) -> None:
         print(f"{status:<12} {nid}  {title}")
 
 
+def log_show(paths: Paths, nid: str) -> None:
+    """Log a `show --body` load (plain `show` only inspects edges and is not logged).
+
+    The task is the id of the latest `context` event with the same agent and a
+    non-empty session id; without a session id it stays empty rather than guessed.
+    `from_omitted` is whether the note was in that context's `omitted` list."""
+    agent, session = detect_agent()
+    task, from_omitted = "", False
+    if session:
+        for e in reversed(read_usage(paths)):
+            if e.get("event") == "context" and e.get("agent") == agent                     and e.get("session") == session:
+                task = e.get("task") or ""
+                from_omitted = nid in (e.get("omitted") or [])
+                break
+    log_usage(paths, {"event": "show", "note": nid, "task": task,
+                      "from_omitted": from_omitted})
+
+
 def cmd_show(args) -> None:
     graph = Graph()
     nid, error = graph.resolve(args.note)
@@ -1809,6 +1829,7 @@ def cmd_show(args) -> None:
     note = graph.notes[nid]
     if args.body:
         print(note.body.rstrip())
+        log_show(default_paths(), nid)
         return
     print(f"{nid}  ({note.title}){'  [core]' if note.core else ''}")
     for other, w in sorted(graph.adjacency[nid].items(), key=lambda kv: -kv[1]):
