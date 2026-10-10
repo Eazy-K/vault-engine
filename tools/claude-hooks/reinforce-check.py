@@ -14,6 +14,10 @@ Once-per-id state: a small per-session file under the system temp dir
 (`vault-engine-reinforce/<session_id>.json`, the same place delegation-warn keeps
 its state) lists the ids already blocked on.
 
+Non-blocking reminder: when every task id is reinforced but a `reinforce` call had no
+`--outcome`, it prints a `systemMessage` once per id and session (logged as
+`allowed-reinforced-no-outcome`); it never blocks for that.
+
 Skipped: when `stop_hook_active` is true (a previous block of this hook is being
 handled; blocking again would loop) and when the payload carries an `agent_id`
 (fired inside a subagent). SubagentStop is not hooked.
@@ -117,10 +121,12 @@ def read_entries(path: str) -> list:
     return entries
 
 
-def analyse(entries: list) -> tuple[list, set, bool]:
-    """(context task ids in order, ids already reinforced, finish signal this turn)."""
+def analyse(entries: list) -> tuple[list, set, bool, set]:
+    """(context task ids in order, ids already reinforced, finish signal this turn,
+    reinforced ids that were given an --outcome)."""
     tasks: list = []
     reinforced: set = set()
+    with_outcome: set = set()
     finish = False
     for entry in entries:
         kind = entry.get("type")
@@ -140,10 +146,13 @@ def analyse(entries: list) -> tuple[list, set, bool]:
                     continue
                 cmd = str((b.get("input") or {}).get("command", ""))
                 if "graph.py" in cmd and "reinforce" in cmd:
-                    reinforced.update(re.findall(r"--task[ =]([0-9a-f]{6})\b", cmd))
+                    ids = re.findall(r"--task[ =]([0-9a-f]{6})\b", cmd)
+                    reinforced.update(ids)
+                    if re.search(r"--outcome\b", cmd):
+                        with_outcome.update(ids)
                 if FINISH.search(cmd):
                     finish = True
-    return tasks, reinforced, finish
+    return tasks, reinforced, finish, with_outcome
 
 
 def decide(payload: dict) -> tuple[str, str | None]:
@@ -156,11 +165,18 @@ def decide(payload: dict) -> tuple[str, str | None]:
     session_id = str(payload.get("session_id") or "")
     if not path or not session_id:
         return "allowed-no-input", None
-    tasks, reinforced, finish = analyse(read_entries(str(path)))
+    tasks, reinforced, finish, with_outcome = analyse(read_entries(str(path)))
     if not tasks:
         return "allowed-no-context", None
     missing = [t for t in tasks if t not in reinforced]
     if not missing:
+        # Non-blocking: remind once per id and session that --outcome was left out.
+        sp = state_path(session_id)
+        marks = load_blocked(sp)
+        bare = [t for t in tasks if t not in with_outcome and "outcome:" + t not in marks]
+        if bare:
+            save_blocked(sp, marks + ["outcome:" + bare[0]])
+            return "allowed-reinforced-no-outcome", bare[0]
         return "allowed-reinforced", None
     if not finish:
         return "allowed-no-finish-signal", None
@@ -195,6 +211,12 @@ def main() -> None:
             "of your final report."
         )
         print(json.dumps({"decision": "block", "reason": reason}))
+    elif outcome == "allowed-reinforced-no-outcome":
+        # Stop hooks have no non-blocking channel to the agent; this is shown to the user.
+        print(json.dumps({"systemMessage": (
+            f"Task {task} was reinforced without an outcome. Next time add "
+            "`--outcome ok|partial|fail` (and `--rework` if the work needed a redo) "
+            "to `reinforce`.")}))
 
 
 if __name__ == "__main__":

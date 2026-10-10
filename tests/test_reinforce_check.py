@@ -39,6 +39,7 @@ def result(text, tid="t1"):
 CONTEXT_CALL = bash('python tools/graph.py context "x"', "c1")
 CONTEXT_OUT = result("notes...\n<!-- when done: python \"/g/graph.py\" reinforce --task abc123 -->", "c1")
 REINFORCE = bash('python "/g/graph.py" reinforce --task abc123 note-a', "r1")
+REINFORCE_OK = bash('python "/g/graph.py" reinforce --task abc123 note-a --outcome ok', "r2")
 COMMIT = bash('git commit -m "x"', "g1")
 
 
@@ -75,8 +76,17 @@ class TestReinforceCheck(unittest.TestCase):
         self.assertEqual(self._log()[-1]["outcome"], "allowed-no-context")
 
     def test_reinforce_done_allows(self):
-        out = self._run([user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE, COMMIT])
+        out = self._run([user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE_OK, COMMIT])
         self.assertEqual(out, "")
+        self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced")
+
+    def test_reinforce_without_outcome_reminds_once_without_blocking(self):
+        entries = [user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE, COMMIT]
+        out = json.loads(self._run(entries))
+        self.assertNotIn("decision", out)
+        self.assertIn("--outcome ok|partial|fail", out["systemMessage"])
+        self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced-no-outcome")
+        self.assertEqual(self._run(entries), "")
         self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced")
 
     def test_no_finish_signal_allows(self):

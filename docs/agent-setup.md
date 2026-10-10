@@ -517,7 +517,9 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   that has no `reinforce --task <id>` yet, blocks the stop once per id and asks the
   agent to run `reinforce` (naming the notes that helped) and mention it in its final
   report. It never blocks twice for the same id, skips subagents, fails open, and logs
-  one `reinforce_check` line per decision to `.graph/usage.log`.
+  one `reinforce_check` line per decision to `.graph/usage.log`. When the task was
+  reinforced but without `--outcome ok|partial|fail`, it only prints a one-time
+  non-blocking reminder (a `systemMessage`) per id; it never blocks for that.
 - a `statusLine` command (`statusline.py`) that shows the model and effort, the current
   folder with its git branch, context usage, and session cost, e.g. `Opus 5.5·med │
   vault-engine (main) │ ctx 44K/200K 22% │ $1.42` (segments with missing data are

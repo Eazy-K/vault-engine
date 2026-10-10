@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -238,8 +239,8 @@ class TestReinforceNone(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.paths = graph.Paths(graph.ENGINE, self.tmp)
 
-    def _reinforce(self, notes: list[str]) -> str:
-        args = Namespace(notes=notes, task="abc123", rate=graph.LEARNING_RATE)
+    def _reinforce(self, notes: list[str], **extra) -> str:
+        args = Namespace(notes=notes, task="abc123", rate=graph.LEARNING_RATE, **extra)
         with mock.patch.object(graph, "default_paths", return_value=self.paths), \
              mock.patch.dict(sys.modules, {"update": None, "feedback": None}), \
              redirect_stdout(StringIO()) as out:  # no update check, no feedback send
@@ -248,6 +249,28 @@ class TestReinforceNone(unittest.TestCase):
 
     def test_word_none_means_no_notes(self):
         self.assertIn("recorded 0 used note(s)", self._reinforce(["none"]))
+
+    def _last_event(self) -> dict:
+        lines = (self.tmp / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()
+        return json.loads(lines[-1])
+
+    def test_outcome_and_rework_are_logged_when_given(self):
+        self._reinforce(["none"], outcome="partial", rework=True)
+        event = self._last_event()
+        self.assertEqual((event["outcome"], event["rework"]), ("partial", True))
+
+    def test_outcome_and_rework_are_absent_when_not_given(self):
+        self._reinforce(["none"], outcome=None, rework=False)
+        event = self._last_event()
+        self.assertNotIn("outcome", event)
+        self.assertNotIn("rework", event)
+
+    def test_invalid_outcome_is_rejected_by_the_parser(self):
+        result = subprocess.run([sys.executable, str(GRAPH_PATH), "reinforce", "--task",
+                                 "abc123", "--outcome", "great"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid choice", result.stderr)
 
     def test_a_note_named_none_still_counts(self):
         for name in ("none", "beta"):
