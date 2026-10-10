@@ -2104,11 +2104,15 @@ def live_checks(paths: Paths | None = None) -> list[tuple[str, str]]:
           f"runs, probe events excluded ({got} contexts)",
           out if not ok else f"reported {got} contexts, expected {expected} without the probe")
 
-    # 5. SubagentStop hook: the last record needs a non-empty agent_type
-    stops = [e for e in read_usage(paths) if e.get("event") == "subagent_stop"]
+    # 5. SubagentStop hook: the last non-internal record needs a non-empty agent_type.
+    # Internal Claude Code agents (no meta file) are logged with "internal": true and
+    # skipped. Old records without the flag are not guessed at (their meta file path is
+    # not in the log), so one fresh subagent run is needed after upgrading.
+    stops = [e for e in read_usage(paths) if e.get("event") == "subagent_stop"
+             and not e.get("internal")]
     if not stops:
-        checks.append(("WARN", "subagent_stop agent_type: no subagent_stop record in usage.log "
-                               "yet; run any subagent once, then rerun doctor --live"))
+        checks.append(("WARN", "subagent_stop agent_type: no non-internal subagent_stop record "
+                               "in usage.log yet; run any subagent once, then rerun doctor --live"))
     else:
         agent_type = stops[-1].get("agent_type")
         check(isinstance(agent_type, str) and bool(agent_type), "subagent_stop agent_type",

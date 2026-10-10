@@ -9,7 +9,8 @@ Fields come from the documented SubagentStop payload
 `stop_hook_active`, `last_assistant_message`, `agent_transcript_path`. Logged:
 agent_type, agent_id, stop_hook_active and the *length* of last_assistant_message
 (not its text). The payload documents no status/outcome/duration/token field, so
-none is logged. When the payload lacks agent_type, `agentType` is read from the
+none is logged. A stop with no agent_type and no meta file is a Claude Code internal
+agent; it is logged with `"internal": true`. When the payload lacks agent_type, `agentType` is read from the
 subagent meta file (`agent-<id>.meta.json` next to the transcript); no transcript
 content is ever read.
 
@@ -23,8 +24,13 @@ import sys
 from datetime import datetime
 
 
-def meta_agent_type(payload: dict) -> str:
-    """agentType from the subagent's `.meta.json`, or "" (reads only that one key)."""
+def meta_agent_type(payload: dict) -> tuple[str, bool]:
+    """(agentType, internal) from the subagent's `.meta.json` (reads only that one key).
+
+    `internal` is True only when a meta path could be derived and no meta file exists
+    there: Claude Code internal agents have no transcript/meta file. A meta file that
+    exists but lacks agentType, or no derivable path, is not internal."""
+    found, checked = False, False
     try:
         agent_id = str(payload.get("agent_id") or "")
         paths = []
@@ -36,14 +42,16 @@ def meta_agent_type(payload: dict) -> str:
             base = os.path.splitext(str(tp))[0]
             paths.append(os.path.join(base, "subagents", "agent-" + agent_id + ".meta.json"))
         for path in paths:
+            checked = True
             if os.path.isfile(path):
+                found = True
                 with open(path, encoding="utf-8") as f:
                     value = json.load(f).get("agentType")
                 if isinstance(value, str) and value:
-                    return value
+                    return value, False
     except Exception:
-        pass
-    return ""
+        return "", False
+    return "", checked and not found
 
 
 def log_event(payload: dict) -> None:
@@ -64,9 +72,11 @@ def log_event(payload: dict) -> None:
             if payload.get(key):
                 event[key] = str(payload[key])
         if "agent_type" not in event:
-            fallback = meta_agent_type(payload)
+            fallback, internal = meta_agent_type(payload)
             if fallback:
                 event["agent_type"] = fallback
+            elif internal:
+                event["internal"] = True
         if "stop_hook_active" in payload:
             event["stop_hook_active"] = bool(payload["stop_hook_active"])
         last = payload.get("last_assistant_message")
