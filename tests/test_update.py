@@ -148,18 +148,37 @@ def _clone(bare: Path, dest: Path) -> None:
     _run(["git", "config", "user.name", "Test Runner"], dest)
 
 
+_TEMPLATE: dict = {}
+
+
+def setUpModule():
+    """Build the origin + engine clone once; each test gets a cheap file copy
+    (about 25 git subprocesses per test is very slow on Windows)."""
+    root = Path(tempfile.mkdtemp())
+    origin = _build_origin(root)
+    engine = root / "engine"
+    _clone(origin["bare"], engine)
+    _run(["git", "checkout", "-q", "v0.1.0"], engine)
+    _TEMPLATE.update(root=root, branch=origin["branch"], untagged_sha=origin["untagged_sha"])
+
+
+def tearDownModule():
+    shutil.rmtree(_TEMPLATE.pop("root"), ignore_errors=True)
+    _TEMPLATE.clear()
+
+
 class UpdateTestCase(unittest.TestCase):
     """A fresh origin + a stable-channel engine clone checked out at v0.1.0,
-    plus a data dir, per test."""
+    plus a data dir, per test (copied from the module-level template)."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        self.origin = _build_origin(self.tmp)
+        shutil.copytree(_TEMPLATE["root"], self.tmp, dirs_exist_ok=True)
+        self.origin = {"bare": self.tmp / "origin.git", "untagged_sha": _TEMPLATE["untagged_sha"],
+                       "branch": _TEMPLATE["branch"]}
         self.engine = self.tmp / "engine"
-        self.engine.parent.mkdir(parents=True, exist_ok=True)
-        _clone(self.origin["bare"], self.engine)
-        _run(["git", "checkout", "-q", "v0.1.0"], self.engine)
+        _run(["git", "remote", "set-url", "origin", str(self.origin["bare"])], self.engine)
 
         self.data = self.tmp / "data"
         self.data.mkdir()
