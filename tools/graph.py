@@ -1021,6 +1021,21 @@ def retrieve(graph: Graph, text: str, seeds: list[str], threshold: float, depth:
     return sorted(results.values(), key=lambda r: (not r["core"], -r["activation"], r["id"]))
 
 
+def learned_share(graph: Graph, nid: str, via: str | None) -> float:
+    """Share of the edge that activated `nid` (the via -> nid edge) that is learned.
+    Spreading uses weight = clamp(base + learned) per edge, so the exact split of
+    an activation is only known for that single edge: this is positive learned
+    weight / (base + positive learned weight), 0.0 for seeds and core notes (no
+    edge) and for edges without learned weight. A proxy for multi-hop paths: only
+    the last hop is looked at."""
+    if not via:
+        return 0.0
+    key = pair(via, nid)
+    learned = max(graph.learned.get(key, 0.0), 0.0)
+    total = max(graph.base.get(key, 0.0), 0.0) + learned
+    return round(learned / total, 2) if total > 0 else 0.0
+
+
 def is_project_entry(nid: str) -> bool:
     """projects/<name>/<name>-status and -overview: the notes every project task
     starts from, so `context` loads them like core notes, outside the budget."""
@@ -1519,6 +1534,10 @@ def cmd_query(args, content: bool) -> None:
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
     used, omitted, loaded, truncated, core_loaded = 0, [], [], [], []
+    # Compact per-note data for the usage log: {id: [rank, activation, via, learned_share]}
+    scores = {r["id"]: [rank, round(r["activation"], 3), r["via"],
+                        learned_share(graph, r["id"], r["via"])]
+              for rank, r in enumerate(results, 1)}
     for r in results:
         note = graph.notes[r["id"]]
         if omitted:
@@ -1550,7 +1569,10 @@ def cmd_query(args, content: bool) -> None:
         task = secrets.token_hex(3)
         log_usage(paths, {"event": "context", "task": task, "query": args.text,
                           "notes": loaded, "core": core_loaded, "omitted": omitted,
-                          "retrieval": RETRIEVAL["mode"]})
+                          "retrieval": RETRIEVAL["mode"],
+                          "fallback_reason": (RETRIEVAL["reason"]
+                                              if RETRIEVAL["mode"] != "semantic" else ""),
+                          "scores": scores})
         update = sys.modules.get("update")
         if update is not None:
             hint = update.context_hint(paths)
@@ -1637,6 +1659,10 @@ def cmd_reinforce(args) -> None:
         sys.exit("reinforce needs notes, or --task to record that none were useful")
     # Fewer than two notes strengthens nothing but still closes the task in the
     # usage log: "only one note / no note helped" is a useful signal too.
+    if args.task and not any(e.get("event") == "context" and e.get("task") == args.task
+                             for e in read_usage(paths)):
+        print(f"WARN: task {args.task} not found in any context event of usage.log",
+              file=sys.stderr)
     log_usage(paths, {"event": "reinforce", "task": args.task, "notes": ids})
     # A task just ended: the opt-in feedback module may send (throttled, never raises).
     feedback = sys.modules.get("feedback")
