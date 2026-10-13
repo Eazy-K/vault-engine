@@ -95,9 +95,9 @@ def warning_message(tokens: int, threshold: int) -> str:
 
 
 REMINDER_MESSAGE = (
-    "Reminder: decide per task whether to work inline or delegate to "
-    "worker-low/worker-medium (never required); if the task has not started, "
-    "run `context` first."
+    "Reminder: delegate meaningful, independent or context-intensive work to "
+    "worker-low/worker-medium by default; small or tightly coupled tasks may stay "
+    "inline. If the task has not started, run `context` first."
 )
 
 

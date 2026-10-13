@@ -20,8 +20,8 @@ THRESHOLD = 150_000
 MAX_THRESHOLD_OVERRIDE = 1_000_000
 GROWTH_STEP = 10_000
 ORCHESTRATION_REMINDER = (
-    "Orchestration: decide per task whether to work inline or delegate (worker-low/"
-    "worker-medium; never required); within an authorized scope reversible steps "
+    "Orchestration: delegate meaningful, independent or context-intensive work to "
+    "workers (worker-low/worker-medium) by default, small tasks may stay inline; within an authorized scope reversible steps "
     "proceed; ask before destructive, irreversible or out-of-scope actions."
 )
 
