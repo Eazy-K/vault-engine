@@ -491,7 +491,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   uses). Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
   uninstalling it.
 - a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
-  short one-line reminder to delegate multi-step work to a worker subagent (and to
+  short one-line reminder to decide per task whether to work inline or delegate to a worker (never required) (and to
   run `context` first if the task hasn't started), and additionally warns the model
   when the session's estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`,
   default 150000 tokens; re-warns after every further ~25K tokens of growth). The

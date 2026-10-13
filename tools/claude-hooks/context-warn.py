@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook for Claude Code: warns the MODEL (and the user) when
 the session's context usage crosses a threshold, and reminds it on every user
-message to delegate multi-step work to a worker subagent.
+message to decide per task between inline work and a worker subagent.
 
 Claude Code hooks are never handed the context window size directly, so this
 estimates it from the *last assistant message* in the transcript's `usage`
@@ -95,8 +95,9 @@ def warning_message(tokens: int, threshold: int) -> str:
 
 
 REMINDER_MESSAGE = (
-    "Reminder: delegate multi-step work to worker-low/worker-medium; if the "
-    "task has not started, run `context` first."
+    "Reminder: decide per task whether to work inline or delegate to "
+    "worker-low/worker-medium (never required); if the task has not started, "
+    "run `context` first."
 )
 
 

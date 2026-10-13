@@ -60,7 +60,7 @@ class TestDelegationWarn(unittest.TestCase):
         self.assertEqual(fourth.returncode, 0)
         payload = json.loads(fourth.stdout)
         msg = payload["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("delegate", msg)
+        self.assertIn("worker-low", msg)
         self.assertIn("worker", msg)
 
         # further calls in the same prompt stay silent (warn once per prompt)

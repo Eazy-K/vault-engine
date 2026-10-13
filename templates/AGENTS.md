@@ -2,7 +2,7 @@
 
 A model-independent second brain: information loads through a weighted graph, not by reading files one by one. Run commands from your project folder, not the vault — `context` detects the project from your cwd. Engine: `$VAULT_ENGINE`; vault data: `$VAULT_DATA` (`$env:VAULT_ENGINE`/`$env:VAULT_DATA` in PowerShell). Commands below use POSIX-shell syntax; Windows variable spelling, the `$VAULT_ENGINE`-empty fallback, onboarding steps and the no-Python fallback are in `$VAULT_ENGINE/defaults/standards/agents-details.md`.
 
-**Orchestration:** For multi-step work, present a short plan and wait for explicit user approval. If the scope is ambiguous, ask one clarifying question. After approval, delegate to a worker subagent and stay within the approved scope. Follow `$VAULT_ENGINE/defaults/standards/orchestration.md`.
+**Orchestration:** Within a scope the user has explicitly authorized, reversible steps proceed without asking again; ask before destructive, irreversible or out-of-scope actions, and ask one clarifying question if the scope is ambiguous. Decide per task whether to work inline or delegate to a worker subagent; delegation is never required. Follow `$VAULT_ENGINE/defaults/standards/orchestration.md`.
 
 0. **First time only:** if a `profile/` note still has `<!-- vault:skeleton -->`, run onboarding first — procedure in the details note above.
 1. **Starting a task:** if the vault has a remote (`git remote` prints something), run `git pull --rebase --autostash` in it, then `python "$VAULT_ENGINE/tools/graph.py" context "<task summary; keywords in the languages you use>"` and follow the notes it returns. If it reports projects without vault notes, run `projects --ask` and ask the user which to add; never create placeholder notes yourself.
@@ -12,4 +12,4 @@ A model-independent second brain: information loads through a weighted graph, no
 5. **Before you finish:** if the vault has a remote, run `git pull --rebase --autostash && git push` in it, even with no note — it sends the commits `reinforce` and other engine commands made. No remote: the commits are enough.
 6. **`context` reports a new vault-engine version, or out-of-date Claude Code/Codex hooks, model settings or worker/agent files:** tell the user once and ask before updating; once they agree, run the `update --all` command it prints, exactly as shown (with the full path to graph.py). Never update the engine by hand: no `git pull`/`merge`/`checkout` in the engine folder, no ad-hoc branches. `update` is the only way, on every channel; if it refuses, it prints the fix command.
 
-<!-- vault-engine AGENTS.md template: 10. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->
+<!-- vault-engine AGENTS.md template: 11. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->
