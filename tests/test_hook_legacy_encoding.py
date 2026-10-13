@@ -51,7 +51,7 @@ class TestLegacyStdoutEncoding(unittest.TestCase):
 
     def test_codex_delegation_warn(self):
         payload = {"session_id": "s", "turn_id": "t", "tool_name": "Bash", "tool_input": {}}
-        for _ in range(3):
+        for _ in range(7):
             self._run("codex-hooks/delegation-warn.py", payload, expect_output=False)
         out = self._run("codex-hooks/delegation-warn.py", payload)
         self.assertIn("systemMessage", out)
