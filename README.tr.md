@@ -1,107 +1,48 @@
-# vault-engine (Türkçe hızlı başlangıç)
+# vault-engine (Türkçe)
 
-Bu, kısa bir Türkçe özettir. Tam referans (İngilizce) için: [README.md](README.md)
+AI kodlama asistanları ([Claude Code](https://claude.com/claude-code) ve [Codex](https://openai.com/codex)) için bir "ikinci beyin". Notlarınız ağırlıklı bir graf oluşturur; asistan her görevde yalnızca o göreve uygun notları yükler.
 
-## Ne işe yarar?
+Motor herkese açıktır ve içinde kişisel bilgi yoktur. Notlarınız sizin sahip olduğunuz ayrı bir **veri deposunda** durur.
 
-vault-engine, AI kodlama asistanınız (Claude Code veya Codex) için kalıcı bir "ikinci
-beyin" sağlar. Notlarınız kendi bilgisayarınızda, ayrı ve özel bir klasörde tutulur;
-asistan her görevde sadece o göreve uygun notları otomatik olarak yükler. Kodun
-bulunduğu bu depo (vault-engine) herkese açıktır ve içinde hiçbir kişisel bilgi
-bulunmaz — sizin notlarınız tamamen ayrı bir yerde saklanır.
+*Tam referans (İngilizce): [README.md](README.md)*
 
-## Hızlı kurulum (teknik bilgi gerekmez)
+## Hızlı kurulum
 
-Bilgisayarınızda kurulu ve giriş yapılmış bir AI kodlama asistanı gerekir — [Claude
-Code](https://claude.com/claude-code) ya da [Codex](https://openai.com/codex). Sonra
-asistana şunu yapıştırın (İngilizce bırakabilirsiniz, asistan sizinle Türkçe konuşmaya
-devam edecektir):
+Kurulu ve giriş yapılmış bir AI kodlama asistanı gerekir. Ona şunu yapıştırın (İngilizce kalabilir; asistan sizinle Türkçe konuşmaya devam eder):
 
 > Install vault-engine for me: read docs/agent-setup.md in https://github.com/Eazy-K/vault-engine and follow it step by step, asking me before each change, and talk to me in Turkish.
 
-Asistan şunları yapacak:
-- Bilgisayarınızda neyin kurulu olduğunu kontrol eder, eksik bir şeyi kurmadan önce
-  sizden onay ister.
-- İki klasör oluşturur: motorun kendisi ve sizin kişisel notlarınız.
-- İsterseniz notlarınızın GitHub üzerinde **özel (private)** bir yedeğini oluşturur —
-  istemezseniz notlar sadece bilgisayarınızda kalır, bu da tamamen normaldir.
-- Nasıl çalışmayı sevdiğinizi öğrenmek için birkaç kısa soru sorar (hangi dilde
-  konuşacağı, ne kadar ayrıntılı yanıt istediğiniz, hangi durumlarda önce sizden onay
-  alması gerektiği gibi).
+Asistan bilgisayarınızda neyin kurulu olduğunu kontrol eder; bir şey kurmadan veya hesap açmadan önce sorar. İki klasör oluşturur (motor ve notlarınız), isterseniz notlar için **özel (private)** bir GitHub yedeği kurar ve nasıl çalışmayı sevdiğinizi öğrenmek için birkaç kısa soru sorar: dil, ayrıntı düzeyi, hangi durumlarda önce onay alacağı. Her adımı önce açıklar. Siz yalnızca evet veya hayır dersiniz.
 
-Her adımdan önce ne yapacağını tek cümleyle açıklar ve onayınızı bekler; hiçbir şeyi
-sormadan kurmaz veya değiştirmez.
+## Günlük kullanım nasıl işler
 
-Kurulumdan sonra normal şekilde asistanınızla çalışmaya devam edersiniz — notlarınızı
-otomatik olarak arka planda kullanacaktır. Asistan öğrendiklerini zamanla not olarak
-yazar (ör. bir proje için `projects/<proje>/` klasörü gerektiğinde oluşur). Tercihlerinizi
-elle düzenlemek isterseniz veri klasöründeki `profile/` altındaki dosyalara bakabilirsiniz.
+Normalde hiçbir şey yazmazsınız. Bir göreve başlarken asistan:
 
-Claude Code delegasyon hook'u (`delegation-warn`), asistanın bir kullanıcı mesajında ana konuşmada kaç araç çağrısı yaptığını `.graph/usage.log` dosyasına yazar; `python tools/graph.py stats` bunu "orchestrator prompts" satırında özetler (ölçülen mesaj sayısı, eşiği aşanların yüzdesi, medyan çağrı sayısı). Bir oturumun son mesajı ölçülmez. `usage.log` içinde 90 günden eski kayıtlar (`tools/graph.py` içindeki `USAGE_LOG_KEEP_DAYS`) otomatik temizlenir: `graph.py` kendi kullanım olayını yazdıktan sonra en eski kayıt eşiği geçmişse (yaklaşık günde bir, ek durum dosyası yok) dosyayı atomik olarak yeniden yazar, `ts` değeri ayrıştırılamayan satırları korur. Hook'lar asla temizlik yapmaz.
+1. veri deposundaki son notları çeker,
+2. göreve uygun notları yükler (notlar arasındaki bağlantıları izler ve hangilerinin işe yaradığını öğrenir),
+3. işi yapar ve öğrendiklerini not eder,
+4. işe yarayan notları işaretler; böylece bir sonraki sefer daha üstte çıkar,
+5. notları commit'ler ve gönderir.
 
-Kullanıcı düzeyi ayarlar (`user-config`): `defaults/config/` şablonları (veri klasöründe `config/` altında aynı yolda bir dosya varsa onun yerini alır) `$CODEX_HOME` (varsayılan `~/.codex`) ve `$CLAUDE_CONFIG_DIR` (varsayılan `~/.claude`) içine, kullanıcının kendi eklediklerini silmeden birleştirilir: Codex `developer_instructions` ve `rules/default.rules` içinde `# vault-engine:begin` / `# vault-engine:end` işaretli blok, Claude `settings.json` içinde derin birleştirme. Ayrıca: `codex/config.toml` (ve o platform için `config.windows.toml` / `.linux` / `.darwin`) anahtarları ve tabloları `config.toml` içine başka hiçbir şeyi silmeden ya da biçimini değiştirmeden eklenir/güncellenir (eşdeğer Windows yol anahtarları yinelenmez); `workspace/AGENTS.md` ve `workspace/CLAUDE.md` çalışma alanı klasörüne (veri deposunun üst klasörü) `<!-- vault-engine:begin -->` / `<!-- vault-engine:end -->` bloğu olarak yazılır. Örnek düzen: `config/codex/{developer-instructions.md,default.rules,config.toml,config.windows.toml}`, `config/claude/settings.json`, `config/workspace/{AGENTS.md,CLAUDE.md}`. Yer tutucular: `{VAULT_DATA}`, `{VAULT_ENGINE}`, `{WORKSPACE}` (eğik çizgili) ve işletim sistemi ayracıyla `{VAULT_DATA_NATIVE}`, `{VAULT_ENGINE_NATIVE}`, `{WORKSPACE_NATIVE}`. `python tools/graph.py user-config` farkı bildirir, `--install` uygular (her dosyayı ilk değişiklikten önce `<ad>.bak-<TarihSaat>` olarak yedekler; ikinci çalıştırma hiçbir şey değiştirmez). Bkz. [Başka bir bilgisayarı güncelleme](#başka-bir-bilgisayarı-güncelleme).
+Kullanılmayan bağlantılar yavaş yavaş zayıflar. Notlarınız her commit öncesi denetlenir; gizli bilgi ve kişisel veri sızmaz.
 
-Codex kurulumu için `python tools/graph.py codex-hooks --install` komutu bağlam ve
-delegasyon hook'larını ve `agent-guard` (`PreToolUse`, `Agent|spawn_agent`; yalnızca `worker-*` profillerine ve kendi model/eforlarına izin verir) hook'unu ekler, eksik worker dosyalarını kurar. `doctor` ve `context`,
-`~/.codex` varsa hook ve worker dosyalarının eksik veya eski olup olmadığını; ayrıca
-`config.toml` içindeki model ve eforun açıkça ayarlanıp ayarlanmadığını denetler. Tercih
-edilen model kullanıcıya özel olduğundan motor onun değişip değişmediğini belirlemez.
-Dürüst not: Codex CLI 0.159.2 üzerindeki deney, PreToolUse deny kararının uygulandığını göstermedi; koruma, CLI bunu desteklediğinde çalışsın diye kurulur. `doctor`, `codex --version` çıktısı `.graph/machine.json` içindeki `codex_deny_tested_version` (makineye özel, gitignore'lu) değerinden farklıysa ya da değer yoksa INFO satırı yazar; `python tools/graph.py codex-hooks --probe-deny` geçici bir git klasöründe tek bir `codex exec` ile (proje `.codex/hooks.json` içinde PreToolUse deny hook'u, istem "create probe.txt with content x") yeniden dener, gerçek Codex ayarlarına dokunmaz, codex yoksa atlar; hook'un tetiklenip yazmanın engellenip engellenmediğini bildirir, sürümü ve sonucu kaydeder (sonuçsuz kalan koşu dahil). `python tools/graph.py codex-hooks --ack-deny` probu çalıştırmadan mevcut sürümü "onaylandı" diye kaydeder ve INFO satırını kapatır. `doctor` ayrıca Python 3.11'den eskiyse (Codex `config.toml` ayarları için `tomllib` gerekir) uyarır. Geçici klasördeki `CLAUDE_CONFIG_DIR` kayda alınmaz; silinmiş kayıtlı Claude dizinleri atlanır ve `doctor` tek INFO satırıyla `claude-dirs --remove` önerir. Hook dosyasını değiştirmeden önce yedekler; kişiselleştirilmiş worker dosyalarını korur.
+## Güncelleme ve başka bilgisayar
 
-`python tools/graph.py stats --tokens`, model bazında çağrı, token ve tahmini maliyet paylarını gösterir. Codex için `stats --tokens --session <id|current>` ana oturum ile alt ajan kullanımını ayırır ve her alt ajan için ayrı satır verir. JSON çıktısı da çağrı, token ve maliyet paylarını ve ana oturum/alt ajan dökümünü içerir. Codex JSON'undaki `cost_pct`, fiyatı bilinen modellerin maliyet ara toplamındaki model payıdır. `cost_basis` değeri `partial_api_list_estimate` ve `cost_estimate_status` değeri `partial` olduğunda bu ara toplam fiyatsız modellerin kullanım maliyetini içermez. Tahmini USD, standart OpenAI API liste fiyatlarına göre hesaplanır; Codex veya ChatGPT abonelik ücreti değildir. Model ya da ajan ilişkilendirmesi belirsizse rapor bunu kısmi/bilinmiyor olarak işaretler ve ilgili alanlara tahmin yerine `null` yazar.
+Yeni sürüm çıkınca asistan size bir kez haber verir. Onaylarsınız; güncellemeyi o çalıştırır (notları taşır, asistan kurulumunu yeniler, sonucu denetler). İkinci bilgisayarda veri deponuzu çekip aynı güncellemeyi çalıştırın:
 
-Öğrenilen bağlantılar kendiliğinden zayıflar (decay): `reinforce`, bu bilgisayardaki son
-zayıflatmadan bu yana 7 günden fazla geçtiğini görürse öğrenilen bağlantıları önce %5
-zayıflatır ve tek satır `auto-decay:` yazar; değişiklik aynı öğrenilen-bağlantılar
-commit'ine girer. Zaman damgası veri klasöründeki, commit'lenmeyen `.graph/last-decay`
-dosyasındadır; elle çalıştırılan `decay` de onu günceller. Güncellemeden sonraki ilk
-`reinforce` yalnızca damgayı kaydeder, hemen zayıflatma yapmaz.
+```
+python <engine>/tools/graph.py update --all
+```
 
-Detaylı adım adım talimat (asistan için yazılmıştır, teknik ayrıntılar içerir):
-[docs/agent-setup.md](docs/agent-setup.md)
+Codex'te güncellemeden sonra değişen hook'ları `/hooks` ile yeniden onaylayın.
 
-## Güncelleme
-
-0.3.0 ve sonraki sürümlerde, yeni bir sürüm çıktığında asistanınız size haber verecek.
-Güncellemek için asistanınıza sadece "vault-engine'i güncelle" demeniz yeterli — ne
-değiştiğini size gösterecek ve geçmeden önce onayınızı isteyecek. Siz sormadan
-kendiliğinden güncelleme yapmaz.
-
-### 0.1.0 veya 0.2.0 kullanıyorsanız
-
-Bu iki sürüm yeni sürümü haber vermez ve `update` komutunu bilmez (`invalid choice:
-'update'` hatası verir). İlk güncelleme bir kereliğine elle yapılır, sonrasında `update`
-çalışır. Asistanınıza şunu yazmanız yeterli:
+Motoru elle `git pull` ile güncellemeyin. 0.1.0 veya 0.2.0 kullanıyorsanız `update` komutu yoktur; asistana şunu yazın:
 
 > Update vault-engine: my version has no `update` command, so follow "Updating from 0.1.0 or 0.2.0" in docs/agent-setup.md on GitHub (https://github.com/Eazy-K/vault-engine), asking me before each change, and talk to me in Turkish.
 
-Asistanın izleyeceği adımlar kısaca: motor klasöründe yerel değişiklik olmadığını
-kontrol etmek, `git fetch --tags origin` ile sürümleri indirmek, en yeni etiketin
-CHANGELOG'daki "Upgrade notes" bölümünü size özetlemek, onayınızla `git checkout <yeni
-etiket>`, ardından `migrate --yes`, `setup --yes` ve `doctor` çalıştırmak, `doctor`'ın
-uyarılarını düzeltmek ve veri reposunu göndermek.
+## Daha fazlası
 
-### Birden fazla bilgisayar
-
-Eğer notlarınızı birden fazla bilgisayardan kullanıyorsanız, hepsini güncellemeyi
-unutmayın. 0.3.0 ve sonrası, veri düzeni kendisinden yeni bir vault'a yazmayı reddeder ve
-sizden o bilgisayarda da güncellemenizi ister. 0.1.0 ve 0.2.0 bu kontrolü yapmaz; bu
-yüzden bütün bilgisayarlar en az 0.3.0'a geçmeden, Upgrade notes'unda veri düzenini
-(schema) yükselttiğini söyleyen bir sürüme geçmeyin.
-
-## Başka bir bilgisayarı güncelleme
-
-Bir bilgisayarda yapılan değişikliklerden sonra, veri deposunu paylaşan her diğer bilgisayarda:
-
-```
-git -C <data repo> pull --rebase --autostash
-python <engine>/tools/graph.py update --all            # motor (her kanalda), migrate, setup, Claude/Codex ajanları, hook'lar, modeller, sonda doctor
-python <engine>/tools/graph.py user-config --install   # doctor ayar farkı bildirirse
-```
-
-Motoru elle güncellemeyin (`git pull`/`merge`/`checkout`, özel dal yok); her kanalda yalnızca `update`. Kararlı kanalda en yüksek sürüm etiketine geçer; geliştirme kanalında (`main`, temiz ağaç) `git pull --ff-only` yapar, başka dalda, yerel değişiklikte ya da `main` ileri sarılamıyorsa durup düzeltme komutunu yazar. `--all` kullanıcı düzeyindeki tüm yazmalara (Claude/Codex ajanları, hook'lar, modeller) onay verir; `--yes` tek başına `~/.claude` ve `~/.codex` dosyalarına yazmaz. Yeni kurulumlar kararlı kanalda kalır; `doctor` geliştirme kanalında uyarır (geliştirici bilgisayarı: `machine --engine-developer on`).
-
-
-Her kurulum komutu bir dosyayı değiştirmeden önce yedeğini alır ve ikinci çalıştırmada hiçbir şey yapmaz.
-
-Sorularınız veya sorun yaşarsanız, tam İngilizce referansa bakın: [README.md](README.md)
+- [Tüm komutlar](docs/commands.md) (İngilizce): kurulum, projeler, geri bildirim, CI, sürümler.
+- [Asistan kurulum rehberi](docs/agent-setup.md): asistanın izlediği adımlar.
+- [Katkı](docs/commands.md#contributing-to-the-engine): sızıntı denetimini açma, test ekleme.
+- Lisans: MIT, bkz. LICENSE.
