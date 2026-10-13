@@ -427,10 +427,12 @@ class TestDenyProbe(unittest.TestCase):
     def test_matchers_cover_real_codex_tool_names(self):
         import re
         spawn = re.compile(codex_hooks.SPAWN_MATCHER)
-        for name in ("Agent", "spawn_agent", "collaboration.spawn_agent", "collaboration__spawn_agent"):
-            self.assertTrue(spawn.search(name), name)
-        for name in ("exec", "exec_command", "wait_agent", "followup_task", "spawn_agent_x"):
-            self.assertFalse(spawn.search(name), name)
+        for name in ("Agent", "spawn_agent", "collaboration.spawn_agent", "collaboration__spawn_agent",
+                     "collaborationspawn_agent", "collaboration/spawn_agent", "a:spawn_agent"):
+            self.assertTrue(spawn.fullmatch(name), name)
+        for name in ("exec", "exec_command", "wait_agent", "followup_task", "spawn_agent_x",
+                     "spawn_agent_extra", "send_input", "Bash", "xspawn_agent"):
+            self.assertFalse(spawn.fullmatch(name), name)
         # every tool is matched; delegation-warn.py itself skips exec/spawn tools
         self.assertEqual(codex_hooks.INLINE_MATCHER, "*")
         self.assertIn("|exec)", codex_hooks.PROBE_MATCHER)

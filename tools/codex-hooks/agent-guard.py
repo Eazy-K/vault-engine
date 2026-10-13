@@ -13,6 +13,9 @@ installed for when the CLI honors it; until then it is advisory at best.
 Fails open: malformed input, an unreadable profile directory or any other
 error produces no output and exit 0, so it can never crash Codex or block a
 tool call by accident. `VAULT_AGENT_GUARD=off` disables it.
+
+Note: matching the spawn tool names (matcher/_is_spawn) does not prove that
+Codex dispatches PreToolUse for spawns at all (openai/codex#49736).
 """
 from __future__ import annotations
 
@@ -51,13 +54,15 @@ def _deny(reason: str) -> None:
 
 
 def _is_spawn(name: object) -> bool:
-    """`spawn_agent` / `Agent`, also namespaced (e.g. `collaboration.spawn_agent`).
+    """`spawn_agent` / `Agent`, also namespaced (`collaboration.spawn_agent`) or flattened
+    (`collaborationspawn_agent`, Codex multi-agent V2).
 
     Codex 0.159 issues spawns as a top-level function call, not through the
     code-mode `exec` wrapper, so ordinary `exec` calls never match.
     """
     return isinstance(name, str) and (
-        name == "Agent" or re.search(r"(^|[._:/])spawn_agent$", name) is not None)
+        name in ("Agent", "spawn_agent", "collaborationspawn_agent")
+        or re.search(r"[._:/]spawn_agent$", name) is not None)
 
 
 def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:
