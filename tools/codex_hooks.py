@@ -257,7 +257,7 @@ def hooks_status(hooks_path: Path | None = None) -> tuple[str, str]:
         if not found:
             return "WARN", (f"Codex {filename} hook missing or stale in {hooks_path}; "
                              f"run `{g.update_all_command()}` (or `graph.py codex-hooks --install`)")
-    return "OK", f"Codex hooks installed ({hooks_path})"
+    return "OK", f"Codex hooks.json matches the engine templates (file check only; Codex trust and live firing are not verified; re-approve changed hooks with /hooks) ({hooks_path})"
 
 
 def _root_toml_values(path: Path) -> dict[str, str]:

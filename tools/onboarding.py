@@ -1235,8 +1235,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                       "--add <path>` to include one)")
 
     codex_hooks = sys.modules.get("codex_hooks")
-    codex_home = Path.home() / ".codex"
-    if codex_hooks is not None and codex_home.is_dir():
+    codex_home = codex_hooks.codex_home() if codex_hooks is not None else None
+    if codex_home is not None and codex_home.is_dir():
         for result in codex_hooks.statuses():
             check(*result)
         check(*codex_hooks.rules_status())

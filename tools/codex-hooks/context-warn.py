@@ -20,9 +20,9 @@ THRESHOLD = 150_000
 MAX_THRESHOLD_OVERRIDE = 1_000_000
 GROWTH_STEP = 10_000
 ORCHESTRATION_REMINDER = (
-    "Orchestration: for multi-step work present a short plan and wait for explicit "
-    "approval (ambiguous scope: ask one question); after approval delegate to "
-    "worker-low/worker-medium; stay within the approved scope."
+    "Orchestration: decide per task whether to work inline or delegate (worker-low/"
+    "worker-medium; never required); within an authorized scope reversible steps "
+    "proceed; ask before destructive, irreversible or out-of-scope actions."
 )
 
 

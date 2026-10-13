@@ -878,7 +878,7 @@ class TestDoctor(unittest.TestCase):
                 onboarding.cmd_doctor(Namespace())
         output = buf.getvalue()
         self.assertEqual(ctx.exception.code, 0)
-        self.assertIn("Codex hooks installed", output)
+        self.assertIn("Codex hooks.json matches the engine templates", output)
         self.assertIn("Codex model and reasoning effort are explicitly configured", output)
         self.assertIn("Codex worker profiles match engine templates", output)
 

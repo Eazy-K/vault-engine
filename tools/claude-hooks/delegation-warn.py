@@ -49,8 +49,10 @@ WARN_AFTER = 3  # warn once the count exceeds this (i.e. on the 4th+ call)
 DELEGATION_TOOLS = {"Agent", "Task"}
 
 WARNING_MESSAGE = (
-    "4+ tool calls in this request: delegate the rest to a worker "
-    "(worker-low/worker-medium)."
+    "[delegation-warn] 4+ inline tool calls in this request. If the remaining "
+    "work is substantial or splits into independent parts, consider "
+    "worker-low/worker-medium; continuing inline is fine for small or tightly "
+    "coupled work."
 )
 
 

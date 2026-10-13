@@ -441,7 +441,7 @@ after step 2.
    compare the Codex/Claude user-level config with the vault's `config/` templates and,
    after the user agrees, `user-config --install`. It backs up every file it changes and
    never removes the user's own entries; a second run changes nothing. `doctor` and
-   `context` warn when it is needed. The full sequence is in README.md, "Updating another
+   `context` warn when it is needed. The full sequence is in docs/commands.md, "Updating another
    computer". Supported files under `<data>/config/` (each is
    optional; the engine ships a default only for `codex/developer-instructions.md`):
 
@@ -491,7 +491,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   uses). Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
   uninstalling it.
 - a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
-  short one-line reminder to delegate multi-step work to a worker subagent (and to
+  short one-line reminder to decide per task whether to work inline or delegate to a worker (never required) (and to
   run `context` first if the task hasn't started), and additionally warns the model
   when the session's estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`,
   default 150000 tokens; re-warns after every further ~25K tokens of growth). The

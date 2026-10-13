@@ -534,7 +534,7 @@ class TestProjectSeedingAndHint(unittest.TestCase):
         codex_home = self.tmp / "home" / ".codex"
         codex_home.mkdir(parents=True)
         fake_codex = types.SimpleNamespace(
-            statuses=lambda: [("WARN", "hooks missing")])
+            statuses=lambda: [("WARN", "hooks missing")], codex_home=lambda: codex_home)
         output = self._run_context_with_modules(codex_hooks=fake_codex)
         self.assertIn("hooks, model or worker settings are out of date on this computer", output)
         self.assertIn("update --all", output)
