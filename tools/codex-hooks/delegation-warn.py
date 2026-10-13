@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Remind Codex to delegate after repeated inline tool calls.
+"""Nudge Codex to consider delegating after many inline tool calls.
+
+Warns at most once per turn, at THRESHOLD inline calls, and not at all once the
+turn has spawned a worker (later calls are then verification). Orchestration
+coordination (spawning and managing agents, plans) is not inline work; the
+code-mode `exec` wrapper is not counted either.
 
 Current PostToolUse payloads do not include agent_id, so subagent calls are
 detected from the rollout's first record (session_meta with a subagent source
@@ -21,14 +26,44 @@ import tempfile
 from typing import Iterator
 from datetime import datetime
 
-THRESHOLD = 4
-# Every tool counts except delegation itself and Codex code mode's outer `exec`
-# wrapper (it would double count its inner tools.exec_command/apply_patch calls,
-# which arrive as "Bash"/"apply_patch").
-EXCLUDED_TOOLS = {"exec", "Agent", "spawn_agent"}
-MESSAGE = "[delegation-warn] 4 tool calls in this turn; delegate the remaining work to worker-low/worker-medium."
-REPEAT_MESSAGE = "[delegation-warn] More inline work has continued; stop and delegate the remaining work to worker-low/worker-medium."
-REPEAT_EVERY = 2
+THRESHOLD = 8
+# Code mode's outer `exec` wrapper would double count its inner tools.exec_command/
+# apply_patch calls (which arrive as "Bash"/"apply_patch"), so it is not counted.
+WRAPPER_TOOLS = {"exec"}
+# Orchestration coordination, not inline work. List ONLY names verified in real
+# Codex payloads; anything unlisted counts as inline work. Namespaced/flattened
+# forms (`collaboration.wait_agent`, `collaborationwait_agent`) are normalized
+# by _base_name before comparing.
+SPAWN_TOOLS = {"Agent", "spawn_agent"}
+COORDINATION_TOOLS = SPAWN_TOOLS | {
+    "wait_agent", "wait", "send_input", "send_message", "interrupt_agent",
+    "close_agent", "resume_agent", "list_agents", "update_plan",
+}
+MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. If the remaining work is "
+           "substantial or splits into independent parts, consider worker-low/worker-medium; "
+           "small or tightly coupled work can stay inline.")
+
+
+def _base_name(tool: str) -> str:
+    """Strip a `collaboration` prefix or any `ns.`/`ns:`/`ns/` namespace."""
+    name = tool
+    for sep in (".", ":", "/"):
+        name = name.rsplit(sep, 1)[-1]
+    if name.startswith("collaboration") and name != "collaboration":
+        name = name[len("collaboration"):].lstrip("_")
+    return name
+
+
+def _classify(tool: str) -> str:
+    """"wrapper", "spawn", "coordination" or "inline"."""
+    if tool in WRAPPER_TOOLS:
+        return "wrapper"
+    name = _base_name(tool)
+    if name in SPAWN_TOOLS:
+        return "spawn"
+    if name in COORDINATION_TOOLS:
+        return "coordination"
+    return "inline"
 
 
 def _is_subagent_rollout(raw: object) -> bool:
@@ -90,20 +125,33 @@ def _locked(path: Path) -> Iterator[None]:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _fresh_state(turn_id: object = None) -> dict:
+    return {"turn_id": turn_id, "count": 0, "warned": False,
+            "coordination": 0, "spawned": 0, "tools": {}}
+
+
 def _load_state(path: Path) -> dict:
+    """Load turn state; old files (count/warned only) get the new fields defaulted."""
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
-        return {"turn_id": None, "count": 0, "warned": False}
+        return _fresh_state()
     if not isinstance(value, dict):
-        return {"turn_id": None, "count": 0, "warned": False}
-    count = value.get("count")
+        return _fresh_state()
+
+    def _int(key: str) -> int:
+        number = value.get(key)
+        return number if type(number) is int and number >= 0 else 0
+
     warned = value.get("warned")
-    return {
-        "turn_id": value.get("turn_id"),
-        "count": count if type(count) is int and count >= 0 else 0,
-        "warned": warned if type(warned) is bool else False,
-    }
+    tools = value.get("tools")
+    state = _fresh_state(value.get("turn_id"))
+    state.update(count=_int("count"), coordination=_int("coordination"), spawned=_int("spawned"),
+                 warned=warned if type(warned) is bool else False)
+    if isinstance(tools, dict):
+        state["tools"] = {k: v for k, v in tools.items()
+                          if isinstance(k, str) and type(v) is int and v >= 0}
+    return state
 
 
 def _log_prompt(session_id: str, state: dict) -> None:
@@ -120,7 +168,10 @@ def _log_prompt(session_id: str, state: dict) -> None:
         event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "codex",
                  "session": session_id, "event": "orchestrator_prompt",
                  "inline_calls": int(state.get("count") or 0),
-                 "warned": bool(state.get("warned")), "threshold": THRESHOLD}
+                 "warned": bool(state.get("warned")), "threshold": THRESHOLD,
+                 "coordination_calls": int(state.get("coordination") or 0),
+                 "spawned": int(state.get("spawned") or 0),
+                 "tools": dict(state.get("tools") or {})}
         with (graph_dir / "usage.log").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(event, ensure_ascii=False) + "\n")
     except (OSError, TypeError, ValueError):
@@ -152,9 +203,13 @@ def main() -> None:
         return
     is_stop = payload.get("hook_event_name") == "Stop"
     tool = payload.get("tool_name")
-    if not is_stop and (not isinstance(tool, str) or tool in EXCLUDED_TOOLS
-                        or tool.rsplit(".", 1)[-1].rsplit(":", 1)[-1] == "spawn_agent"):
-        return
+    kind = "inline"
+    if not is_stop:
+        if not isinstance(tool, str):
+            return
+        kind = _classify(tool)
+        if kind == "wrapper":
+            return
 
     path = _state_path(payload)
     if path is None:
@@ -170,17 +225,23 @@ def main() -> None:
                 # Codex requires JSON on stdout for Stop; "{}" is a no-op.
                 if state.get("turn_id") == turn_id:
                     _log_prompt(session_id, state)
-                    _save_state(path, {"turn_id": None, "count": 0, "warned": False})
+                    _save_state(path, _fresh_state())
                 print("{}")
                 return
             if state.get("turn_id") != turn_id:
                 if state.get("turn_id") is not None:
                     _log_prompt(session_id, state)
-                state = {"turn_id": turn_id, "count": 0, "warned": False}
-            state["count"] += 1
-            should_warn = (state["count"] >= THRESHOLD and
-                           (state["count"] - THRESHOLD) % REPEAT_EVERY == 0)
-            if state["count"] >= THRESHOLD:
+                state = _fresh_state(turn_id)
+            state["tools"][tool] = state["tools"].get(tool, 0) + 1
+            if kind == "spawn":
+                state["spawned"] += 1
+            elif kind == "coordination":
+                state["coordination"] += 1
+            else:
+                state["count"] += 1
+            should_warn = (kind == "inline" and state["count"] >= THRESHOLD
+                           and not state["warned"] and state["spawned"] == 0)
+            if should_warn:
                 state["warned"] = True
             _save_state(path, state)
     except OSError:
@@ -188,12 +249,11 @@ def main() -> None:
         return
 
     if should_warn:
-        message = MESSAGE if state["count"] == THRESHOLD else REPEAT_MESSAGE
         print(json.dumps({
-            "systemMessage": message,
+            "systemMessage": MESSAGE,
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
-                "additionalContext": message,
+                "additionalContext": MESSAGE,
             },
         }))
 

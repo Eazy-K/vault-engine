@@ -43,20 +43,73 @@ class TestCodexDelegationWarn(unittest.TestCase):
     def test_code_mode_inner_tool_names_count_but_outer_exec_does_not(self):
         outs = [self._run(turn_id="t2", tool_name="exec") for _ in range(6)]
         self.assertTrue(all(not o.stdout.strip() for o in outs))
-        outs = [self._run(turn_id="t3", tool_name="exec_command") for _ in range(4)]
-        self.assertTrue(outs[3].stdout.strip())
+        outs = [self._run(turn_id="t3", tool_name="exec_command") for _ in range(8)]
+        self.assertTrue(outs[7].stdout.strip())
 
-    def test_warns_at_four_and_then_every_two_calls_with_stronger_language(self):
-        outputs = [self._run() for _ in range(8)]
-        self.assertEqual([i + 1 for i, out in enumerate(outputs) if out.stdout.strip()],
-                         [4, 6, 8])
-        first = json.loads(outputs[3].stdout)["systemMessage"]
-        repeated = json.loads(outputs[5].stdout)["systemMessage"]
-        self.assertIn("4 tool calls", first)
-        self.assertIn("stop and delegate", repeated)
+    def test_warns_once_at_eight(self):
+        outputs = [self._run() for _ in range(14)]
+        self.assertEqual([i + 1 for i, out in enumerate(outputs) if out.stdout.strip()], [8])
+        msg = json.loads(outputs[7].stdout)["systemMessage"]
+        self.assertIn("8 inline tool calls", msg)
+        self.assertIn("consider worker-low/worker-medium", msg)
+
+    def test_coordination_calls_never_count_or_warn(self):
+        names = ["wait_agent", "wait", "send_input", "send_message", "interrupt_agent", "close_agent",
+                 "resume_agent", "list_agents", "update_plan", "collaboration.wait_agent",
+                 "collaborationwait_agent", "collaboration/send_input", "ns:close_agent"]
+        for _ in range(3):
+            for name in names:
+                self.assertEqual(self._run(tool_name=name).stdout.strip(), "")
+        self._run(turn_id="turn-2")
+        event = self._events()[0]
+        self.assertEqual(event["inline_calls"], 0)
+        self.assertEqual(event["coordination_calls"], 39)
+        self.assertFalse(event["warned"])
+
+    def test_no_warning_after_spawn_in_same_turn(self):
+        self._run(tool_name="collaborationspawn_agent")
+        outs = [self._run() for _ in range(12)]
+        self.assertTrue(all(not o.stdout.strip() for o in outs))
+        self._run(turn_id="turn-2")
+        event = self._events()[0]
+        self.assertEqual((event["inline_calls"], event["spawned"], event["warned"]), (12, 1, False))
+
+    def test_spawn_after_warning_keeps_single_warning(self):
+        outs = [self._run() for _ in range(8)]
+        self.assertTrue(outs[7].stdout.strip())
+        self._run(tool_name="spawn_agent")
+        self.assertTrue(all(not self._run().stdout.strip() for _ in range(5)))
+
+    def test_unknown_tools_count_inline_and_appear_in_tools(self):
+        for _ in range(3):
+            self._run(tool_name="mystery_tool")
+        self._run(tool_name="wait_agent")
+        self._run(turn_id="turn-2")
+        event = self._events()[0]
+        self.assertEqual(event["inline_calls"], 3)
+        self.assertEqual(event["tools"], {"mystery_tool": 3, "wait_agent": 1})
+        self.assertEqual(event["threshold"], 8)
+
+    def test_old_state_file_loads(self):
+        import hashlib
+        digest = hashlib.sha256(self.session.encode("utf-8")).hexdigest()[:32]
+        state_dir = self.tmp / "state"
+        state_dir.mkdir()
+        (state_dir / f"codex-delegation-warn-{digest}.json").write_text(
+            json.dumps({"turn_id": "turn-1", "count": 6, "warned": False}), encoding="utf-8")
+        self.assertEqual(self._run().stdout.strip(), "")
+        out = self._run()
+        self.assertIn("8 inline tool calls", json.loads(out.stdout)["systemMessage"])
+        self._run(turn_id="turn-2")
+        event = self._events()[0]
+        self.assertEqual((event["inline_calls"], event["coordination_calls"], event["spawned"]), (8, 0, 0))
+
+    def _events(self):
+        return [json.loads(x) for x in
+                (self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()]
 
     def test_new_turn_resets_count_and_logs_previous_turn_as_codex(self):
-        for _ in range(4):
+        for _ in range(8):
             self._run()
         self.assertFalse((self.data / ".graph" / "usage.log").exists())
         out = self._run(turn_id="turn-2")
@@ -66,7 +119,7 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event"], "orchestrator_prompt")
         self.assertEqual(events[0]["agent"], "codex")
-        self.assertEqual(events[0]["inline_calls"], 4)
+        self.assertEqual(events[0]["inline_calls"], 8)
         self.assertTrue(events[0]["warned"])
 
     def _rollout(self, payload):
@@ -80,16 +133,16 @@ class TestCodexDelegationWarn(unittest.TestCase):
             with self.subTest(meta=meta):
                 self._rollout(meta)
                 for turn in ("a", "b"):
-                    for _ in range(5):
+                    for _ in range(9):
                         self.assertEqual(self._run(turn_id=turn).stdout.strip(), "")
                 self.assertFalse((self.data / ".graph" / "usage.log").exists())
 
     def test_main_rollout_still_warns_and_missing_transcript_fails_open(self):
         self._rollout({"source": "cli"})
-        self.assertTrue(any(self._run().stdout.strip() for _ in range(4)))
+        self.assertTrue(any(self._run().stdout.strip() for _ in range(8)))
         self.transcript = self.tmp / "missing.jsonl"
         self.session += "-2"
-        self.assertTrue(any(self._run().stdout.strip() for _ in range(4)))
+        self.assertTrue(any(self._run().stdout.strip() for _ in range(8)))
 
     def test_subagent_and_delegation_tool_calls_are_ignored(self):
         for _ in range(5):
@@ -99,18 +152,18 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertFalse((self.data / ".graph" / "usage.log").exists())
 
     def test_any_other_tool_counts(self):
-        outs = [self._run(turn_id="t9", tool_name="Other") for _ in range(4)]
-        self.assertTrue(outs[3].stdout.strip())
+        outs = [self._run(turn_id="t9", tool_name="Other") for _ in range(8)]
+        self.assertTrue(outs[7].stdout.strip())
 
     def test_stop_flushes_last_turn_once_and_prints_json(self):
-        for _ in range(4):
+        for _ in range(8):
             self._run()
         stop = self._run(event="Stop")
         self.assertEqual(json.loads(stop.stdout), {})
         log = self.data / ".graph" / "usage.log"
         events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([(e["event"], e["agent"], e["inline_calls"]) for e in events],
-                         [("orchestrator_prompt", "codex", 4)])
+                         [("orchestrator_prompt", "codex", 8)])
         self._run(event="Stop")
         self._run(turn_id="turn-2")
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
