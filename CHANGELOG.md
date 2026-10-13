@@ -2,6 +2,26 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.15.0] - 2026-10-14
+
+### Fixed
+- Codex spawn matcher and agent-guard now match `collaborationspawn_agent`, the name Codex CLI 0.160.0 sends to hooks; the old matcher never matched it, so agent-guard never ran. Verified live: `PreToolUse` deny is enforced for spawns (no child agent starts).
+- doctor/update honor a custom `CODEX_HOME`.
+
+### Changed
+- Codex `delegation-warn` no longer counts coordination tools (spawn/wait/send_message/interrupt) as inline work; it warns at most once per turn at 8 inline calls (was 4, repeating every 2) and not after a worker was spawned in the turn. The `orchestrator_prompt` usage event adds `coordination_calls`, `spawned` and `tools` (tool names only).
+- Codex developer instructions replace "delegate every request" with inline-vs-delegate rules; risk-based approval is kept. Claude instructions and the core orchestration note are unchanged.
+- Shared orchestration rule (`defaults/standards/orchestration.md`) no longer says "delegate every request": decide per task whether to work inline or delegate (complexity, independence, context, cost); delegation is never required. Within a scope the user explicitly authorized, reversible steps proceed; ask before destructive, irreversible or out-of-scope actions. Codex developer instructions, the AGENTS.md template (revision 11) and the Codex context-warn reminder follow it.
+- Claude hook reminders (delegation-warn, context-warn) are conditional text now; thresholds and logic unchanged.
+- `orchestration-details.md` records version-scoped Codex facts (spawn deny enforced on 0.160.0, not dispatched on 0.159.2; others unverified) and that Codex worker models live in `tools/codex-agents/*.toml`.
+- doctor's Codex hook check says it is a file check only; Codex trust and live firing are not verified.
+- Worker prompts show PowerShell equivalents (`$env:VAULT_ENGINE`, `Get-Content -Tail`).
+- Docs: README.md/README.tr.md are short landing pages; command reference moved to docs/commands.md.
+
+### Upgrade notes
+- After `update --all`, re-approve the changed Codex hooks with `/hooks` in Codex on every computer; until then Codex skips them. If `doctor` reports outdated Codex developer instructions, run `user-config --install`.
+- `update` offers the AGENTS.md template revision 11 with a diff for approval; vault copies of `standards/orchestration*.md` are user-owned and not updated automatically, so compare them with the engine defaults.
+
 ## [0.14.0] - 2026-10-11
 
 ### Added
