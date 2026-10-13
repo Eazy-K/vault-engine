@@ -55,6 +55,17 @@ class TestCodexAgentGuard(unittest.TestCase):
         out = spawn("collaboration.spawn_agent", dict(real, agent_type="default"))
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_is_spawn_name_set(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("agent_guard_mod", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for name in ("Agent", "spawn_agent", "collaboration.spawn_agent", "collaborationspawn_agent",
+                     "collaboration/spawn_agent", "a:spawn_agent"):
+            self.assertTrue(mod._is_spawn(name), name)
+        for name in ("spawn_agent_extra", "send_input", "Bash", "xspawn_agent", "wait_agent", None):
+            self.assertFalse(mod._is_spawn(name), name)
+
     def test_code_mode_exec_is_never_denied(self):
         script = 'const r = await tools.exec_command({cmd:"git status"}); text(r.output);'
         self.assertIsNone(invoke({"tool_name": "exec", "tool_input": script}))

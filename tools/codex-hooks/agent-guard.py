@@ -6,13 +6,17 @@ Denies a spawn unless `agent_type` is one of the engine's worker profiles
 override equals that profile's own model and effort, so a spawn can never be
 pricier than the profile. Mirrors tools/claude-hooks/agent-guard.py.
 
-Honest status: the 0025 experiment on Codex CLI 0.159.2 did not demonstrate
-that the CLI enforces a PreToolUse `deny` for sub-agent spawns. The hook is
-installed for when the CLI honors it; until then it is advisory at best.
+Live status: on Codex CLI 0.160.0 (Windows, 2026-10-14) the spawn arrives as
+`collaborationspawn_agent` and a PreToolUse deny was enforced live (no child
+started) once the matcher matched it; the old matcher never matched that name.
+Older CLIs did not dispatch PreToolUse for spawns at all (openai/codex#49736).
 
 Fails open: malformed input, an unreadable profile directory or any other
 error produces no output and exit 0, so it can never crash Codex or block a
 tool call by accident. `VAULT_AGENT_GUARD=off` disables it.
+
+Note: matching the spawn tool names (matcher/_is_spawn) does not prove that
+Codex dispatches PreToolUse for spawns at all (openai/codex#49736).
 """
 from __future__ import annotations
 
@@ -51,13 +55,15 @@ def _deny(reason: str) -> None:
 
 
 def _is_spawn(name: object) -> bool:
-    """`spawn_agent` / `Agent`, also namespaced (e.g. `collaboration.spawn_agent`).
+    """`spawn_agent` / `Agent`, also namespaced (`collaboration.spawn_agent`) or flattened
+    (`collaborationspawn_agent`, Codex multi-agent V2).
 
     Codex 0.159 issues spawns as a top-level function call, not through the
     code-mode `exec` wrapper, so ordinary `exec` calls never match.
     """
     return isinstance(name, str) and (
-        name == "Agent" or re.search(r"(^|[._:/])spawn_agent$", name) is not None)
+        name in ("Agent", "spawn_agent", "collaborationspawn_agent")
+        or re.search(r"[._:/]spawn_agent$", name) is not None)
 
 
 def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:

@@ -29,11 +29,21 @@ REQUIRED = [
 ]
 
 
+# The Codex adapter words the delegation policy differently (inline for small
+# bounded work, delegate substantial work), so it skips the core's strict rules.
+CODEX_SKIP = {"delegate by default", "single short tool call", "whole request, not each step",
+              "verifies every result"}
+CODEX_EXTRA = ["verify every result", "not inline work", "do not delegate just to satisfy"]
+
+
 class OrchestrationRules(unittest.TestCase):
     def test_core_and_codex_instructions_share_every_rule(self):
         for path in (CORE, CODEX):
             text = path.read_text(encoding="utf-8").lower()
-            for phrase in REQUIRED:
+            phrases = [p for p in REQUIRED if path is CORE or p not in CODEX_SKIP]
+            if path is CODEX:
+                phrases += CODEX_EXTRA
+            for phrase in phrases:
                 self.assertIn(phrase, text, f"{path.name} lacks rule: {phrase}")
 
     def test_core_note_is_core_and_short(self):

@@ -27,8 +27,9 @@ AGENTS_DIR = g.ENGINE / "tools" / "codex-agents"
 # tools.exec_command / tools.apply_patch; PostToolUse fires per inner call (as
 # "Bash"/"apply_patch"), so `exec` itself is deliberately NOT matched (it would
 # double count). Sub-agent spawns are a top-level `spawn_agent` function call in
-# the `collaboration` namespace, so the guard also accepts namespaced spellings.
-SPAWN_MATCHER = "^(Agent|(.*[._:/])?spawn_agent)$"
+# the `collaboration` namespace (flattened `collaborationspawn_agent` in multi-agent V2),
+# so the matcher also accepts namespaced spellings.
+SPAWN_MATCHER = "^(Agent|spawn_agent|collaborationspawn_agent|.*[._:/]spawn_agent)$"
 INLINE_MATCHER = "*"  # every tool; delegation-warn.py skips exec/spawn tools itself
 HOOKS = {
     "UserPromptSubmit": ("context-warn.py", None),
