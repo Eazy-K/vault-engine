@@ -8,10 +8,8 @@ weights:
 ---
 
 # Orchestration (core rules)
-- Delegate by default: hand every request to a subagent; the orchestrator only splits, verifies and summarizes.
-- Small-task exception: a single short tool call (e.g. `git status`) stays inline.
-- Count the whole request, not each step: a multi-step plan is delegated before the first tool call.
-- For multi-step work, present a short plan and wait for explicit user approval; if the scope is ambiguous, ask one clarifying question.
+- The orchestrator owns triage, planning, coordination, verification and the report. Do small, bounded work inline; delegate substantial or independent work (multi-file changes, research, test writing, parallel parts) to a worker. Do not delegate just to satisfy a count, and do not split work so small that briefing a worker costs more than doing it.
+- Before multi-step work that changes files, present a short plan and wait for explicit user approval unless the user already approved this scope; if the scope is ambiguous, ask one clarifying question. Always ask before destructive, irreversible or out-of-scope actions.
 - Stay within the approved scope.
 - Use only worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research); never general or default agents, never the orchestrator's own model.
 - Ask for short reports.

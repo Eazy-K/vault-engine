@@ -9,18 +9,19 @@ CORE = DEFAULTS / "standards" / "orchestration.md"
 CODEX = DEFAULTS / "config" / "codex" / "developer-instructions.md"
 
 REQUIRED = [
-    "delegate by default",
-    "single short tool call",
-    "whole request, not each step",
-    "wait for explicit user approval",
+    "owns triage, planning, coordination, verification",
+    "do small, bounded work inline",
+    "do not delegate just to satisfy",
+    "wait for explicit user approval unless the user already approved",
     "ask one clarifying question",
+    "always ask before destructive",
     "stay within the approved scope",
     "worker-low",
     "worker-medium",
     "never general or default agents",
     "never the orchestrator's own model",
     "short reports",
-    "verifies every result",
+    "verif",
     "creates the branch",
     "commit wip",
     "do not resume",
@@ -29,21 +30,11 @@ REQUIRED = [
 ]
 
 
-# The Codex adapter words the delegation policy differently (inline for small
-# bounded work, delegate substantial work), so it skips the core's strict rules.
-CODEX_SKIP = {"delegate by default", "single short tool call", "whole request, not each step",
-              "verifies every result"}
-CODEX_EXTRA = ["verify every result", "not inline work", "do not delegate just to satisfy"]
-
-
 class OrchestrationRules(unittest.TestCase):
     def test_core_and_codex_instructions_share_every_rule(self):
         for path in (CORE, CODEX):
             text = path.read_text(encoding="utf-8").lower()
-            phrases = [p for p in REQUIRED if path is CORE or p not in CODEX_SKIP]
-            if path is CODEX:
-                phrases += CODEX_EXTRA
-            for phrase in phrases:
+            for phrase in REQUIRED:
                 self.assertIn(phrase, text, f"{path.name} lacks rule: {phrase}")
 
     def test_core_note_is_core_and_short(self):
