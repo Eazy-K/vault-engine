@@ -3,7 +3,7 @@
   expensive subagents.
 - context-warn: a UserPromptSubmit hook that warns the model when the
   session's context usage crosses a threshold, and reminds it on every user
-  message to delegate multi-step work to a worker subagent.
+  message to decide per task between inline work and a worker subagent.
 - delegation-warn: a PostToolUse hook that additionally warns once a user
   message has driven several tool calls on the orchestrator's own thread,
   instead of delegating them.
