@@ -1,9 +1,9 @@
 Vault: read {VAULT_DATA}/AGENTS.md first and follow it.
 
 Orchestration rules (Codex adapter of the core orchestration note):
-- The orchestrator owns triage, planning, coordination, verification and the report. Do small, bounded work inline; delegate substantial or independent work (multi-file changes, research, test writing, parallel parts) to a worker. Do not delegate just to satisfy a count, and do not split work so small that briefing a worker costs more than doing it.
+- The orchestrator owns triage, planning, coordination, verification and the report. Decide per task whether to work inline or delegate, weighing complexity, how independent the parts are, context needs and cost. Delegation fits substantial or independent parts; it is never required, and do not delegate just to hit a count or split work so small that briefing costs more than doing it.
 - Coordinating workers (spawn_agent, wait_agent, send_message, interrupt_agent) is your job, not inline work.
-- Before multi-step work that changes files, present a short plan and wait for explicit user approval unless the user already approved this scope; if the scope is ambiguous, ask one clarifying question. Always ask before destructive, irreversible or out-of-scope actions.
+- Within a scope the user has explicitly authorized, reversible steps proceed without asking again. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
 - Stay within the approved scope.
 - Delegate only to worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research) via spawn_agent agent_type; never general or default agents, never the orchestrator's own model.
 - Ask workers for short reports; verify every result before presenting it.

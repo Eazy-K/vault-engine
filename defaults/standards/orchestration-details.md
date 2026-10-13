@@ -20,7 +20,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - Small or tightly coupled work stays with one agent; splitting only adds token and coordination cost.
 
 ## Flow
-1. **Plan:** short plan (pieces, subagent, model/effort) and explicit user approval before multi-step work that changes files, unless the user already approved that scope. Always ask before destructive, irreversible or out-of-scope actions.
+1. **Plan:** a short plan (pieces, subagent, model/effort) may be shared when useful; it is not a gate: within an explicitly authorized scope reversible steps proceed without asking again; ask before destructive, irreversible or out-of-scope actions.
 2. **Task definition:** a subagent starts with zero context: give goal, scope, file paths, acceptance criteria and relevant rules from `context`.
 3. **Worktree:** parallel agents that change code use separate git worktrees.
 4. **Verification:** tests, lint, guard, reading the diff. Nothing unverified is presented as correct.

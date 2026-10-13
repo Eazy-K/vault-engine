@@ -10,11 +10,12 @@ CODEX = DEFAULTS / "config" / "codex" / "developer-instructions.md"
 
 REQUIRED = [
     "owns triage, planning, coordination, verification",
-    "do small, bounded work inline",
-    "do not delegate just to satisfy",
-    "wait for explicit user approval unless the user already approved",
+    "decide per task whether to work inline or delegate",
+    "it is never required",
+    "do not delegate just to hit a count",
+    "without asking again",
+    "ask before destructive, irreversible or out-of-scope",
     "ask one clarifying question",
-    "always ask before destructive",
     "stay within the approved scope",
     "worker-low",
     "worker-medium",
@@ -46,7 +47,7 @@ class OrchestrationRules(unittest.TestCase):
 
     def test_details_do_not_exempt_single_agent_from_approval(self):
         text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()
-        for phrase in ("may launch after stating scope", "without approval"):
+        for phrase in ("may launch after stating scope", "without approval", "wait for explicit user approval"):
             self.assertNotIn(phrase, text)
 
 
