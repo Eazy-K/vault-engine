@@ -54,17 +54,24 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertIn("consider worker-low/worker-medium", msg)
 
     def test_coordination_calls_never_count_or_warn(self):
-        names = ["wait_agent", "wait", "send_input", "send_message", "interrupt_agent", "close_agent",
-                 "resume_agent", "list_agents", "update_plan", "collaboration.wait_agent",
-                 "collaborationwait_agent", "collaboration/send_input", "ns:close_agent"]
+        names = ["wait_agent", "send_message", "interrupt_agent", "collaborationwait_agent",
+                 "collaborationsend_message", "collaborationinterrupt_agent", "collaboration.wait_agent"]
         for _ in range(3):
             for name in names:
                 self.assertEqual(self._run(tool_name=name).stdout.strip(), "")
         self._run(turn_id="turn-2")
         event = self._events()[0]
         self.assertEqual(event["inline_calls"], 0)
-        self.assertEqual(event["coordination_calls"], 39)
+        self.assertEqual(event["coordination_calls"], 21)
         self.assertFalse(event["warned"])
+
+    def test_unverified_names_count_inline(self):
+        for name in ("send_input", "update_plan", "close_agent", "wait"):
+            for _ in range(2):
+                self._run(tool_name=name)
+        self._run(turn_id="turn-2")
+        event = self._events()[0]
+        self.assertEqual((event["inline_calls"], event["coordination_calls"]), (8, 0))
 
     def test_no_warning_after_spawn_in_same_turn(self):
         self._run(tool_name="collaborationspawn_agent")

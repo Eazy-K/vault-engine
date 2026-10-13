@@ -31,14 +31,12 @@ THRESHOLD = 8
 # apply_patch calls (which arrive as "Bash"/"apply_patch"), so it is not counted.
 WRAPPER_TOOLS = {"exec"}
 # Orchestration coordination, not inline work. List ONLY names verified in real
-# Codex payloads; anything unlisted counts as inline work. Namespaced/flattened
-# forms (`collaboration.wait_agent`, `collaborationwait_agent`) are normalized
-# by _base_name before comparing.
+# Codex payloads (verified live on Codex CLI 0.160.0, 2026-10-14, where they arrive
+# flattened as collaborationspawn_agent, collaborationwait_agent,
+# collaborationsend_message, collaborationinterrupt_agent); anything unlisted
+# counts as inline work. Namespaced/flattened forms are normalized by _base_name.
 SPAWN_TOOLS = {"Agent", "spawn_agent"}
-COORDINATION_TOOLS = SPAWN_TOOLS | {
-    "wait_agent", "wait", "send_input", "send_message", "interrupt_agent",
-    "close_agent", "resume_agent", "list_agents", "update_plan",
-}
+COORDINATION_TOOLS = SPAWN_TOOLS | {"wait_agent", "send_message", "interrupt_agent"}
 MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. If the remaining work is "
            "substantial or splits into independent parts, consider worker-low/worker-medium; "
            "small or tightly coupled work can stay inline.")

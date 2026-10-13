@@ -6,9 +6,10 @@ Denies a spawn unless `agent_type` is one of the engine's worker profiles
 override equals that profile's own model and effort, so a spawn can never be
 pricier than the profile. Mirrors tools/claude-hooks/agent-guard.py.
 
-Honest status: the 0025 experiment on Codex CLI 0.159.2 did not demonstrate
-that the CLI enforces a PreToolUse `deny` for sub-agent spawns. The hook is
-installed for when the CLI honors it; until then it is advisory at best.
+Live status: on Codex CLI 0.160.0 (Windows, 2026-10-14) the spawn arrives as
+`collaborationspawn_agent` and a PreToolUse deny was enforced live (no child
+started) once the matcher matched it; the old matcher never matched that name.
+Older CLIs did not dispatch PreToolUse for spawns at all (openai/codex#49736).
 
 Fails open: malformed input, an unreadable profile directory or any other
 error produces no output and exit 0, so it can never crash Codex or block a
