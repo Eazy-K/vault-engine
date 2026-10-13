@@ -40,8 +40,8 @@ class TestCodexContextWarn(unittest.TestCase):
         out = self._run({"session_id": "session-test"})
         self.assertEqual(out.returncode, 0)
         context = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("present a short plan", context)
-        self.assertIn("wait for explicit approval", context)
+        self.assertIn("work inline or delegate", context)
+        self.assertIn("ask before destructive", context)
         self.assertIn("worker-low/worker-medium", context)
 
     def test_existing_context_warning_is_preserved_with_reminder(self):
