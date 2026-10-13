@@ -45,7 +45,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
 ## Models
-`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort` change it (`--this-computer` for one machine), `--apply` writes it out. A worker model is always kept strictly cheaper than the orchestrator's. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in `CODEX_HOME/agents`; customized copies are kept and reported by doctor).
+`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort` change it (`--this-computer` for one machine), `--apply` writes it out. A worker model is always kept strictly cheaper than the orchestrator's. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
 
 ## Other tools
 Without subagent support, work proceeds with a single agent.
