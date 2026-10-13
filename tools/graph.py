@@ -1611,8 +1611,8 @@ def cmd_query(args, content: bool) -> None:
                     if stale:
                         stale_agents = True
                         break
-            codex_home = Path.home() / ".codex"
-            if codex_hooks is not None and codex_home.is_dir():
+            codex_home = codex_hooks.codex_home() if codex_hooks is not None else None
+            if codex_home is not None and codex_home.is_dir():
                 checks = codex_hooks.statuses()
                 # The model/effort line cannot be fixed by the engine; only hooks and
                 # workers count as something `update` repairs.
