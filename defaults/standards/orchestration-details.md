@@ -40,7 +40,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - Start a subagent with `spawn_agent` and `agent_type: worker-low` or `worker-medium`; never `default`. The worker TOML profiles set model and effort (there is no model parameter).
 - Stop a subagent with `interrupt_agent`; confirm it stopped before giving the same work to a new one. Completion notices give no history size, so do not resume; start a new agent.
 - The `developer_instructions` managed block (installed by `user-config --install`) carries the core rules.
-- Hooks: `context-warn` on every prompt; `delegation-warn` nudges once per turn at 8 inline calls (Codex adapter). Coordination calls (`collaborationspawn_agent`/`wait_agent`/`send_message`/`interrupt_agent`, verified on Codex CLI 0.160.0) are not counted. Subagent calls are detected through the rollout `session_meta` and excluded.
+- Hooks: `context-warn` on every prompt; `delegation-warn` nudges once per turn at 8 inline calls (Codex adapter). Coordination calls (`collaborationspawn_agent`/`wait_agent`/`send_message`/`followup_task`/`interrupt_agent`, verified on Codex CLI 0.160.0) are not counted. Subagent calls are detected through the rollout `session_meta` and excluded.
 - `agent-guard` (PR #117 matcher): a PreToolUse deny for spawns was enforced live on Codex CLI 0.160.0 (Windows, 2026-10-14); 0.159.2 did not dispatch it (openai/codex#49736); other versions are unverified. Re-run `codex-hooks --probe-deny` after Codex updates (or dismiss the doctor notice with `--ack-deny`).
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
