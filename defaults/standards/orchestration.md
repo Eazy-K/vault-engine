@@ -21,7 +21,7 @@ weights:
 - Per-tool mapping (Claude Code, Codex), rationale: [[orchestration-details]].
 
 ## Context-first delegation
-- The orchestrator manages implementation rather than doing it: planning, context selection, delegation, coordination, integration and verification. Default to delegating implementation, code exploration and test writing, including small bounded work (a function and its test, two small file changes); related small tasks go to one worker. Raw tool output stays in workers.
+- The orchestrator manages implementation rather than doing it: planning, context selection, delegation, coordination, integration and verification. Default to delegating implementation, code exploration and test writing, including small bounded work (a function and its test, two small file changes). Raw tool output stays in workers.
 - Workers return a concise structured summary: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence, blockers; no raw logs unless needed for diagnosis.
-- Inline implementation is the exception: a truly trivial one-line or single-step change, or work where delegating clearly costs more. Consecutive implementation steps by the orchestrator signal to reconsider delegating the rest; planning, coordination and verification do not count.
+- Inline implementation is the exception, limited to a truly trivial one-line or single-step change; small, related or tightly coupled work goes to one worker together. Consecutive implementation steps by the orchestrator signal to reconsider delegating the rest; planning, coordination and verification do not count.
 - Delegation is the strong default for suitable work, not a rigid rule or worker-count quota.

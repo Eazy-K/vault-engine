@@ -51,12 +51,13 @@ class OrchestrationRules(unittest.TestCase):
             text = path.read_text(encoding="utf-8").lower()
             for phrase in ("manages implementation rather than doing it",
                            "a function and its test, two small file changes",
-                           "related small tasks go to one worker",
+                           "small, related or tightly coupled work goes to one worker together",
                            "inline implementation is the exception",
                            "truly trivial one-line or single-step change",
                            "consecutive implementation steps by the orchestrator",
                            "planning, coordination and verification do not count"):
                 self.assertIn(phrase, text, f"{path.name} lacks: {phrase}")
+            self.assertNotIn("clearly costs more", text, path.name)
 
     def test_core_note_is_core_and_short(self):
         text = CORE.read_text(encoding="utf-8")
