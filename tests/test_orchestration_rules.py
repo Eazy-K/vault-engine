@@ -49,10 +49,13 @@ class OrchestrationRules(unittest.TestCase):
     def test_implementation_is_worker_work_in_core_and_codex(self):
         for path in (CORE, CODEX):
             text = path.read_text(encoding="utf-8").lower()
-            for phrase in ("well-bounded implementation, code exploration and test writing even when small",
+            for phrase in ("manages implementation rather than doing it",
+                           "a function and its test, two small file changes",
+                           "related small tasks go to one worker",
+                           "inline implementation is the exception",
+                           "truly trivial one-line or single-step change",
                            "consecutive implementation steps by the orchestrator",
-                           "planning, coordination and verification do not count",
-                           "trivial or tightly coupled work"):
+                           "planning, coordination and verification do not count"):
                 self.assertIn(phrase, text, f"{path.name} lacks: {phrase}")
 
     def test_core_note_is_core_and_short(self):
