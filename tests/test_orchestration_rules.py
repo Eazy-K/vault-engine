@@ -10,9 +10,10 @@ CODEX = DEFAULTS / "config" / "codex" / "developer-instructions.md"
 
 REQUIRED = [
     "owns triage, planning, coordination, verification",
-    "decide per task whether to work inline or delegate",
-    "it is never required",
-    "do not delegate just to hit a count",
+    "default to delegating",
+    "strong default",
+    "not a rigid rule",
+    "worker-count quota",
     "without asking again",
     "ask before destructive, irreversible or out-of-scope",
     "ask one clarifying question",
@@ -38,12 +39,17 @@ class OrchestrationRules(unittest.TestCase):
             for phrase in REQUIRED:
                 self.assertIn(phrase, text, f"{path.name} lacks rule: {phrase}")
 
+    def test_codex_weighs_benefit_not_independence_alone(self):
+        text = CODEX.read_text(encoding="utf-8").lower()
+        self.assertIn("independence alone is not sufficient", text)
+        self.assertIn("two small, self-contained edits", text)
+
     def test_core_note_is_core_and_short(self):
         text = CORE.read_text(encoding="utf-8")
         self.assertIn("\ncore: true\n", text)
         body = text.split("---", 2)[2]
-        self.assertLessEqual(len([l for l in body.splitlines() if l.strip()]), 15)
-        self.assertLessEqual(len(body.split()), 250)
+        self.assertLessEqual(len([l for l in body.splitlines() if l.strip()]), 18)
+        self.assertLessEqual(len(body.split()), 290)
 
     def test_details_do_not_exempt_single_agent_from_approval(self):
         text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()

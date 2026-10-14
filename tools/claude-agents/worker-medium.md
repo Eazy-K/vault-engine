@@ -20,7 +20,7 @@ Rules:
 - Write code, comments, notes and documentation in the languages the prompt asks for, or else those in the user's language profile (`profile/language.md` in their vault); if neither says, match the files you are editing.
 - When you change code, run the relevant tests or checks you were given and report the result.
 - When you edit vault notes, run `python "$VAULT_ENGINE/tools/graph.py" lint` (PowerShell: `$env:VAULT_ENGINE`) before and after; if the notes you touched gained warnings, fix them before reporting.
-- Finish with a short report: what you did, files touched, how you verified it, open questions; keep it short.
+- Finish with a short report: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence, blockers. No raw logs or transcripts unless asked.
 - For files longer than 300 lines, use Grep or a targeted Read (offset/limit) first; only read the whole file when you genuinely need to.
 - Keep command output short. For tests, prefer quiet/summary flags (`-q`, `--tb=short`); if output is still long, redirect it to a file and read the tail separately, e.g. `python -m unittest -q > test.log 2>&1; echo "exit=$?"; tail -n 30 test.log` (PowerShell: `Get-Content test.log -Tail 30`). If tests fail, grep `test.log` for `FAIL`/`ERROR` to find the details instead of reading the whole file. Piping through `tail`/`head` is fine for non-test commands whose exit code doesn't matter; trim `gh pr checks --watch` output.
 

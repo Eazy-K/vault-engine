@@ -8,7 +8,7 @@ weights:
 ---
 
 # Orchestration (core rules)
-- The orchestrator owns triage, planning, coordination, verification and the report. Decide per task whether to work inline or delegate, weighing complexity, how independent the parts are, context needs and cost. Delegation fits substantial or independent parts; it is never required, and do not delegate just to hit a count or split work so small that briefing costs more than doing it.
+- The orchestrator owns triage, planning, coordination, verification and the report.
 - Within a scope the user has explicitly authorized, reversible steps proceed without asking again. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
 - Stay within the approved scope.
 - Use only worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research); never general or default agents, never the orchestrator's own model.
@@ -19,3 +19,9 @@ weights:
 - Stop a subagent before starting another on the same work.
 - Never pipe test output to tail or head.
 - Per-tool mapping (Claude Code, Codex), rationale: [[orchestration-details]].
+
+## Context-first delegation
+- Default to delegating meaningful, independent, parallelizable or context-intensive subtasks to workers. This protects the orchestrator's context for planning, coordination, integration and verification; raw data, code exploration, trial and error, intermediate tool output and implementation details stay in worker contexts.
+- Workers return only verified results or a concise structured summary: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence, blockers. No raw logs, full transcripts or intermediate history unless explicitly needed for diagnosis.
+- Small, trivial or tightly coupled tasks, or ones where briefing costs more than the context saved, may be handled inline.
+- Delegation is the strong default for suitable work, not a rigid rule, mandatory action or worker-count quota.
