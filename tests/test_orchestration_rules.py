@@ -41,8 +41,8 @@ class OrchestrationRules(unittest.TestCase):
 
     def test_codex_weighs_benefit_not_independence_alone(self):
         text = CODEX.read_text(encoding="utf-8").lower()
-        self.assertIn("independence alone does not justify delegation", text)
-        self.assertIn("meaningfully outweighs briefing, coordination, and worker overhead", text)
+        self.assertIn("independence alone is not sufficient", text)
+        self.assertIn("two small, self-contained edits", text)
 
     def test_core_note_is_core_and_short(self):
         text = CORE.read_text(encoding="utf-8")
