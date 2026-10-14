@@ -13,7 +13,7 @@ weights:
 The core rules are in [[orchestration]] (always loaded). This note maps them to each tool and explains the reasoning.
 
 ## Why
-Delegating keeps the orchestrator's context clean and is cheaper on multi-turn work, because its large context is not re-read on every turn. For small calls the subagent start-up overhead outweighs that (approximate, from one limited measurement), so small bounded work stays inline. If you mostly work in short conversational sessions, override this with your own note at the same relative path in your data repo (a vault note replaces the engine's copy).
+Delegating keeps the orchestrator's context clean and is cheaper on multi-turn work, because its large context is not re-read on every turn. For a single trivial call the subagent start-up overhead outweighs that (approximate, from one limited measurement), so trivial work stays inline; small but well-bounded implementation still suits a worker, bundled with related tasks where possible. If you mostly work in short conversational sessions, override this with your own note at the same relative path in your data repo (a vault note replaces the engine's copy).
 
 ## When to split
 - At least 2 independent, non-trivial pieces of work (e.g. reviewing several tools in parallel, writing independent modules).

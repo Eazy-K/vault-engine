@@ -39,10 +39,21 @@ class OrchestrationRules(unittest.TestCase):
             for phrase in REQUIRED:
                 self.assertIn(phrase, text, f"{path.name} lacks rule: {phrase}")
 
-    def test_codex_weighs_benefit_not_independence_alone(self):
+    def test_codex_bundles_small_edits_into_one_worker(self):
         text = CODEX.read_text(encoding="utf-8").lower()
-        self.assertIn("independence alone is not sufficient", text)
+        self.assertIn("independence alone does not justify separate workers", text)
         self.assertIn("two small, self-contained edits", text)
+        self.assertIn("usually belong in one worker", text)
+        self.assertNotIn("more efficient inline", text)
+
+    def test_implementation_is_worker_work_in_core_and_codex(self):
+        for path in (CORE, CODEX):
+            text = path.read_text(encoding="utf-8").lower()
+            for phrase in ("well-bounded implementation, code exploration and test writing even when small",
+                           "consecutive implementation steps by the orchestrator",
+                           "planning, coordination and verification do not count",
+                           "trivial or tightly coupled work"):
+                self.assertIn(phrase, text, f"{path.name} lacks: {phrase}")
 
     def test_core_note_is_core_and_short(self):
         text = CORE.read_text(encoding="utf-8")
