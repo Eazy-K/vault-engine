@@ -33,10 +33,11 @@ WRAPPER_TOOLS = {"exec"}
 # Orchestration coordination, not inline work. List ONLY names verified in real
 # Codex payloads (verified live on Codex CLI 0.160.0, 2026-10-14, where they arrive
 # flattened as collaborationspawn_agent, collaborationwait_agent,
-# collaborationsend_message, collaborationinterrupt_agent); anything unlisted
+# collaborationsend_message, collaborationinterrupt_agent, collaborationfollowup_task); anything unlisted
 # counts as inline work. Namespaced/flattened forms are normalized by _base_name.
 SPAWN_TOOLS = {"Agent", "spawn_agent"}
-COORDINATION_TOOLS = SPAWN_TOOLS | {"wait_agent", "send_message", "interrupt_agent"}
+COORDINATION_TOOLS = SPAWN_TOOLS | {"wait_agent", "send_message", "interrupt_agent",
+                                        "followup_task"}
 MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. Implementation, code "
            "exploration and test writing belong to worker-low/worker-medium (related "
            "steps in one worker); keep only a truly trivial one-line or single-step "

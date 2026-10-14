@@ -55,14 +55,15 @@ class TestCodexDelegationWarn(unittest.TestCase):
 
     def test_coordination_calls_never_count_or_warn(self):
         names = ["wait_agent", "send_message", "interrupt_agent", "collaborationwait_agent",
-                 "collaborationsend_message", "collaborationinterrupt_agent", "collaboration.wait_agent"]
+                 "collaborationsend_message", "collaborationinterrupt_agent", "collaboration.wait_agent",
+                 "followup_task", "collaborationfollowup_task"]
         for _ in range(3):
             for name in names:
                 self.assertEqual(self._run(tool_name=name).stdout.strip(), "")
         self._run(turn_id="turn-2")
         event = self._events()[0]
         self.assertEqual(event["inline_calls"], 0)
-        self.assertEqual(event["coordination_calls"], 21)
+        self.assertEqual(event["coordination_calls"], 27)
         self.assertFalse(event["warned"])
 
     def test_unverified_names_count_inline(self):
