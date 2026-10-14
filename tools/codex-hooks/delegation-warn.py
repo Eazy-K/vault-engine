@@ -37,9 +37,10 @@ WRAPPER_TOOLS = {"exec"}
 # counts as inline work. Namespaced/flattened forms are normalized by _base_name.
 SPAWN_TOOLS = {"Agent", "spawn_agent"}
 COORDINATION_TOOLS = SPAWN_TOOLS | {"wait_agent", "send_message", "interrupt_agent"}
-MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. If the remaining work is "
-           "substantial or splits into independent parts, consider worker-low/worker-medium; "
-           "small or tightly coupled work can stay inline.")
+MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. Implementation, code "
+           "exploration and test writing belong to worker-low/worker-medium (related "
+           "steps in one worker); keep only a truly trivial one-line or single-step "
+           "change inline. Planning, coordination and verification may continue.")
 
 
 def _base_name(tool: str) -> str:

@@ -51,7 +51,7 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertEqual([i + 1 for i, out in enumerate(outputs) if out.stdout.strip()], [8])
         msg = json.loads(outputs[7].stdout)["systemMessage"]
         self.assertIn("8 inline tool calls", msg)
-        self.assertIn("consider worker-low/worker-medium", msg)
+        self.assertIn("truly trivial one-line or single-step", msg)
 
     def test_coordination_calls_never_count_or_warn(self):
         names = ["wait_agent", "send_message", "interrupt_agent", "collaborationwait_agent",
