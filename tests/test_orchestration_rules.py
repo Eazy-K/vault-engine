@@ -39,6 +39,11 @@ class OrchestrationRules(unittest.TestCase):
             for phrase in REQUIRED:
                 self.assertIn(phrase, text, f"{path.name} lacks rule: {phrase}")
 
+    def test_codex_weighs_benefit_not_independence_alone(self):
+        text = CODEX.read_text(encoding="utf-8").lower()
+        self.assertIn("independence alone does not justify delegation", text)
+        self.assertIn("meaningfully outweighs briefing, coordination, and worker overhead", text)
+
     def test_core_note_is_core_and_short(self):
         text = CORE.read_text(encoding="utf-8")
         self.assertIn("\ncore: true\n", text)
