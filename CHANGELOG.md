@@ -13,7 +13,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Codex `delegation-warn` counts `followup_task` (`collaborationfollowup_task` in the hook payload) as coordination, not inline work. The Codex developer instructions and `orchestration-details.md` list `followup_task` among the coordination tools.
 
 ### Upgrade notes
-- Run `python tools/graph.py update --all` to get the changed Claude and Codex worker files and hooks, then re-approve the changed Codex hooks with `/hooks` in Codex on every computer. Run `user-config --install` (`doctor` reports outdated Codex developer instructions) so Codex picks up the new `developer_instructions`.
+- Run `python tools/graph.py update --all` on every computer to get the changed Claude and Codex worker files and hook scripts. The Codex `hooks.json` entries are unchanged, so no `/hooks` re-approval is needed. Run `user-config --install` (`doctor` reports outdated Codex developer instructions) so Codex picks up the new `developer_instructions`.
 - `update` offers the AGENTS.md template revision 13 with a diff for approval; vault copies of `standards/orchestration*.md` are user-owned and not updated automatically, so compare them with the engine defaults.
 
 ## [0.15.0] - 2026-10-14
