@@ -2,6 +2,20 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.16.0] - 2026-10-14
+
+### Changed
+- Context-first delegation (`defaults/standards/orchestration.md`): delegating meaningful, independent, parallelizable or context-intensive subtasks is the strong default; no quota, not mandatory. The orchestrator manages (planning, context selection, delegation, coordination, integration, verification) rather than implements: well-bounded implementation, code exploration and test writing suit a worker even when small, related small tasks share one worker, and only a truly trivial one-line or single-step change stays inline. Codex developer instructions, `orchestration-details.md` and the AGENTS.md template (revision 13) follow it.
+- Worker prompts (Claude and Codex, low and medium) ask for a short hand-back: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence and blockers, with no raw logs or transcripts unless asked.
+- Reminder wording of the Claude and Codex `context-warn` and `delegation-warn` hooks matches the orchestrator role (the "small or tightly coupled work may stay inline" wording is gone). Thresholds, tool classification and telemetry are unchanged.
+
+### Fixed
+- Codex `delegation-warn` counts `followup_task` (`collaborationfollowup_task` in the hook payload) as coordination, not inline work.
+
+### Upgrade notes
+- Run `python tools/graph.py update --all` to get the changed Claude and Codex worker files and hooks, then re-approve the changed Codex hooks with `/hooks` in Codex on every computer. If `doctor` reports outdated Codex developer instructions, run `user-config --install`.
+- `update` offers the AGENTS.md template revision 13 with a diff for approval; vault copies of `standards/orchestration*.md` are user-owned and not updated automatically, so compare them with the engine defaults.
+
 ## [0.15.0] - 2026-10-14
 
 ### Fixed
