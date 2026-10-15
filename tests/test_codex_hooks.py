@@ -331,11 +331,15 @@ class TestDenyProbe(unittest.TestCase):
         self.data = self.tmp / "data"
         (self.data / ".graph").mkdir(parents=True)
 
-    def _fake_run(self, version="codex-cli 1.2.3", fire=True, write=False, timeout=False):
+    def _fake_run(self, version="codex-cli 1.2.3", fire=True, write=False, timeout=False,
+                  flag=True, tool="apply_patch", output=""):
         calls = []
 
         def run(cmd, **kw):
             calls.append(cmd)
+            if cmd[1:] == ["exec", "--help"]:
+                text = "Options:\n  --dangerously-bypass-hook-trust\n" if flag else "Options:\n"
+                return types.SimpleNamespace(returncode=0, stdout=text, stderr="")
             if cmd[1:] == ["--version"]:
                 return types.SimpleNamespace(returncode=0, stdout=version + "\n", stderr="")
             if cmd[1] == "exec":
@@ -344,9 +348,10 @@ class TestDenyProbe(unittest.TestCase):
                 cwd = Path(kw["cwd"])
                 self.assertTrue((cwd / ".codex" / "hooks.json").is_file())
                 if fire:
-                    (cwd / "fired.log").write_text("fired")
+                    (cwd / "fired.log").write_text(tool)
                 if write:
                     (cwd / "probe.txt").write_text("x")
+                return types.SimpleNamespace(returncode=0, stdout="", stderr=output)
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
         return run, calls
 
@@ -365,7 +370,7 @@ class TestDenyProbe(unittest.TestCase):
         self.assertEqual(result, "enforced")
         self.assertIn("blocked", out)
         self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
-        self.assertEqual(sum(1 for c in calls if c[1:2] == ["exec"]), 1)
+        self.assertEqual(sum(1 for c in calls if c[1:2] == ["exec"] and "--help" not in c), 1)
 
     def test_not_enforced_when_file_written(self):
         result, out, _ = self._probe(write=True)
@@ -375,11 +380,49 @@ class TestDenyProbe(unittest.TestCase):
     def test_hook_not_fired_is_inconclusive_and_recorded(self):
         result, out, _ = self._probe(fire=False)
         self.assertEqual(result, "inconclusive")
-        self.assertIn("trust", out)
         self.assertEqual(self._machine()["codex_deny_tested_version"], "codex-cli 1.2.3")
         self.assertEqual(self._machine()["codex_deny_tested_result"], "inconclusive")
         with self.mock.patch("subprocess.run", side_effect=self._fake_run()[0]):
             self.assertIsNone(codex_hooks.deny_retest_status("codex", self.data))
+
+    def test_exec_command_has_bypass_flag(self):
+        _r, _o, calls = self._probe()
+        execs = [c for c in calls if c[1:2] == ["exec"] and "--help" not in c]
+        self.assertEqual(len(execs), 1)
+        self.assertIn("--dangerously-bypass-hook-trust", execs[0])
+
+    def test_missing_flag_skips_exec_and_says_update(self):
+        result, out, calls = self._probe(flag=False)
+        self.assertEqual(result, "inconclusive")
+        self.assertIn("lacks --dangerously-bypass-hook-trust", out)
+        self.assertIn("update Codex", out)
+        self.assertEqual([c for c in calls if c[1:2] == ["exec"] and "--help" not in c], [])
+        self.assertEqual(self._machine()["codex_deny_tested_result"], "inconclusive")
+
+    def test_fired_tool_name_in_output(self):
+        _r, out, _c = self._probe(tool="shell_command")
+        self.assertIn("shell_command", out)
+
+    def test_hook_script_logs_tool_name(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        hook = d / "probe-hook.py"
+        hook.write_text(codex_hooks.PROBE_HOOK, encoding="utf-8")
+        for stdin, want in (('{"tool_name": "apply_patch"}', "apply_patch"), ("not json", "unknown")):
+            out = subprocess.run([sys.executable, str(hook)], input=stdin, capture_output=True,
+                                 text=True, encoding="utf-8")
+            self.assertIn('"permissionDecision": "deny"', out.stdout)
+            self.assertEqual((d / "fired.log").read_text(encoding="utf-8"), want)
+
+    def test_not_fired_message_and_output_tail(self):
+        noisy = "\n".join(f"line {i}" for i in range(10)) + "\n\n"
+        _r, out, _c = self._probe(fire=False, output=noisy)
+        self.assertNotIn("review the project", out)
+        self.assertIn("hook trust was bypassed", out)
+        self.assertIn("tried ^(Write", out)
+        self.assertIn("line 9", out)
+        self.assertIn("line 5", out)
+        self.assertNotIn("line 4", out)
 
     def test_ack_records_acknowledged(self):
         run, _ = self._fake_run()
