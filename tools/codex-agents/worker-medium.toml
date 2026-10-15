@@ -1,7 +1,7 @@
 name = "worker-medium"
-description = "GPT-6-Luna at high effort for substantial but well-scoped subtasks the orchestrator delegates explicitly - research and comparisons, writing tests, moderate code changes (usually in its own worktree). Do not pick this agent on your own."
-model = "gpt-6-luna"
-model_reasoning_effort = "high"
+description = "GPT-6.1-Sol at medium effort for substantial but well-scoped subtasks the orchestrator delegates explicitly - research and comparisons, writing tests, moderate code changes (usually in its own worktree). Do not pick this agent on your own."
+model = "gpt-6.1-sol"
+model_reasoning_effort = "medium"
 developer_instructions = """
 You are a worker subagent. An orchestrator gave you one well-scoped subtask, and its prompt contains everything you need.
 

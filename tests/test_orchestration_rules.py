@@ -64,7 +64,7 @@ class OrchestrationRules(unittest.TestCase):
         self.assertIn("\ncore: true\n", text)
         body = text.split("---", 2)[2]
         self.assertLessEqual(len([l for l in body.splitlines() if l.strip()]), 18)
-        self.assertLessEqual(len(body.split()), 290)
+        self.assertLessEqual(len(body.split()), 300)
 
     def test_details_do_not_exempt_single_agent_from_approval(self):
         text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()

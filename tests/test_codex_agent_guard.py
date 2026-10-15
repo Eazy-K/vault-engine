@@ -34,13 +34,13 @@ class TestCodexAgentGuard(unittest.TestCase):
     def test_workers_with_defaults_or_matching_overrides_pass(self):
         self.assertIsNone(spawn("spawn_agent", {"agent_type": "worker-low"}))
         self.assertIsNone(spawn("Agent", {"agent_type": "worker-medium",
-                                           "model": "gpt-6-luna", "reasoning_effort": "high"}))
+                                           "model": "gpt-6.1-sol", "reasoning_effort": "medium"}))
 
     def test_unapproved_role_model_and_effort_are_denied(self):
         for args in ({"agent_type": "default"}, {"agent_type": "explorer"}, {},
                      {"agent_type": "worker-low", "model": "gpt-6-sol"},
-                     {"agent_type": "worker-low", "reasoning_effort": "low"},
-                     {"agent_type": "worker-medium", "reasoning_effort": "medium"}):
+                     {"agent_type": "worker-low", "reasoning_effort": "high"},
+                     {"agent_type": "worker-medium", "reasoning_effort": "high"}):
             with self.subTest(args=args):
                 out = spawn("spawn_agent", args)
                 self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
