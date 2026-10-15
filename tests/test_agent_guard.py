@@ -59,7 +59,7 @@ class TestAgentGuard(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout.strip(), "")
 
-    def test_denies_worker_medium_with_non_configured_cheaper_model(self):
+    def test_denies_worker_medium_with_non_configured_model(self):
         out = _run(_agent_call("worker-medium", "haiku"))
         self.assertDenied(out)
 
@@ -156,7 +156,7 @@ class TestAgentGuardModelConfig(unittest.TestCase):
         out = _run(_agent_call("worker-low", "haiku"), env_extra=self.env)
         self.assertEqual(out.stdout.strip(), "")
 
-    def test_other_model_denied_including_cheaper(self):
+    def test_other_model_denied(self):
         self._write_config({"worker-low": {"model": "sonnet"}})
         for model in ("haiku", "opus"):
             self.assertDenied(_run(_agent_call("worker-low", model), env_extra=self.env))

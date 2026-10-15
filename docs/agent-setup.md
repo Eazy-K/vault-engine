@@ -535,6 +535,14 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
 None of these touch any other hook or setting already there. `doctor` warns if any of
 any of the hooks isn't installed.
 
+Codex counterpart (`python tools/graph.py codex-hooks --install`, also done by `update --all`):
+the Codex `PreToolUse` `agent-guard` denies spawning a subagent unless `agent_type` is
+`worker-low` or `worker-medium`, and a `model` / `reasoning_effort` override must equal the
+installed profile in `~/.codex/agents/worker-*.toml`. The shipped profiles use `gpt-6.1-sol`
+with reasoning `low` (worker-low) and `medium` (worker-medium). `models` does not manage
+Codex workers; edit those TOMLs instead (edited copies are kept on update). `VAULT_AGENT_GUARD=off`
+disables this guard too.
+
 Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
 not three: `python tools/graph.py models` shows it (plus whether `settings.json` and
 `~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
