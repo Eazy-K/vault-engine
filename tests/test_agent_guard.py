@@ -1,5 +1,5 @@
 """Tests for tools/claude-hooks/agent-guard.py (PreToolUse hook that stops the
-orchestrator from starting expensive subagents).
+orchestrator from starting anything but worker-low/worker-medium).
 
 Runs the script as a real subprocess (like Claude Code itself would), feeding
 it JSON on stdin and checking exit code + stdout. Standard library only.
@@ -59,9 +59,13 @@ class TestAgentGuard(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout.strip(), "")
 
-    def test_allows_worker_medium_with_haiku(self):
+    def test_denies_worker_medium_with_non_configured_cheaper_model(self):
         out = _run(_agent_call("worker-medium", "haiku"))
-        self.assertEqual(out.returncode, 0)
+        self.assertDenied(out)
+
+    def test_denies_unknown_worker_role(self):
+        self.assertDenied(_run(_agent_call("worker-foo")))
+        self.assertDenied(_run(_agent_call("worker-foo", "sonnet")))
 
     def test_allows_worker_without_model_override(self):
         out = _run(_agent_call("worker-low"))
@@ -124,10 +128,10 @@ class TestAgentGuard(unittest.TestCase):
 
 
 class TestAgentGuardModelConfig(unittest.TestCase):
-    """Allowed worker models come from <data>/vault.config.json (+ machine.json)
-    "models" -> "orchestrator" -> "model" (see tools/model_config.py), read via
-    VAULT_DATA. Everything here uses a throwaway temp dir; the real vault is
-    never read."""
+    """The allowed override is the role's configured model from
+    <data>/vault.config.json (+ machine.json) "models" -> <role> -> "model"
+    (see tools/model_config.py), read via VAULT_DATA. Everything here uses a
+    throwaway temp dir; the real vault is never read."""
 
     assertDenied = _assert_denied
 
@@ -135,44 +139,51 @@ class TestAgentGuardModelConfig(unittest.TestCase):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.env = {"VAULT_DATA": str(self.tmp)}
 
     def _write_config(self, models: dict) -> None:
         (self.tmp / "vault.config.json").write_text(
             json.dumps({"models": models}), encoding="utf-8")
 
     def test_no_config_falls_back_to_default(self):
-        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
-        self.assertDenied(out)
-        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+        self.assertDenied(_run(_agent_call("worker-low", "opus"), env_extra=self.env))
+        out = _run(_agent_call("worker-low", "sonnet"), env_extra=self.env)
         self.assertEqual(out.returncode, 0)
+        self.assertEqual(out.stdout.strip(), "")
 
-    def test_sonnet_orchestrator_only_allows_haiku(self):
-        self._write_config({"orchestrator": {"model": "sonnet"}})
-        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+    def test_override_equal_to_configured_model_allowed(self):
+        self._write_config({"worker-low": {"model": "haiku"}})
+        out = _run(_agent_call("worker-low", "haiku"), env_extra=self.env)
+        self.assertEqual(out.stdout.strip(), "")
+
+    def test_other_model_denied_including_cheaper(self):
+        self._write_config({"worker-low": {"model": "sonnet"}})
+        for model in ("haiku", "opus"):
+            self.assertDenied(_run(_agent_call("worker-low", model), env_extra=self.env))
+
+    def test_same_model_as_orchestrator_allowed_when_configured(self):
+        self._write_config({"orchestrator": {"model": "sonnet"},
+                            "worker-medium": {"model": "sonnet"}})
+        out = _run(_agent_call("worker-medium", "sonnet"), env_extra=self.env)
+        self.assertEqual(out.stdout.strip(), "")
+
+    def test_each_role_uses_its_own_model(self):
+        self._write_config({"worker-low": {"model": "haiku"}})
+        self.assertDenied(_run(_agent_call("worker-medium", "haiku"), env_extra=self.env))
+
+    def test_deny_message_mentions_configured_model(self):
+        self._write_config({"worker-low": {"model": "haiku"}})
+        out = _run(_agent_call("worker-low", "opus"), env_extra=self.env)
         self.assertDenied(out)
-        out = _run(_agent_call("worker-low", "haiku"), env_extra={"VAULT_DATA": str(self.tmp)})
-        self.assertEqual(out.returncode, 0)
-
-    def test_opus_orchestrator_still_allows_sonnet_and_haiku(self):
-        self._write_config({"orchestrator": {"model": "opus"}})
-        for model in ("sonnet", "haiku"):
-            out = _run(_agent_call("worker-low", model), env_extra={"VAULT_DATA": str(self.tmp)})
-            self.assertEqual(out.returncode, 0)
-
-    def test_deny_message_mentions_allowed_models(self):
-        self._write_config({"orchestrator": {"model": "sonnet"}})
-        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
-        self.assertDenied(out)
-        payload = json.loads(out.stdout)
-        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        reason = json.loads(out.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("haiku", reason)
+        self.assertNotIn("cheap", reason)
 
     def test_invalid_config_falls_back_to_default(self):
         (self.tmp / "vault.config.json").write_text("not json", encoding="utf-8")
-        out = _run(_agent_call("worker-low", "sonnet"), env_extra={"VAULT_DATA": str(self.tmp)})
+        out = _run(_agent_call("worker-low", "sonnet"), env_extra=self.env)
         self.assertEqual(out.returncode, 0)
-        out = _run(_agent_call("worker-low", "opus"), env_extra={"VAULT_DATA": str(self.tmp)})
-        self.assertDenied(out)
+        self.assertDenied(_run(_agent_call("worker-low", "opus"), env_extra=self.env))
 
 
 if __name__ == "__main__":

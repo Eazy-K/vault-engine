@@ -29,7 +29,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 7. The orchestrator watches CI itself (`gh pr checks <no> --watch`, short output); agents are not woken for it.
 
 ## In Claude Code
-- Start a subagent with the `Agent` tool: `subagent_type` `worker-low` or `worker-medium` and always `model: sonnet` (or another model cheaper than the orchestrator's). `general-purpose` or any call without a model inherits the orchestrator's model and is far more expensive.
+- Start a subagent with the `Agent` tool: `subagent_type` `worker-low` or `worker-medium` and either omit `model` or pass the worker's own configured model (default `sonnet`). `general-purpose` is not allowed.
 - `isolation: worktree` only when the orchestrator has not already created the worktree; otherwise the agent opens its own and cannot write to the prompt's folder.
 - Stop a subagent with `TaskStop`. An agent that returns at `maxTurns` ("partial") may keep running background work.
 - Resume only if the completion notice's `subagent_tokens` (approximate last context size) is 50K or less; otherwise start a new agent with short instructions (PR number, failing test, file/line).
@@ -45,7 +45,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
 ## Models
-`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort` change it (`--this-computer` for one machine), `--apply` writes it out. A worker model is always kept strictly cheaper than the orchestrator's. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
+`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort` change it (`--this-computer` for one machine), `--apply` writes it out. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
 
 ## Other tools
 Without subagent support, work proceeds with a single agent.

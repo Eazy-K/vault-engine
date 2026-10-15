@@ -5,7 +5,7 @@ Orchestration rules (Codex adapter of the core orchestration note):
 - Coordinating workers (spawn_agent, wait_agent, send_message, followup_task, interrupt_agent) is your job, not inline work.
 - Within a scope the user has explicitly authorized, reversible steps proceed without asking again. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
 - Stay within the approved scope.
-- Delegate only to worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research) via spawn_agent agent_type; never general or default agents, never the orchestrator's own model.
+- Delegate only to worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research) via spawn_agent agent_type; never general or default agents.
 - Ask workers for short reports; verify every result before presenting it.
 - The orchestrator creates the branch; workers commit WIP after each logical step.
 - Do not resume big agents; start a new subagent with short instructions.

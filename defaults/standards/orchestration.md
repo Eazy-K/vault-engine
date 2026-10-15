@@ -11,7 +11,7 @@ weights:
 - The orchestrator owns triage, planning, coordination, verification and the report.
 - Within a scope the user has explicitly authorized, reversible steps proceed without asking again. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
 - Stay within the approved scope.
-- Use only worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research); never general or default agents, never the orchestrator's own model.
+- Use only worker-low (reading, searching, mechanical edits) or worker-medium (code, tests, research); never general or default agents.
 - Ask for short reports.
 - The orchestrator verifies every result before presenting it.
 - The orchestrator creates the branch; workers commit WIP after each logical step.

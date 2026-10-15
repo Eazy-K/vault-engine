@@ -34,13 +34,13 @@ class TestCodexAgentGuard(unittest.TestCase):
     def test_workers_with_defaults_or_matching_overrides_pass(self):
         self.assertIsNone(spawn("spawn_agent", {"agent_type": "worker-low"}))
         self.assertIsNone(spawn("Agent", {"agent_type": "worker-medium",
-                                           "model": "gpt-6-luna", "reasoning_effort": "high"}))
+                                           "model": "gpt-6.1-sol", "reasoning_effort": "medium"}))
 
     def test_unapproved_role_model_and_effort_are_denied(self):
         for args in ({"agent_type": "default"}, {"agent_type": "explorer"}, {},
                      {"agent_type": "worker-low", "model": "gpt-6-sol"},
-                     {"agent_type": "worker-low", "reasoning_effort": "low"},
-                     {"agent_type": "worker-medium", "reasoning_effort": "medium"}):
+                     {"agent_type": "worker-low", "reasoning_effort": "high"},
+                     {"agent_type": "worker-medium", "reasoning_effort": "high"}):
             with self.subTest(args=args):
                 out = spawn("spawn_agent", args)
                 self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -82,6 +82,31 @@ class TestCodexAgentGuard(unittest.TestCase):
         env = dict(os.environ, VAULT_AGENT_GUARD="off")
         self.assertIsNone(invoke({"tool_name": "spawn_agent",
                                   "tool_input": {"agent_type": "default"}}, env=env))
+
+
+class TestProfilesRestricted(unittest.TestCase):
+    def test_extra_profile_files_are_not_allowed_agent_types(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("codex_agent_guard", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            for role, effort in (("worker-low", "low"), ("worker-medium", "medium"),
+                                 ("worker-foo", "high"), ("worker-high", "high")):
+                (agents / f"{role}.toml").write_text(
+                    "\n".join([f'name = "{role}"', 'model = "gpt-6.1-sol"',
+                                f'model_reasoning_effort = "{effort}"']),
+                    encoding="utf-8")
+            mod.AGENTS_DIR = agents
+            profiles = mod._profiles()
+            self.assertEqual(set(profiles), {"worker-low", "worker-medium"})
+            for role in ("worker-low", "worker-medium"):
+                self.assertIsNone(mod.decide(
+                    {"tool_name": "spawn_agent", "tool_input": {"agent_type": role}}, profiles))
+            for role in ("worker-foo", "worker-high"):
+                self.assertIsNotNone(mod.decide(
+                    {"tool_name": "spawn_agent", "tool_input": {"agent_type": role}}, profiles))
 
 
 class TestAgentGuardLog(unittest.TestCase):

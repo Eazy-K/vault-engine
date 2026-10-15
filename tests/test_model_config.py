@@ -28,38 +28,15 @@ class TestRanking(unittest.TestCase):
     def test_case_insensitive(self):
         self.assertEqual(mc.rank("Opus"), mc.rank("opus"))
 
-    def test_is_cheaper(self):
-        self.assertTrue(mc.is_cheaper("haiku", "sonnet"))
-        self.assertTrue(mc.is_cheaper("sonnet", "opus"))
-        self.assertFalse(mc.is_cheaper("opus", "sonnet"))
-        self.assertFalse(mc.is_cheaper("sonnet", "sonnet"))
-
-    def test_is_cheaper_unknown_models_false(self):
-        self.assertFalse(mc.is_cheaper("gpt-5", "sonnet"))
-        self.assertFalse(mc.is_cheaper("sonnet", "gpt-5"))
-
-    def test_cheaper_than(self):
-        self.assertEqual(mc.cheaper_than("opus"), ["haiku", "sonnet"])
-        self.assertEqual(mc.cheaper_than("sonnet"), ["haiku"])
-        self.assertEqual(mc.cheaper_than("haiku"), [])
-
-    def test_cheaper_than_unknown_model_empty(self):
-        self.assertEqual(mc.cheaper_than("gpt-5"), [])
-
-    def test_allowed_worker_models_defaults_to_todays_behaviour(self):
-        self.assertEqual(set(mc.allowed_worker_models(None)), {"sonnet", "haiku"})
-        self.assertEqual(set(mc.allowed_worker_models("opus")), {"sonnet", "haiku"})
-
-    def test_allowed_worker_models_sonnet_orchestrator(self):
-        self.assertEqual(mc.allowed_worker_models("sonnet"), ["haiku"])
-
     def test_variant_suffix_ignored_in_rank(self):
         self.assertEqual(mc.rank("opus[1m]"), mc.rank("opus"))
         self.assertEqual(mc.rank(" Opus[1M] "), mc.rank("opus"))
         self.assertIsNone(mc.rank("[1m]"))
 
-    def test_allowed_worker_models_with_variant_suffix(self):
-        self.assertEqual(mc.allowed_worker_models("opus[1m]"), ["haiku", "sonnet"])
+    def test_configured_model_defaults_and_layered(self):
+        self.assertEqual(mc.configured_model("worker-low"), "sonnet")
+        eff = {"worker-low": {"model": "haiku", "effort": "low"}}
+        self.assertEqual(mc.configured_model("worker-low", eff), "haiku")
 
 
 class TestLayering(unittest.TestCase):

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse guard for Codex sub-agent spawns (`spawn_agent` / `Agent`).
 
-Denies a spawn unless `agent_type` is one of the engine's worker profiles
-(tools/codex-agents/worker-*.toml) and any `model` / `reasoning_effort`
-override equals that profile's own model and effort, so a spawn can never be
-pricier than the profile. Mirrors tools/claude-hooks/agent-guard.py.
+Denies a spawn unless `agent_type` is `worker-low` or `worker-medium` (the
+profiles tools/codex-agents/worker-low.toml and worker-medium.toml; any other
+profile file in that folder is ignored) and any `model` / `reasoning_effort`
+override equals that profile's own configured model and effort.
+Mirrors tools/claude-hooks/agent-guard.py.
 
 Live status: on Codex CLI 0.160.0 (Windows, 2026-10-14) the spawn arrives as
 `collaborationspawn_agent` and a PreToolUse deny was enforced live (no child
@@ -28,19 +29,23 @@ from datetime import datetime
 from pathlib import Path
 
 AGENTS_DIR = Path(__file__).resolve().parent.parent / "codex-agents"
+WORKER_ROLES = ("worker-low", "worker-medium")
 
 
 def _profiles() -> dict[str, tuple[str, str]]:
-    """Map worker name -> (model, reasoning effort) from the shipped TOMLs."""
+    """Map role -> (model, reasoning effort) for WORKER_ROLES only."""
     found: dict[str, tuple[str, str]] = {}
-    for path in sorted(AGENTS_DIR.glob("worker-*.toml")):
+    for role in WORKER_ROLES:
+        path = AGENTS_DIR / f"{role}.toml"
+        if not path.is_file():
+            continue
         values: dict[str, str] = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             match = re.match(r'^(name|model|model_reasoning_effort)\s*=\s*"([^"]*)"\s*$', line)
             if match and match.group(1) not in values:
                 values[match.group(1)] = match.group(2)
         if {"name", "model", "model_reasoning_effort"} <= values.keys():
-            found[values["name"]] = (values["model"], values["model_reasoning_effort"])
+            found[role] = (values["model"], values["model_reasoning_effort"])
     return found
 
 
@@ -76,7 +81,7 @@ def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:
     role = args.get("agent_type")
     profile = profiles.get(role) if isinstance(role, str) else None
     if profile is None:
-        return ("agent-guard: only worker profiles may be started ("
+        return ("agent-guard: only worker-low and worker-medium may be started ("
                 + ", ".join(sorted(profiles)) + ").")
     model, effort = profile
     if args.get("model") is not None and args["model"] != model:

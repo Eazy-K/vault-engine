@@ -21,7 +21,6 @@ REQUIRED = [
     "worker-low",
     "worker-medium",
     "never general or default agents",
-    "never the orchestrator's own model",
     "short reports",
     "verif",
     "creates the branch",
