@@ -8,7 +8,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Codex workers (`tools/codex-agents/worker-*.toml`) moved to `gpt-6.1-sol`: reasoning `low` for worker-low, `medium` for worker-medium.
 - The rule that a worker must be cheaper than or different from the orchestrator is dropped from the orchestration notes.
 - Codex `agent-guard` allows only `worker-low` and `worker-medium` (other profile files in the agents folder are ignored) and validates any `model` / `reasoning_effort` override against the installed profile.
-- Worker-tier wording: worker-low also covers code exploration that locates and summarizes code (find where X is, read and summarize files); worker-medium covers exploration that needs judgment (audits, consistency checks, comparisons, design analysis). Applies to `orchestration.md` and the Codex developer instructions.
+- Worker-tier wording: worker-low also covers code lookup (find where X is, read and summarize files); worker-medium covers exploration that needs judgment (audits, comparisons, design). Applies to `orchestration.md` and the Codex developer instructions.
 
 ### Fixed
 - `codex-hooks --probe-deny` passes `--dangerously-bypass-hook-trust` after checking `codex exec --help`; if the flag is missing it skips the probe, records `inconclusive` and asks to update Codex. It also reports the tool name the hook saw and prints the tail of the `codex exec` output when the hook does not fire.
