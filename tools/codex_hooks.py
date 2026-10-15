@@ -357,10 +357,15 @@ PROBE_TIMEOUT = 240
 PROBE_MATCHER = ("^(Write|Edit|apply_patch|Bash|shell|shell_command|local_shell|exec_command"
                  "|exec)$")
 PROBE_PROMPT = "create probe.txt with content x"
+BYPASS_FLAG = "--dangerously-bypass-hook-trust"
 PROBE_HOOK = (
-    "import json\n"
+    "import json, sys\n"
     "from pathlib import Path\n"
-    'Path(__file__).with_name("fired.log").write_text("fired", encoding="utf-8")\n'
+    "try:\n"
+    '    name = str(json.load(sys.stdin).get("tool_name") or "unknown")\n'
+    "except Exception:\n"
+    '    name = "unknown"\n'
+    'Path(__file__).with_name("fired.log").write_text(name, encoding="utf-8")\n'
     'print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", '
     '"permissionDecision": "deny", "permissionDecisionReason": "vault-engine deny probe"}}))\n'
 )
@@ -449,6 +454,20 @@ def ack_deny(executable: str | None = None, data: Path | None = None) -> str:
     return "acknowledged"
 
 
+def _supports_bypass_flag(executable: str) -> bool:
+    try:
+        out = subprocess.run([executable, "exec", "--help"], capture_output=True, text=True,
+                             encoding="utf-8", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and BYPASS_FLAG in f"{out.stdout or ''}{out.stderr or ''}"
+
+
+def _tail(*chunks: str | None, lines: int = 5, width: int = 200) -> list[str]:
+    rows = [ln.strip()[:width] for c in chunks for ln in (c or "").splitlines() if ln.strip()]
+    return rows[-lines:]
+
+
 def probe_deny(executable: str | None = None, data: Path | None = None,
                timeout: int = PROBE_TIMEOUT) -> str:
     """Run one `codex exec` in a throwaway git dir whose project .codex/hooks.json denies
@@ -460,6 +479,14 @@ def probe_deny(executable: str | None = None, data: Path | None = None,
         print("codex-hooks --probe-deny: codex not found, skipped")
         return "skipped"
     version = codex_version(executable)
+    if not _supports_bypass_flag(executable):
+        print(f"codex-hooks --probe-deny: this Codex CLI lacks {BYPASS_FLAG}, so project hooks "
+              "cannot be probed non-interactively; update Codex "
+              f"[{version or 'unknown version'}]")
+        if version and record_tested_version(version, data, "inconclusive"):
+            print(f"  recorded {TESTED_KEY} and {RESULT_KEY}=inconclusive in machine.json")
+        return "inconclusive"
+    proc = None
     with tempfile.TemporaryDirectory(prefix="vault-engine-probe-") as tmp:
         work = Path(tmp)
         (work / ".codex").mkdir()
@@ -472,27 +499,35 @@ def probe_deny(executable: str | None = None, data: Path | None = None,
                                                     encoding="utf-8", newline="\n")
         try:
             subprocess.run(["git", "init", "-q"], cwd=work, capture_output=True, timeout=60)
-            subprocess.run([executable, "exec", "--sandbox", "workspace-write", PROBE_PROMPT],
-                           cwd=work, capture_output=True, text=True, encoding="utf-8",
-                           timeout=timeout)
+            proc = subprocess.run(
+                [executable, "exec", BYPASS_FLAG, "--sandbox", "workspace-write", PROBE_PROMPT],
+                cwd=work, capture_output=True, text=True, encoding="utf-8", timeout=timeout)
         except subprocess.TimeoutExpired:
             print(f"codex-hooks --probe-deny: timed out after {timeout}s; nothing recorded")
             return "inconclusive"
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"codex-hooks --probe-deny: could not run ({exc}); nothing recorded")
             return "inconclusive"
-        fired = (work / "fired.log").exists()
+        log = work / "fired.log"
+        fired = log.exists()
+        names = log.read_text(encoding="utf-8", errors="replace").strip() if fired else ""
         blocked = not (work / "probe.txt").exists()
     if fired and blocked:
-        result, text = "enforced", "hook fired and the write was blocked"
+        result, text = "enforced", f"hook fired (tool: {names or 'unknown'}) and the write was blocked"
     elif fired:
-        result, text = "not-enforced", "hook fired but Codex still wrote the file (deny NOT enforced)"
+        result, text = "not-enforced", (f"hook fired (tool: {names or 'unknown'}) but Codex still "
+                                        "wrote the file (deny NOT enforced)")
     else:
         result, text = "inconclusive", (
-            "hook did not fire: project hooks likely need trust (review the project in "
-            "Codex first), or the matcher lacks this CLI's real tool names "
-            f"(tried {PROBE_MATCHER}); version recorded as inconclusive")
+            "hook did not fire although hook trust was bypassed, so the matcher probably lacks "
+            f"this CLI's real tool names (tried {PROBE_MATCHER}); version recorded as inconclusive")
     print(f"codex-hooks --probe-deny: {text} [{version or 'unknown version'}]")
+    if not fired and proc is not None:
+        tail = _tail(getattr(proc, "stderr", None), getattr(proc, "stdout", None))
+        if tail:
+            print("  codex exec output (tail):")
+            for ln in tail:
+                print(f"    {ln}")
     if version and record_tested_version(version, data, result):
         print(f"  recorded {TESTED_KEY} and {RESULT_KEY}={result} in machine.json")
     return result
