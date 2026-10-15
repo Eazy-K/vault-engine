@@ -84,6 +84,31 @@ class TestCodexAgentGuard(unittest.TestCase):
                                   "tool_input": {"agent_type": "default"}}, env=env))
 
 
+class TestProfilesRestricted(unittest.TestCase):
+    def test_extra_profile_files_are_not_allowed_agent_types(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("codex_agent_guard", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            for role, effort in (("worker-low", "low"), ("worker-medium", "medium"),
+                                 ("worker-foo", "high"), ("worker-high", "high")):
+                (agents / f"{role}.toml").write_text(
+                    "\n".join([f'name = "{role}"', 'model = "gpt-6.1-sol"',
+                                f'model_reasoning_effort = "{effort}"']),
+                    encoding="utf-8")
+            mod.AGENTS_DIR = agents
+            profiles = mod._profiles()
+            self.assertEqual(set(profiles), {"worker-low", "worker-medium"})
+            for role in ("worker-low", "worker-medium"):
+                self.assertIsNone(mod.decide(
+                    {"tool_name": "spawn_agent", "tool_input": {"agent_type": role}}, profiles))
+            for role in ("worker-foo", "worker-high"):
+                self.assertIsNotNone(mod.decide(
+                    {"tool_name": "spawn_agent", "tool_input": {"agent_type": role}}, profiles))
+
+
 class TestAgentGuardLog(unittest.TestCase):
     def run_guard(self, payload, data, **extra):
         env = {**os.environ, "VAULT_DATA": str(data)}
