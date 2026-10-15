@@ -2,6 +2,24 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.17.0] - 2026-10-15
+
+### Changed
+- Codex workers (`tools/codex-agents/worker-*.toml`) moved to `gpt-6.1-sol`: reasoning `low` for worker-low, `medium` for worker-medium.
+- The rule that a worker must be cheaper than or different from the orchestrator is dropped from the orchestration notes.
+- Codex `agent-guard` allows only `worker-low` and `worker-medium` (other profile files in the agents folder are ignored) and validates any `model` / `reasoning_effort` override against the installed profile.
+- Worker-tier wording: worker-low also covers code exploration that locates and summarizes code (find where X is, read and summarize files); worker-medium covers exploration that needs judgment (audits, consistency checks, comparisons, design analysis). Applies to `orchestration.md` and the Codex developer instructions.
+
+### Fixed
+- `codex-hooks --probe-deny` passes `--dangerously-bypass-hook-trust` after checking `codex exec --help`; if the flag is missing it skips the probe, records `inconclusive` and asks to update Codex. It also reports the tool name the hook saw and prints the tail of the `codex exec` output when the hook does not fire.
+
+### Docs
+- `docs/agent-setup.md` describes the Codex agent-guard (allowed agent types, override validation, default worker profiles, `VAULT_AGENT_GUARD=off`).
+
+### Upgrade notes
+- Run `python tools/graph.py update --all` (or `update --agents`) on every computer so `~/.codex/agents/worker-*.toml` get the new profiles; unedited older shipped profiles are replaced, edited ones are kept and need a manual edit to `gpt-6.1-sol`. Rerun `codex-hooks --install` (part of `update --all`) for the changed `agent-guard`; re-approve changed hooks with `/hooks` in Codex if it asks. Run `user-config --install` so Codex picks up the new `developer_instructions`.
+- Vault copies of `standards/orchestration*.md` are user-owned and not updated automatically, so compare them with the engine defaults. The AGENTS.md template is unchanged.
+
 ## [0.16.0] - 2026-10-14
 
 ### Changed
