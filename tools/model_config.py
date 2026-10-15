@@ -12,8 +12,8 @@ import json
 import re
 from pathlib import Path
 
-# Cheapest to most expensive. A model not listed here is unknown: it never
-# counts as "cheaper than" anything, so it is never offered to a worker.
+# Known Claude model names, ordered haiku < sonnet < opus. A model not listed
+# here is unknown to `rank`.
 MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
 ROLES = ("orchestrator", "worker-low", "worker-medium")
@@ -43,27 +43,12 @@ def base_model(model: str | None) -> str | None:
 
 
 def rank(model: str | None) -> int | None:
-    """This model's rank (0 = cheapest), or None if it isn't a known model.
+    """This model's rank (0 = lowest), or None if it isn't a known model.
     A [variant] suffix such as "[1m]" is ignored."""
     base = base_model(model)
     if base is None:
         return None
     return MODEL_RANK.get(base)
-
-
-def is_cheaper(model: str | None, than: str | None) -> bool:
-    """True if `model` is strictly cheaper than `than`; False if either is unknown."""
-    a, b = rank(model), rank(than)
-    return a is not None and b is not None and a < b
-
-
-def cheaper_than(model: str | None) -> list[str]:
-    """Known models strictly cheaper than `model`, cheapest first. Empty if
-    `model` is unknown or already the cheapest known model."""
-    r = rank(model)
-    if r is None:
-        return []
-    return [name for name, n in sorted(MODEL_RANK.items(), key=lambda kv: kv[1]) if n < r]
 
 
 def _load_json_dict(path: Path) -> dict:
@@ -104,10 +89,8 @@ def load_layered(shared_path: Path, machine_path: Path) -> tuple[dict, dict]:
     return effective, sources
 
 
-def allowed_worker_models(orchestrator_model: str | None) -> list[str]:
-    """Models a worker subagent may be started with (or overridden to): every
-    known model strictly cheaper than the configured orchestrator model.
-    Falls back to today's default (["haiku", "sonnet"], from the built-in
-    default orchestrator "opus") if `orchestrator_model` is unknown."""
-    models = cheaper_than(orchestrator_model)
-    return models if models else cheaper_than(DEFAULT_MODELS["orchestrator"]["model"])
+def configured_model(role: str, effective: dict | None = None) -> str:
+    """The model configured for `role` (from `effective`, as returned by
+    `load_layered`, else the built-in default)."""
+    source = effective if effective is not None else DEFAULT_MODELS
+    return source[role]["model"]

@@ -244,57 +244,25 @@ def status(data_dir: Path, settings_path: Path | None = None,
 
 # --- command ----------------------------------------------------------------
 
-def _downgrade_target(orchestrator_model: str) -> str | None:
-    """The most capable model still strictly cheaper than `orchestrator_model`,
-    for auto-downgrading a worker that is no longer cheaper. None if unknown."""
-    cheaper = mc.cheaper_than(orchestrator_model)
-    return cheaper[-1] if cheaper else None
-
-
 def cmd_models(args: argparse.Namespace) -> None:
     data_dir = Path(args.data).expanduser().resolve() if args.data else g.resolve_data_dir()
     shared_path = data_dir / "vault.config.json"
     machine_path = data_dir / ".graph" / "machine.json"
     role_updates: dict[str, dict[str, str]] = {}
-    explicit_worker_models: set[str] = set()
 
-    def set_value(role: str, field: str, value: str | None, *, explicit_model: bool = False) -> None:
+    def set_value(role: str, field: str, value: str | None) -> None:
         if value is None:
             return
         role_updates.setdefault(role, {})[field] = value
-        if explicit_model:
-            explicit_worker_models.add(role)
 
     set_value("orchestrator", "model", args.orchestrator)
     set_value("orchestrator", "effort", args.effort)
-    set_value("worker-low", "model", args.worker_low, explicit_model=True)
+    set_value("worker-low", "model", args.worker_low)
     set_value("worker-low", "effort", args.worker_low_effort)
-    set_value("worker-medium", "model", args.worker_medium, explicit_model=True)
+    set_value("worker-medium", "model", args.worker_medium)
     set_value("worker-medium", "effort", args.worker_medium_effort)
 
     if role_updates:
-        effective, _ = mc.load_layered(shared_path, machine_path)
-        for role, values in role_updates.items():
-            effective[role].update(values)
-
-        orch_model = effective["orchestrator"]["model"]
-        for role in WORKER_ROLES:
-            worker_model = effective[role]["model"]
-            if mc.is_cheaper(worker_model, orch_model):
-                continue
-            if role in explicit_worker_models:
-                sys.exit(f"models: --{role} model {worker_model!r} is not cheaper than "
-                          f"orchestrator {orch_model!r}; refusing. Pass a cheaper model, or "
-                          "leave it unset to let it be downgraded automatically.")
-            downgrade = _downgrade_target(orch_model)
-            if downgrade is None:
-                sys.exit(f"models: orchestrator model {orch_model!r} is not a known model "
-                          "(haiku, sonnet, opus)")
-            print(f"note: {role} ({worker_model}) is not cheaper than orchestrator "
-                  f"({orch_model}); downgrading {role} to {downgrade!r}")
-            role_updates.setdefault(role, {})["model"] = downgrade
-            effective[role]["model"] = downgrade
-
         target = machine_path if args.this_computer else shared_path
         _write_models(target, role_updates)
         print(f"  wrote: {target} ({', '.join(sorted(role_updates))})")

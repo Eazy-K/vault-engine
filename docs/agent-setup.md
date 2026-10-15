@@ -485,9 +485,8 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool that denies starting a subagent unless its
-  type starts with `worker-` and, if the call also picks a model, that model is
-  strictly cheaper than the configured orchestrator model (`sonnet` or `haiku` by
-  default; see `python tools/graph.py models` below to change which model each role
+  type is `worker-low` or `worker-medium` and, if the call also picks a model, that
+  model equals the one configured for that worker (`sonnet` by default; see `python tools/graph.py models` below to change which model each role
   uses). Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
   uninstalling it.
 - a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
@@ -545,11 +544,8 @@ using the vault by default (`<data repo>/vault.config.json`) or `--this-computer
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
 worker files' `model:`/`effort:` frontmatter, so the agent-guard hook above, the
-worker agents, and Claude Code's own model picker all agree. A worker model is always
-kept strictly cheaper than the orchestrator's: raising the orchestrator to a model a
-worker is no longer cheaper than downgrades that worker automatically (with a note),
-unless that worker's model was itself set explicitly in the same command, which
-refuses instead. `doctor` warns if `settings.json` or the worker files drift from this
+worker agents, and Claude Code's own model picker all agree. Each worker uses its
+configured model, and a model override on a spawn must match it. `doctor` warns if `settings.json` or the worker files drift from this
 config (skipped silently if `settings.json` doesn't exist yet).
 
 ---

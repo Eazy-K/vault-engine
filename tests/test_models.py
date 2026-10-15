@@ -119,21 +119,20 @@ class TestSetConfig(ModelsTestCase):
         self.assertEqual(config["models"]["worker-low"]["model"], "haiku")
         self.assertEqual(config["models"]["orchestrator"]["model"], "sonnet")
 
-    def test_worker_downgraded_automatically_when_no_longer_cheaper(self):
+    def test_raising_orchestrator_leaves_workers_unchanged(self):
         out = self._run(orchestrator="sonnet")
-        self.assertIn("downgrading worker-low", out)
-        self.assertIn("downgrading worker-medium", out)
+        self.assertNotIn("downgrad", out)
         config = json.loads((self.data / "vault.config.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["models"]["worker-low"]["model"], "haiku")
-        self.assertEqual(config["models"]["worker-medium"]["model"], "haiku")
+        self.assertNotIn("worker-low", config["models"])
+        self.assertNotIn("worker-medium", config["models"])
 
-    def test_explicit_worker_model_not_cheaper_refuses(self):
-        with self.assertRaises(SystemExit):
-            self._run(orchestrator="sonnet", worker_low="sonnet")
+    def test_explicit_worker_model_equal_to_orchestrator_is_written(self):
+        self._run(orchestrator="sonnet", worker_low="sonnet")
         config = json.loads((self.data / "vault.config.json").read_text(encoding="utf-8"))
-        self.assertNotIn("models", config)
+        self.assertEqual(config["models"]["worker-low"]["model"], "sonnet")
+        self.assertEqual(config["models"]["orchestrator"]["model"], "sonnet")
 
-    def test_explicit_worker_model_cheaper_is_accepted(self):
+    def test_explicit_worker_model_other_is_accepted(self):
         self._run(orchestrator="opus", worker_low="haiku")
         config = json.loads((self.data / "vault.config.json").read_text(encoding="utf-8"))
         self.assertEqual(config["models"]["worker-low"]["model"], "haiku")
@@ -194,7 +193,7 @@ class TestApply(ModelsTestCase):
 
     def test_show_reports_out_of_date_before_apply(self):
         self._write_agent_files()
-        self._run(orchestrator="sonnet")
+        self._run(worker_low="haiku")
         out = self._run()
         self.assertIn("OUT OF DATE", out)
 
