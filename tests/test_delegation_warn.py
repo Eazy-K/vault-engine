@@ -23,6 +23,39 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "tools" / "claude-hooks" / "delegation-warn.py"
 
 
+
+# (command, is_verification) -- shared by both hooks' classifier tests.
+COMMAND_TABLE = [
+    ("git status", True),
+    ("git diff --stat", True),
+    ("cd C:/x && git diff --stat", True),
+    ("python -m unittest tests.test_x", True),
+    ("python tests/run_shard.py --jobs 3", True),
+    ("python tools/graph.py leakcheck", True),
+    ("FOO=1 pytest -q | cat", True),
+    ("gh pr checks 12", True),
+    ("git log --oneline; ls -la", True),
+    ("python setup.py build", False),
+    ("pip install foo", False),
+    ("git commit -m x", False),
+    ("git push origin main", False),
+    ("gh pr create --title x", False),
+    ("python tools/graph.py reinforce", False),
+    ("cat a.txt && rm b.txt", False),
+    ("echo hi > out.txt", False),
+    ("sed -i s/a/b/ f.txt", False),
+    ("", False),
+]
+
+
+def load_hook():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("claude_delegation_warn", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class TestDelegationWarn(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -34,9 +67,10 @@ class TestDelegationWarn(unittest.TestCase):
         self.env["TMP"] = str(self.tmp)
 
     def _run(self, prompt_id="p1", tool_name="Bash", agent_id=None,
-              env_extra=None, event=None) -> subprocess.CompletedProcess:
+              env_extra=None, event=None, command=None) -> subprocess.CompletedProcess:
         payload = {"session_id": self.session_id, "prompt_id": prompt_id,
-                   "tool_name": tool_name, "tool_input": {}}
+                   "tool_name": tool_name,
+                   "tool_input": {} if command is None else {"command": command}}
         if event:
             payload["hook_event_name"] = event
         if agent_id is not None:
@@ -214,13 +248,47 @@ class TestDelegationWarn(unittest.TestCase):
         self.assertEqual(self._log(data), [])
 
 
-    def test_every_tool_counts_except_delegation_tools(self):
-        for tool in ("Grep", "Glob", "WebFetch"):
-            self.assertEqual(self._run(prompt_id="a", tool_name=tool).stdout.strip(), "")
-        self.assertNotEqual(self._run(prompt_id="a", tool_name="mcp__x__y").stdout.strip(), "")
+    def test_read_tools_never_warn_and_are_tallied_as_read_calls(self):
+        data, env = self._data_env()
+        for _ in range(6):
+            self.assertEqual(self._run(tool_name="Read", env_extra=env).stdout.strip(), "")
+        self._run(tool_name="Stop", event="Stop", env_extra=env)
+        (event,) = self._log(data)
+        self.assertEqual((event["inline_calls"], event["read_calls"], event["warned"]),
+                         (0, 6, False))
+
+    def test_four_edits_warn_on_the_fourth(self):
+        outs = [self._run(tool_name="Edit") for _ in range(4)]
+        self.assertTrue(all(o.stdout.strip() == "" for o in outs[:3]))
+        self.assertIn("delegation-warn", outs[3].stdout)
+
+    def _counted(self, tool, command=None):
+        """True if one call of this tool/command is counted as inline (via the event)."""
+        data, env = self._data_env()
+        self.session_id = f"cnt-{abs(hash((tool, command)))}-{id(self)}"
+        self._run(tool_name=tool, command=command, env_extra=env)
+        self._run(event="Stop", env_extra=env)
+        event = self._log(data)[-1]
+        return event["inline_calls"] == 1 and event["read_calls"] == 0
+
+    def test_bash_classification_counts_only_implementation(self):
+        for cmd in ("git status", "python -m unittest tests.test_x",
+                    "cd C:/x && git diff --stat"):
+            self.assertFalse(self._counted("Bash", cmd), cmd)
+        for cmd in ("python setup.py build", "git commit -m x", "cat a.txt && rm b.txt"):
+            self.assertTrue(self._counted("Bash", cmd), cmd)
+        self.assertFalse(self._counted("mcp__foo__bar"))
+        self.assertTrue(self._counted("Write"))
+
+    def test_delegation_tools_never_count(self):
         for _ in range(6):  # delegating never counts
             self.assertEqual(self._run(prompt_id="b", tool_name="Agent").stdout.strip(), "")
             self.assertEqual(self._run(prompt_id="b", tool_name="Task").stdout.strip(), "")
+
+    def test_is_verification_command_table(self):
+        mod = load_hook()
+        for cmd, expected in COMMAND_TABLE:
+            self.assertEqual(mod.is_verification_command(cmd), expected, cmd)
 
     def test_stop_flushes_last_prompt_once(self):
         data, env = self._data_env()
