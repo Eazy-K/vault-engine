@@ -18,6 +18,79 @@ import os
 import sys
 from datetime import datetime
 
+_TAIL_BYTES = 2 * 1024 * 1024
+
+
+def _text_len(content) -> int:
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                total += len(block["text"])
+    return total
+
+
+def _assistant_chars(rec) -> int | None:
+    """Text length of an assistant record, or None if `rec` is not one.
+
+    Shapes: Claude `{"type":"assistant","message":{"content":...}}`
+    Codex rollout (best effort, shape not documented in this repo):
+    `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":...}]}}`
+    and `{"type":"event_msg","payload":{"type":"agent_message","message":...}}`."""
+    if not isinstance(rec, dict):
+        return None
+    if rec.get("type") == "assistant":
+        msg = rec.get("message")
+        return _text_len(msg.get("content")) if isinstance(msg, dict) else 0
+    pl = rec.get("payload")
+    if isinstance(pl, dict):
+        if rec.get("type") == "response_item" and pl.get("type") == "message" \
+                and pl.get("role") == "assistant":
+            return _text_len(pl.get("content"))
+        if rec.get("type") == "event_msg" and pl.get("type") == "agent_message" \
+                and isinstance(pl.get("message"), str):
+            return len(pl["message"])
+    return None
+
+
+def transcript_last_chars(payload: dict) -> int | None:
+    """Length of the text of the last assistant entry in the transcript JSONL (reads
+    at most the last ~2 MB); None if no readable file or no assistant entry."""
+    try:
+        path = payload.get("agent_transcript_path") or payload.get("transcript_path")
+        if not path or not os.path.isfile(str(path)):
+            return None
+        with open(str(path), "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - _TAIL_BYTES))
+            data = f.read()
+        lines = data.split(b"\n")
+        if size > _TAIL_BYTES:
+            lines = lines[1:]  # first line is probably cut mid-record
+        for raw in reversed(lines):
+            try:
+                found = _assistant_chars(json.loads(raw.decode("utf-8", "replace")))
+            except Exception:
+                continue
+            if found is not None:
+                return found
+    except Exception:
+        pass
+    return None
+
+
+def last_message(payload: dict) -> tuple[int, str]:
+    last = payload.get("last_assistant_message")
+    if isinstance(last, str) and last:
+        return len(last), "payload"
+    chars = transcript_last_chars(payload)
+    if chars is not None:
+        return chars, "transcript"
+    return 0, "none"
+
+
 
 def log_event(payload: dict) -> None:
     if not payload:
@@ -38,9 +111,7 @@ def log_event(payload: dict) -> None:
                 event[key] = str(payload[key])
         if "stop_hook_active" in payload:
             event["stop_hook_active"] = bool(payload["stop_hook_active"])
-        last = payload.get("last_assistant_message")
-        if isinstance(last, str):
-            event["last_message_chars"] = len(last)
+        event["last_message_chars"], event["last_message_source"] = last_message(payload)
         with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
                   newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
