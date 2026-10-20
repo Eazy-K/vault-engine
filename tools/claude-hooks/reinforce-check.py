@@ -14,9 +14,12 @@ Once-per-id state: a small per-session file under the system temp dir
 (`vault-engine-reinforce/<session_id>.json`, the same place delegation-warn keeps
 its state) lists the ids already blocked on.
 
-Non-blocking reminder: when every task id is reinforced but a `reinforce` call had no
-`--outcome`, it prints a `systemMessage` once per id and session (logged as
-`allowed-reinforced-no-outcome`); it never blocks for that.
+Outcome: when every task id is reinforced but a `reinforce` call had no `--outcome`,
+a finish signal in the current turn blocks once per id and session (logged as
+`blocked-no-outcome`; the reason asks for a note-less `reinforce --task <id>
+--outcome ...`, since passing the notes again would double-count link weights).
+Without a finish signal it only prints a `systemMessage` once per id and session
+(logged as `allowed-reinforced-no-outcome`).
 
 Skipped: when `stop_hook_active` is true (a previous block of this hook is being
 handled; blocking again would loop) and when the payload carries an `agent_id`
@@ -173,7 +176,14 @@ def decide(payload: dict) -> tuple[str, str | None]:
         # Non-blocking: remind once per id and session that --outcome was left out.
         sp = state_path(session_id)
         marks = load_blocked(sp)
-        bare = [t for t in tasks if t not in with_outcome and "outcome:" + t not in marks]
+        bare = [t for t in tasks if t not in with_outcome]
+        if finish:
+            stop = [t for t in bare if "blocked_outcome:" + t not in marks]
+            if stop:
+                save_blocked(sp, marks + ["blocked_outcome:" + stop[0],
+                                      "outcome:" + stop[0]])
+                return "blocked-no-outcome", stop[0]
+        bare = [t for t in bare if "outcome:" + t not in marks]
         if bare:
             save_blocked(sp, marks + ["outcome:" + bare[0]])
             return "allowed-reinforced-no-outcome", bare[0]
@@ -203,7 +213,16 @@ def main() -> None:
     except Exception:
         outcome, task = "allowed-error", None
     log_decision(session_id, outcome, task)
-    if outcome == "blocked":
+    if outcome == "blocked-no-outcome":
+        reason = (
+            f"Task {task} was reinforced without an outcome. Run `python \"$VAULT_ENGINE/"
+            f"tools/graph.py\" reinforce --task {task} --outcome ok|partial|fail "
+            "[--rework]` (add `--rework` if the work needed a redo). Pass no note ids "
+            "this time: the notes were already counted and passing them again would "
+            "strengthen their links twice."
+        )
+        print(json.dumps({"decision": "block", "reason": reason}))
+    elif outcome == "blocked":
         reason = (
             f"This task looks finished but `reinforce` has not run for task {task}. Run "
             f'`python "{GRAPH}" reinforce --task {task} <ids of the notes that actually '
