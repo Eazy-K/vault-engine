@@ -12,6 +12,10 @@ or parent_thread_id) and skipped; whether Codex fires global hooks for
 subagents at all is unverified live. A completed turn is logged by the Stop
 event (this script is also registered under Stop); if Stop never fires (e.g. an
 interrupt) it is logged when the next turn's first tool call arrives.
+
+A/B switch: with VAULT_DELEGATION_AB=1|on|true the session id picks an arm
+(`ab_arm` in the event): "warn" behaves as usual, "silent" counts and logs but never
+warns. Events also carry engine_version, cwd and (if VAULT_LAB is set) lab.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from typing import Iterator
@@ -42,6 +47,33 @@ MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. Implementation, 
            "exploration and test writing belong to worker-low/worker-medium (related "
            "steps in one worker); keep only a truly trivial one-line or single-step "
            "change inline. Planning, coordination and verification may continue.")
+
+
+def ab_arm(session_id: str) -> str:
+    """"warn" / "silent" from the session id when VAULT_DELEGATION_AB is on, else "off"."""
+    if str(os.environ.get("VAULT_DELEGATION_AB") or "").strip().lower() not in ("1", "on", "true"):
+        return "off"
+    last = hashlib.sha1(str(session_id).encode()).hexdigest()[-1]
+    return "warn" if int(last, 16) % 2 == 0 else "silent"
+
+
+def engine_version() -> str:
+    """`__version__` of the graph.py next to this hook (regex, no import)."""
+    try:
+        graph = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "graph.py")
+        with open(graph, encoding="utf-8") as f:
+            m = re.search(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", f.read(), re.M)
+        return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def measurement_fields(session_id: str, cwd) -> dict:
+    fields = {"ab_arm": ab_arm(session_id), "engine_version": engine_version(),
+              "cwd": str(cwd) if cwd else os.getcwd()}
+    if os.environ.get("VAULT_LAB"):
+        fields["lab"] = os.environ["VAULT_LAB"]
+    return fields
 
 
 def _base_name(tool: str) -> str:
@@ -154,7 +186,7 @@ def _load_state(path: Path) -> dict:
     return state
 
 
-def _log_prompt(session_id: str, state: dict) -> None:
+def _log_prompt(session_id: str, state: dict, cwd: object = None) -> None:
     """Append a completed Codex turn to the local usage log, if configured."""
     try:
         raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
@@ -172,6 +204,7 @@ def _log_prompt(session_id: str, state: dict) -> None:
                  "coordination_calls": int(state.get("coordination") or 0),
                  "spawned": int(state.get("spawned") or 0),
                  "tools": dict(state.get("tools") or {})}
+        event.update(measurement_fields(session_id, cwd))
         with (graph_dir / "usage.log").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(event, ensure_ascii=False) + "\n")
     except (OSError, TypeError, ValueError):
@@ -224,13 +257,13 @@ def main() -> None:
             if is_stop:
                 # Codex requires JSON on stdout for Stop; "{}" is a no-op.
                 if state.get("turn_id") == turn_id:
-                    _log_prompt(session_id, state)
+                    _log_prompt(session_id, state, payload.get("cwd"))
                     _save_state(path, _fresh_state())
                 print("{}")
                 return
             if state.get("turn_id") != turn_id:
                 if state.get("turn_id") is not None:
-                    _log_prompt(session_id, state)
+                    _log_prompt(session_id, state, payload.get("cwd"))
                 state = _fresh_state(turn_id)
             state["tools"][tool] = state["tools"].get(tool, 0) + 1
             if kind == "spawn":
@@ -240,7 +273,8 @@ def main() -> None:
             else:
                 state["count"] += 1
             should_warn = (kind == "inline" and state["count"] >= THRESHOLD
-                           and not state["warned"] and state["spawned"] == 0)
+                           and not state["warned"] and state["spawned"] == 0
+                           and ab_arm(session_id) != "silent")
             if should_warn:
                 state["warned"] = True
             _save_state(path, state)
