@@ -240,7 +240,7 @@ class TestCodexDelegationWarn(unittest.TestCase):
 
     def test_classifier_matches_claude_hook_on_command_table(self):
         import importlib.util
-        from tests.test_delegation_warn import COMMAND_TABLE, SCRIPT as CLAUDE_SCRIPT
+        from test_delegation_warn import COMMAND_TABLE, SCRIPT as CLAUDE_SCRIPT
         mods = []
         for path in (CLAUDE_SCRIPT, SCRIPT):
             spec = importlib.util.spec_from_file_location(f"hook_{len(mods)}", path)
