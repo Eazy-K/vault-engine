@@ -507,10 +507,20 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   status note, then suggest the user start a new session or run `/compact`. Neither
   part of this hook ever blocks the prompt.
 - a `PostToolUse` hook (`delegation-warn.py`, matcher `*`) that
-  counts tool calls (any tool except `Agent`/`Task`) made directly by the orchestrator (not inside a subagent) for the
+  counts implementation calls made directly by the orchestrator (not inside a subagent) for the
   current user message and, once that count exceeds 3, adds a short one-time warning
-  suggesting the rest of the work be delegated to a worker. The counter resets on
-  every new user message. It never blocks a tool call, only adds context for the model.
+  suggesting the rest of the work be delegated to a worker. Implementation calls are
+  `Edit`, `Write`, `MultiEdit`, `NotebookEdit` and `Bash` unless the command is read-only or
+  verification (reads, greps, `git log`/`status`/`diff`, test runs, read-only `graph.py`
+  subcommands). Everything else (`Read`, `Grep`, `Glob`, `WebFetch`, MCP tools, ...) is tallied
+  as `read_calls` and never warns; `Agent`/`Task` are exempt. On Codex, `apply_patch` and
+  other write tools count, plus shell tools whose command is not verification (threshold 8).
+  The counter resets on every new user message. It never blocks a tool call, only adds
+  context for the model. `VAULT_DELEGATION_AB=1|on|true` turns on an A/B split: the session
+  id deterministically picks arm `warn` or `silent`; the silent arm counts and logs the same
+  event but never shows the reminder. Unset means arm `off`. `VAULT_LAB=<name>` adds a `lab`
+  field with that value to every event (for lab runs). Events also carry `ab_arm`,
+  `engine_version` and `cwd`.
   The same script is registered under `Stop` (Codex: `Stop` too) to flush the last
   prompt's `orchestrator_prompt` event to `.graph/usage.log`.
 - a `SubagentStop` hook (`subagent-log.py`, Claude and Codex) that appends one
