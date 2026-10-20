@@ -117,6 +117,24 @@ class TestCodexSubagentLog(unittest.TestCase):
         self.assertEqual(event["last_message_chars"], 0)
         self.assertEqual(event["last_message_source"], "none")
 
+    def test_walks_back_past_empty_assistant_record(self):
+        path = self._transcript([
+            json.dumps(ASSISTANT("earlier text")),
+            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "x", "input": {}}]}}),
+        ])
+        self._run(json.dumps({"session_id": "s1", "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], len("earlier text"))
+        self.assertEqual(event["last_message_source"], "transcript")
+
+    def test_no_text_anywhere_is_source_none(self):
+        path = self._transcript([json.dumps({"type": "assistant", "message": {
+            "role": "assistant", "content": []}})])
+        self._run(json.dumps({"session_id": "s1", "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_source"], "none")
+
     def test_codex_rollout_shapes(self):
         path = self._transcript([
             json.dumps({"type": "response_item", "payload": {

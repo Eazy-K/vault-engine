@@ -163,6 +163,52 @@ class TestSubagentLog(unittest.TestCase):
         self.assertEqual(event["last_message_chars"], 5)
         self.assertEqual(event["last_message_source"], "transcript")
 
+    def _handback(self, message, text=None):
+        content = [{"type": "text", "text": text}] if text else []
+        content.append({"type": "tool_use", "name": "SubagentHandback",
+                        "input": {"message": message}})
+        return {"type": "assistant", "message": {"role": "assistant", "content": content}}
+
+    def _tool_only(self):
+        return {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}
+
+    def test_handback_report_length_counted(self):
+        msg = "SUCCESS. " + "x" * 91
+        path = self._transcript([
+            json.dumps(ASSISTANT("earlier")),
+            json.dumps(self._handback(msg)),
+            json.dumps({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "delivered"}]}}),
+        ])
+        self._run(json.dumps({"session_id": "s1", "last_assistant_message": "",
+                              "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], len(msg))
+        self.assertEqual(event["last_message_source"], "transcript")
+        self.assertEqual(event["last_message_kind"], "handback")
+        self.assertNotIn("SUCCESS", json.dumps(event))
+
+    def test_walks_back_past_tool_only_record(self):
+        path = self._transcript([
+            json.dumps(ASSISTANT("earlier text")),
+            json.dumps(self._tool_only()),
+        ])
+        self._run(json.dumps({"session_id": "s1", "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], len("earlier text"))
+        self.assertEqual(event["last_message_source"], "transcript")
+        self.assertEqual(event["last_message_kind"], "text")
+
+    def test_no_text_anywhere_is_source_none(self):
+        path = self._transcript([json.dumps(self._tool_only()),
+                                 json.dumps({"type": "user", "message": {"content": "q"}})])
+        self._run(json.dumps({"session_id": "s1", "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], 0)
+        self.assertEqual(event["last_message_source"], "none")
+        self.assertEqual(event["last_message_kind"], "none")
+
     def test_message_chars_none_when_nothing_available(self):
         self._run(json.dumps({"session_id": "s1",
                               "agent_transcript_path": str(self.tmp / "missing.jsonl")}))

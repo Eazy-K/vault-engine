@@ -7,8 +7,12 @@ directory).
 Fields come from the documented SubagentStop payload
 (https://code.claude.com/docs/en/hooks): `agent_type`, `agent_id`,
 `stop_hook_active`, `last_assistant_message`, `agent_transcript_path`. Logged:
-agent_type, agent_id, stop_hook_active and the *length* of last_assistant_message
-(not its text). The payload documents no status/outcome/duration/token field, so
+agent_type, agent_id, stop_hook_active and the *length* of the final message
+(not its text): `last_message_chars`, `last_message_source` (payload | transcript | none)
+and `last_message_kind` (text | handback | none). Worker subagents return their report
+through a `SubagentHandback` tool call (no text block, empty payload message), so the
+transcript scan counts that call's `input.message` length (kind "handback") and walks
+back past assistant records with neither text nor handback. The payload documents no status/outcome/duration/token field, so
 none is logged. A stop with no agent_type and no meta file is a Claude Code internal
 agent; it is logged with `"internal": true`. When the payload lacks agent_type, `agentType` is read from the
 subagent meta file (`agent-<id>.meta.json` next to the transcript); no transcript
@@ -26,32 +30,46 @@ from datetime import datetime
 _TAIL_BYTES = 2 * 1024 * 1024
 
 
-def _text_len(content) -> int:
+def _text_len(content) -> tuple[int, int]:
+    """(text chars, SubagentHandback report chars) of a message `content`."""
     if isinstance(content, str):
-        return len(content)
-    total = 0
+        return len(content), 0
+    text = handback = 0
     if isinstance(content, list):
         for block in content:
-            if isinstance(block, dict) and isinstance(block.get("text"), str):
-                total += len(block["text"])
-    return total
+            if not isinstance(block, dict):
+                continue
+            if isinstance(block.get("text"), str):
+                text += len(block["text"])
+            elif block.get("type") == "tool_use" and block.get("name") == "SubagentHandback":
+                inp = block.get("input")
+                if isinstance(inp, dict):
+                    handback += len(str(inp.get("message", "")))
+    return text, handback
 
 
-def _assistant_chars(rec) -> int | None:
-    """Text length of an assistant record, or None if `rec` is not one.
+def _assistant_chars(rec) -> tuple[int, str] | None:
+    """(chars, kind) of an assistant record, or None if `rec` is not one or has no
+    text and no handback. kind is "handback" when the chars come from a
+    SubagentHandback tool call (how worker subagents return their report), else "text".
 
-    Shapes: Claude `{"type":"assistant","message":{"content":...}}`."""
-    if not isinstance(rec, dict):
+    Shape: Claude `{"type":"assistant","message":{"content":...}}`."""
+    if not isinstance(rec, dict) or rec.get("type") != "assistant":
         return None
-    if rec.get("type") == "assistant":
-        msg = rec.get("message")
-        return _text_len(msg.get("content")) if isinstance(msg, dict) else 0
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return None
+    text, handback = _text_len(msg.get("content"))
+    if handback:
+        return text + handback, "handback"
+    if text:
+        return text, "text"
     return None
 
 
-def transcript_last_chars(payload: dict) -> int | None:
-    """Length of the text of the last assistant entry in the transcript JSONL (reads
-    at most the last ~2 MB); None if no readable file or no assistant entry."""
+def transcript_last(payload: dict) -> tuple[int, str] | None:
+    """(chars, kind) of the last assistant entry in the transcript JSONL that has text
+    or a handback (reads at most the last ~2 MB); None if no readable file or none."""
     try:
         path = payload.get("agent_transcript_path") or payload.get("transcript_path")
         if not path or not os.path.isfile(str(path)):
@@ -75,15 +93,15 @@ def transcript_last_chars(payload: dict) -> int | None:
     return None
 
 
-def last_message(payload: dict) -> tuple[int, str]:
+def last_message(payload: dict) -> tuple[int, str, str]:
+    """(chars, source, kind): source payload|transcript|none, kind text|handback|none."""
     last = payload.get("last_assistant_message")
     if isinstance(last, str) and last:
-        return len(last), "payload"
-    chars = transcript_last_chars(payload)
-    if chars is not None:
-        return chars, "transcript"
-    return 0, "none"
-
+        return len(last), "payload", "text"
+    found = transcript_last(payload)
+    if found is not None:
+        return found[0], "transcript", found[1]
+    return 0, "none", "none"
 
 
 def meta_agent_type(payload: dict) -> tuple[str, bool]:
@@ -141,7 +159,8 @@ def log_event(payload: dict) -> None:
                 event["internal"] = True
         if "stop_hook_active" in payload:
             event["stop_hook_active"] = bool(payload["stop_hook_active"])
-        event["last_message_chars"], event["last_message_source"] = last_message(payload)
+        (event["last_message_chars"], event["last_message_source"],
+         event["last_message_kind"]) = last_message(payload)
         with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
                   newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")

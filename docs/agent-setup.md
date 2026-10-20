@@ -515,7 +515,9 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   prompt's `orchestrator_prompt` event to `.graph/usage.log`.
 - a `SubagentStop` hook (`subagent-log.py`, Claude and Codex) that appends one
   `subagent_stop` event (agent type, agent id, length of the final message) to
-  `.graph/usage.log`. It never blocks.
+  `.graph/usage.log`. Worker subagents return their report through a `SubagentHandback`
+  tool call, so the hook counts that report's length (`last_message_kind: "handback"`;
+  `last_message_source` stays payload | transcript | none). It never blocks.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
   `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
