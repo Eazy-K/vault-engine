@@ -81,12 +81,23 @@ class TestReinforceCheck(unittest.TestCase):
         self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced")
 
     def test_reinforce_without_outcome_reminds_once_without_blocking(self):
-        entries = [user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE, COMMIT]
+        entries = [user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE]
         out = json.loads(self._run(entries))
         self.assertNotIn("decision", out)
         self.assertIn("--outcome ok|partial|fail", out["systemMessage"])
         self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced-no-outcome")
         self.assertEqual(self._run(entries), "")
+        self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced")
+
+    def test_reinforce_without_outcome_blocks_once_on_finish_signal(self):
+        entries = [user("go"), CONTEXT_CALL, CONTEXT_OUT, REINFORCE, COMMIT]
+        decision = json.loads(self._run(entries))
+        self.assertEqual(decision["decision"], "block")
+        self.assertIn("reinforce --task abc123 --outcome ok|partial|fail", decision["reason"])
+        self.assertIn("$VAULT_ENGINE", decision["reason"])
+        entry = self._log()[-1]
+        self.assertEqual((entry["outcome"], entry["task"]), ("blocked-no-outcome", "abc123"))
+        self.assertEqual(self._run(entries), "")  # second Stop: not blocked again
         self.assertEqual(self._log()[-1]["outcome"], "allowed-reinforced")
 
     def test_no_finish_signal_allows(self):

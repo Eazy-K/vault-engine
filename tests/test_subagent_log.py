@@ -17,6 +17,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "tools" / "claude-hooks" / "subagent-log.py"
 
 
+def ASSISTANT(text):
+    return {"type": "assistant", "message": {"role": "assistant",
+                                             "content": [{"type": "text", "text": text}]}}
+
+
+def ASSISTANT_BLOCKS(texts):
+    blocks = [{"type": "text", "text": t} for t in texts]
+    blocks.insert(1, {"type": "tool_use", "name": "x", "input": {"text": "ignored"}})
+    return {"type": "assistant", "message": {"role": "assistant", "content": blocks}}
+
+
 class TestSubagentLog(unittest.TestCase):
     AGENT = "claude"
     PRINTS_JSON = False
@@ -116,8 +127,48 @@ class TestSubagentLog(unittest.TestCase):
     def test_missing_optional_fields_are_omitted(self):
         self._run(json.dumps({"session_id": "s1"}))
         (event,) = self._events()
-        for key in ("agent_type", "agent_id", "stop_hook_active", "last_message_chars"):
+        for key in ("agent_type", "agent_id", "stop_hook_active"):
             self.assertNotIn(key, event)
+
+    def _transcript(self, lines):
+        path = self.tmp / "agent.jsonl"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    def test_message_chars_from_payload(self):
+        self._run(json.dumps({"session_id": "s1", "last_assistant_message": "hello"}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], 5)
+        self.assertEqual(event["last_message_source"], "payload")
+
+    def test_message_chars_from_transcript_last_assistant(self):
+        path = self._transcript([
+            json.dumps(ASSISTANT("first answer")),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "q" * 50}}),
+            "{not json",
+            json.dumps(ASSISTANT_BLOCKS(["abc", "de"])),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "tail"}}),
+        ])
+        self._run(json.dumps({"session_id": "s1", "agent_transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], 5)
+        self.assertEqual(event["last_message_source"], "transcript")
+
+    def test_transcript_path_fallback_and_str_content(self):
+        path = self._transcript([json.dumps(
+            {"type": "assistant", "message": {"role": "assistant", "content": "plain"}})])
+        self._run(json.dumps({"session_id": "s1", "last_assistant_message": "",
+                              "transcript_path": path}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], 5)
+        self.assertEqual(event["last_message_source"], "transcript")
+
+    def test_message_chars_none_when_nothing_available(self):
+        self._run(json.dumps({"session_id": "s1",
+                              "agent_transcript_path": str(self.tmp / "missing.jsonl")}))
+        (event,) = self._events()
+        self.assertEqual(event["last_message_chars"], 0)
+        self.assertEqual(event["last_message_source"], "none")
 
     def test_no_data_dir_writes_nothing(self):
         out = self._run(json.dumps({"session_id": "s1"}), data=False)

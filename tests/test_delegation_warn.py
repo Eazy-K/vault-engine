@@ -147,6 +147,55 @@ class TestDelegationWarn(unittest.TestCase):
         self.assertEqual(events[0]["session"], self.session_id)
         self.assertIn("ts", events[0])
 
+    def _session_for(self, arm):
+        import hashlib
+        for i in range(100):
+            sid = f"ab-{i}"
+            even = int(hashlib.sha1(sid.encode()).hexdigest()[-1], 16) % 2 == 0
+            if even == (arm == "warn"):
+                return sid
+        raise AssertionError("no session id found")
+
+    def _ab_run(self, arm, extra=None, calls=4, flush=True):
+        data, env = self._data_env()
+        env = dict(env)
+        env.update(extra or {})
+        if arm != "off":
+            env["VAULT_DELEGATION_AB"] = "TRUE"
+            self.session_id = self._session_for(arm)
+        outs = [self._run(env_extra=env) for _ in range(calls)]
+        self._run(event="Stop", env_extra=env)
+        return outs, self._log(data)
+
+    def test_ab_silent_arm_never_warns_but_logs(self):
+        outs, events = self._ab_run("silent", calls=6)
+        self.assertTrue(all(o.stdout.strip() == "" for o in outs))
+        (event,) = events
+        self.assertEqual((event["ab_arm"], event["inline_calls"], event["warned"]),
+                         ("silent", 6, False))
+
+    def test_ab_warn_arm_warns(self):
+        outs, events = self._ab_run("warn")
+        self.assertIn("delegation-warn", outs[3].stdout)
+        self.assertEqual((events[0]["ab_arm"], events[0]["warned"]), ("warn", True))
+
+    def test_ab_off_arm_unchanged(self):
+        outs, events = self._ab_run("off")
+        self.assertIn("delegation-warn", outs[3].stdout)
+        self.assertEqual(events[0]["ab_arm"], "off")
+
+    def test_event_has_engine_version_cwd_and_optional_lab(self):
+        text = (REPO_ROOT / "tools" / "graph.py").read_text(encoding="utf-8")
+        import re
+        version = re.search(r'^__version__ = "([^"]+)"', text, re.M).group(1)
+        _, events = self._ab_run("off")
+        self.assertEqual(events[0]["engine_version"], version)
+        self.assertTrue(events[0]["cwd"])
+        self.assertNotIn("lab", events[0])
+        self.session_id += "-lab"
+        _, events = self._ab_run("off", extra={"VAULT_LAB": "lab-1"})
+        self.assertEqual(events[-1]["lab"], "lab-1")
+
     def test_no_log_without_data_dir(self):
         missing = str(self.tmp / "nope")
         for pid in ("p1", "p2"):

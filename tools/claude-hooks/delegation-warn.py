@@ -15,6 +15,10 @@ PreToolUse's decision-control output does not document `additionalContext` (only
 `permissionDecision`, `permissionDecisionReason`, `systemMessage`, `updatedInput`);
 PostToolUse's does, so this reminder is delivered as a PostToolUse hook.
 
+A/B switch: with VAULT_DELEGATION_AB=1|on|true the session id picks an arm
+(`ab_arm` in the event): "warn" behaves as usual, "silent" counts and logs but never
+warns. Events also carry engine_version, cwd and (if VAULT_LAB is set) lab.
+
 State: a small per-session file under the system temp dir records the current
 prompt_id and how many matched tool calls have been made for it, and whether we
 already warned for this prompt_id. A new prompt_id (new user message) resets the
@@ -37,8 +41,10 @@ prints nothing and exits 0; a bug here can never block a tool call.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -55,6 +61,33 @@ WARNING_MESSAGE = (
     "single-step change inline. Planning, coordination and verification may "
     "continue."
 )
+
+
+def ab_arm(session_id: str) -> str:
+    """"warn" / "silent" from the session id when VAULT_DELEGATION_AB is on, else "off"."""
+    if str(os.environ.get("VAULT_DELEGATION_AB") or "").strip().lower() not in ("1", "on", "true"):
+        return "off"
+    last = hashlib.sha1(str(session_id).encode()).hexdigest()[-1]
+    return "warn" if int(last, 16) % 2 == 0 else "silent"
+
+
+def engine_version() -> str:
+    """`__version__` of the graph.py next to this hook (regex, no import)."""
+    try:
+        graph = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "graph.py")
+        with open(graph, encoding="utf-8") as f:
+            m = re.search(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", f.read(), re.M)
+        return m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def measurement_fields(session_id: str, cwd) -> dict:
+    fields = {"ab_arm": ab_arm(session_id), "engine_version": engine_version(),
+              "cwd": str(cwd) if cwd else os.getcwd()}
+    if os.environ.get("VAULT_LAB"):
+        fields["lab"] = os.environ["VAULT_LAB"]
+    return fields
 
 
 def state_dir() -> str:
@@ -83,7 +116,7 @@ def save_state(path: str, state: dict) -> None:
         pass
 
 
-def log_prompt(session_id: str, state: dict) -> None:
+def log_prompt(session_id: str, state: dict, cwd=None) -> None:
     """Append the finished prompt's inline-call count to the vault usage log.
     Silent on any problem (no data dir, unwritable log, ...)."""
     try:
@@ -99,6 +132,7 @@ def log_prompt(session_id: str, state: dict) -> None:
                  "session": session_id, "event": "orchestrator_prompt",
                  "inline_calls": int(state.get("count") or 0),
                  "warned": bool(state.get("warned")), "threshold": WARN_AFTER}
+        event.update(measurement_fields(session_id, cwd))
         with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
                   newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -130,7 +164,7 @@ def main() -> None:
         # Turn finished: flush the pending prompt, then forget it so the next
         # prompt_id (or a late tool call) does not log it a second time.
         if state.get("prompt_id") == prompt_id:
-            log_prompt(str(session_id), state)
+            log_prompt(str(session_id), state, payload.get("cwd"))
             save_state(sp, {})
         return
 
@@ -139,13 +173,14 @@ def main() -> None:
 
     if state.get("prompt_id") != prompt_id:
         if state.get("prompt_id"):
-            log_prompt(str(session_id), state)
+            log_prompt(str(session_id), state, payload.get("cwd"))
         state = {"prompt_id": prompt_id, "count": 0, "warned": False}
 
     state["count"] = int(state.get("count") or 0) + 1
     already_warned = bool(state.get("warned"))
 
-    if state["count"] > WARN_AFTER and not already_warned:
+    if (state["count"] > WARN_AFTER and not already_warned
+            and ab_arm(str(session_id)) != "silent"):
         state["warned"] = True
         save_state(sp, state)
         print(json.dumps({

@@ -127,6 +127,25 @@ class TestRetrievalHeader(_Ctx):
         self.assertIn("  claude: 1 measured, 0 over 3 inline calls", out)
         self.assertIn("  codex: 1 measured, 1 over 4 inline calls", out)
 
+    def test_orchestrator_prompts_ab_arm_and_version_split(self):
+        for arm, calls, warned, ver in (("warn", 4, True, "0.17.0"), ("warn", 6, True, "0.17.0"),
+                                        ("silent", 3, False, "0.18.0")):
+            graph.log_usage(self.paths, {"event": "orchestrator_prompt", "ab_arm": arm,
+                                         "inline_calls": calls, "warned": warned,
+                                         "threshold": 3, "engine_version": ver})
+        out = self.stats()
+        self.assertIn("  ab_arm warn: 2 measured, mean inline calls 5.0, warned 100%", out)
+        self.assertIn("  ab_arm silent: 1 measured, mean inline calls 3.0, warned 0%", out)
+        self.assertIn("  engine 0.17.0: 2 measured, mean inline calls 5.0", out)
+        self.assertIn("  engine 0.18.0: 1 measured, mean inline calls 3.0", out)
+
+    def test_no_split_lines_without_the_fields(self):
+        graph.log_usage(self.paths, {"event": "orchestrator_prompt", "inline_calls": 2,
+                                     "warned": False, "threshold": 3})
+        out = self.stats()
+        self.assertNotIn("ab_arm", out)
+        self.assertNotIn("engine ", out)
+
     def test_legacy_orchestrator_prompt_without_agent_is_unknown(self):
         self.paths.usage_log.parent.mkdir(parents=True, exist_ok=True)
         self.paths.usage_log.write_text(
