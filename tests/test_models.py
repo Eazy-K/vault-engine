@@ -84,6 +84,16 @@ class TestShowDefaults(ModelsTestCase):
         self.assertIn("worker-low: model=sonnet (default)", out)
         self.assertIn("worker-medium: model=sonnet (default)", out)
 
+    def test_show_lists_readonly_agents_read_only(self):
+        out = self._run()
+        self.assertIn("explore (Explore): model=haiku (default)", out)
+        self.assertIn("plan (Plan): model=inherit (default)", out)
+        self.assertIn("claude-code-guide (claude-code-guide): model=inherit", out)
+        self._write_agent_files()
+        self._run(apply=True)
+        self.assertEqual(sorted(p.name for p in self.agents.iterdir() if p.suffix == ".md"),
+                         ["worker-low.md", "worker-medium.md"])
+
     def test_show_does_not_write_anything(self):
         self._run()
         config = json.loads((self.data / "vault.config.json").read_text(encoding="utf-8"))

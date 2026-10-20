@@ -38,6 +38,13 @@ class TestRanking(unittest.TestCase):
         eff = {"worker-low": {"model": "haiku", "effort": "low"}}
         self.assertEqual(mc.configured_model("worker-low", eff), "haiku")
 
+    def test_readonly_roles_defaults_tolerate_none(self):
+        self.assertEqual(mc.READONLY_AGENT_ROLES, ("explore", "plan", "claude-code-guide"))
+        self.assertEqual(mc.READONLY_AGENT_NAMES["explore"], "Explore")
+        self.assertEqual(mc.configured_model("explore"), "haiku")
+        self.assertIsNone(mc.configured_model("plan"))
+        self.assertIsNone(mc.configured_model("claude-code-guide"))
+
 
 class TestLayering(unittest.TestCase):
     def setUp(self):
@@ -88,6 +95,21 @@ class TestLayering(unittest.TestCase):
             json.dumps({"models": {"nonsense-role": {"model": "opus"}}}), encoding="utf-8")
         effective, _ = mc.load_layered(self.shared, self.machine)
         self.assertEqual(effective, mc.DEFAULT_MODELS)
+
+
+
+class TestReadonlyRoleLayering(unittest.TestCase):
+    def test_override_explore_and_set_plan(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        shared = tmp / "vault.config.json"
+        shared.write_text(json.dumps({"models": {"explore": {"model": "sonnet"},
+                                                  "plan": {"model": "opus"}}}), encoding="utf-8")
+        effective, sources = mc.load_layered(shared, tmp / "machine.json")
+        self.assertEqual(effective["explore"]["model"], "sonnet")
+        self.assertEqual(effective["plan"]["model"], "opus")
+        self.assertIsNone(effective["claude-code-guide"]["model"])
+        self.assertEqual(sources["explore"]["model"], "vault.config.json")
 
 
 if __name__ == "__main__":

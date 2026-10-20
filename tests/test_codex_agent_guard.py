@@ -46,6 +46,17 @@ class TestCodexAgentGuard(unittest.TestCase):
                 self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
                 self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "PreToolUse")
 
+    def test_default_denied_with_specific_reason(self):
+        out = spawn("spawn_agent", {"agent_type": "default"})
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("built-in default agent is not allowed", reason)
+        self.assertIn("worker-low", reason)
+        self.assertIn("worker-medium", reason)
+
+    def test_unknown_role_denied(self):
+        out = spawn("spawn_agent", {"agent_type": "Explore"})
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_real_codex_spawn_shape_and_namespaced_names(self):
         # Shape of a real top-level spawn_agent call (collaboration namespace), anonymized.
         real = {"task_name": "audit", "agent_type": "worker-low", "fork_turns": "none",

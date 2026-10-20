@@ -484,10 +484,19 @@ prints what it would change (dry run). After the user agrees:
 python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
-- a `PreToolUse` hook for the `Agent` tool that denies starting a subagent unless its
-  type is `worker-low` or `worker-medium` and, if the call also picks a model, that
-  model equals the one configured for that worker (`sonnet` by default; see `python tools/graph.py models` below to change which model each role
-  uses). Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
+- a `PreToolUse` hook for the `Agent` tool, policy-based on the shared `models` config
+  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` (a model override
+  must equal the configured one, `sonnet` by default) and the read-only built-in
+  agents `Explore`, `Plan` and `claude-code-guide` (matched case-insensitively; they
+  cannot edit files). `Explore` runs on `haiku`: when the call names no model the hook
+  injects it (`updatedInput`); a different model is denied. `Plan` and
+  `claude-code-guide` inherit the caller's model unless you configure one. Override
+  under `vault.config.json` -> `models` -> `explore` / `plan` / `claude-code-guide` ->
+  `model` (e.g. `{"models": {"explore": {"model": "sonnet"}}}`); `graph.py models`
+  lists them read-only. Still denied: `fork`, `general-purpose`, `claude`, `default`
+  and any other type (they inherit the expensive orchestrator model and can edit).
+  See `python tools/graph.py models` below to change which model each role
+  uses. Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
   uninstalling it.
 - a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
   short one-line reminder to delegate implementation, code exploration and test writing to a worker by default (only a truly trivial one-line or single-step change stays inline) (and to
@@ -537,7 +546,8 @@ any of the hooks isn't installed.
 
 Codex counterpart (`python tools/graph.py codex-hooks --install`, also done by `update --all`):
 the Codex `PreToolUse` `agent-guard` denies spawning a subagent unless `agent_type` is
-`worker-low` or `worker-medium`, and a `model` / `reasoning_effort` override must equal the
+`worker-low` or `worker-medium` (Codex's built-in `default` agent is denied explicitly; there
+are no read-only Explore/Plan/haiku roles in Codex), and a `model` / `reasoning_effort` override must equal the
 installed profile in `~/.codex/agents/worker-*.toml`. The shipped profiles use `gpt-6.1-sol`
 with reasoning `low` (worker-low) and `medium` (worker-medium). `models` does not manage
 Codex workers; edit those TOMLs instead (edited copies are kept on update). `VAULT_AGENT_GUARD=off`

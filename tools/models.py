@@ -274,6 +274,12 @@ def cmd_models(args: argparse.Namespace) -> None:
         model, effort = effective[role]["model"], effective[role]["effort"]
         model_src, effort_src = sources[role]["model"], sources[role]["effort"]
         print(f"  {role}: model={model} ({model_src})  effort={effort} ({effort_src})")
+    print("read-only built-in agents (allowed by agent-guard; override under "
+          "models.<role> in vault.config.json):")
+    for role in mc.READONLY_AGENT_ROLES:
+        model = effective[role]["model"] or "inherit"
+        print(f"  {role} ({mc.READONLY_AGENT_NAMES[role]}): model={model} "
+              f"({sources[role]['model']})")
 
     if args.settings or args.agents_dir:
         pairs = [(Path(args.settings).expanduser() if args.settings else default_settings(),
