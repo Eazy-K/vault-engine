@@ -19,6 +19,14 @@ apply_patch/write tools and shell calls whose command is not read-only/verificat
 meaning of `inline_calls` changed in this version; `engine_version` on the event
 separates old and new data.
 
+Classifier: operators split only outside quotes; `git stash list/show`, more read-only
+git/gh subcommands and read-only PowerShell cmdlets (Get-ChildItem, Get-Content, ...;
+Codex on Windows runs reads that way) are verification. `_GRAPH_READ` is unchanged:
+`graph.py context` stays read-only, while `reinforce`, `init`, `migrate` count.
+Spawn calls create the turn state, so a delegation-only turn logs `inline_calls: 0`
+with `spawned`/`coordination_calls` at Stop. Parallel hook processes serialize on an
+exclusive state-file lock (see `_locked`).
+
 A/B switch: with VAULT_DELEGATION_AB=1|on|true the session id picks an arm
 (`ab_arm` in the event): "warn" behaves as usual, "silent" counts and logs but never
 warns. Events also carry engine_version, cwd and (if VAULT_LAB is set) lab.
@@ -34,6 +42,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 from typing import Iterator
 from datetime import datetime
 
@@ -56,24 +65,108 @@ WRITE_TOOLS = {"apply_patch", "edit", "write", "write_file", "edit_file", "multi
 SHELL_TOOLS = {"shell", "exec_command", "local_shell", "container.exec", "Bash", "bash",
                "shell_command", "unified_exec"}
 
-# --- Bash/shell command classifier (heuristic; duplicated in the Claude and Codex hooks,
-# tests assert both copies agree). Conservative: anything not clearly read-only/verification
-# is treated as implementation work, so the counter errs towards counting, never towards
-# silently ignoring a write.
-_SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+# --- Bash/PowerShell command classifier (heuristic; duplicated in the Claude and Codex
+# hooks, tests assert both copies agree). Conservative: anything not clearly
+# read-only/verification is treated as implementation work, so the counter errs towards
+# counting, never towards silently ignoring a write. Operators (`| || && ;` newline) split
+# segments only OUTSIDE quotes (so `grep -E "WARN|FAIL" f` is one segment); unbalanced
+# quotes make the whole command count as implementation.
 _ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELL_WRAP_RE = re.compile(
     r"^\s*(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+(?:-[A-Za-z]+\s+)*"
     r"-(?:l?c|command)\s+(.+)$", re.I | re.S)
 _READ_PROGRAMS = {"cat", "head", "tail", "sed", "grep", "rg", "find", "ls", "wc", "echo",
                   "printf", "diff", "tree", "type", "which", "pwd"}
+# Read-only PowerShell cmdlets/aliases (matched case-insensitively). Set-Content, Out-File,
+# New-Item, Remove-Item, Move-Item, Copy-Item, Add-Content, Rename-Item are deliberately
+# absent, and `>` redirection is rejected in _segment_is_read_only.
+_PS_READ = {"get-childitem", "gci", "dir", "get-content", "gc", "get-item", "get-location",
+            "get-date", "select-string", "sls", "test-path", "resolve-path", "get-command",
+            "measure-object", "select-object", "where-object", "sort-object", "format-table",
+            "format-list", "out-string", "write-output", "write-host", "get-filehash",
+            "compare-object", "convertfrom-json", "convertto-json"}
 _GIT_READ = {"status", "diff", "log", "show", "branch", "worktree", "remote", "fetch",
-             "rev-parse", "ls-files", "blame"}
+             "rev-parse", "ls-files", "blame", "describe", "shortlog", "rev-list", "ls-tree",
+             "cat-file", "name-rev", "merge-base", "tag", "config", "stash"}
+_GIT_BRANCH_WRITE = ("-d", "-D", "-m", "-M", "-c", "-C", "-f", "-u", "-t", "--delete",
+                     "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream",
+                     "--track", "--edit-description")
+_GIT_CONFIG_READ = ("--get", "--get-all", "--get-regexp", "--list", "-l")
+_GIT_CONFIG_WRITE = ("--add", "--unset", "--unset-all", "--replace-all", "--edit", "-e",
+                     "--rename-section", "--remove-section")
 _GH_READ = {"pr": {"view", "checks", "status", "list", "diff"}, "run": {"view", "list"}}
+_GH_API_WRITE_PREFIXES = ("-X", "--method", "-f", "-F", "--field", "--raw-field", "--input")
+# `context` stays read-only; `reinforce`, `init`, `migrate` (and anything unlisted) count.
 _GRAPH_READ = {"context", "stats", "show", "search", "tasks", "lint", "leakcheck", "doctor",
                "models", "--version", "--help"}
 _PYTHONS = {"python", "python3", "py"}
 _REDIRECT_OK_RE = re.compile(r"\d?>\s*&\d|\d?>\s*/dev/null|\d?>\s*NUL\b", re.I)
+
+
+def _split_segments(cmd: str):
+    """Split on `&&`, `||`, `|`, `;` and newlines outside quotes; None if quotes are unbalanced.
+
+    Single quotes are literal; backslash escapes the next char outside single quotes.
+    """
+    segments, buf, quote, i, n = [], [], None, 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote == "'":
+            buf.append(ch)
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            buf.append(ch)
+            if ch == "\\" and i + 1 < n:
+                i += 1
+                buf.append(cmd[i])
+            elif ch == '"':
+                quote = None
+        elif ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            i += 1
+            buf.append(cmd[i])
+        elif ch in "'\"":
+            quote = ch
+            buf.append(ch)
+        elif ch in "|&;\n":
+            if ch in "|&" and cmd[i + 1:i + 2] == ch:
+                i += 1  # `||` / `&&`
+            elif ch == "&":
+                buf.append(ch)  # lone `&` (e.g. `2>&1`) is not a separator
+                i += 1
+                continue
+            segments.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if quote is not None:
+        return None
+    segments.append("".join(buf))
+    return segments
+
+
+def _tokens(segment: str) -> list:
+    """Whitespace split outside quotes; surrounding quotes are dropped, backslashes kept."""
+    out, buf, quote, started = [], [], None, False
+    for ch in segment:
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                buf.append(ch)
+        elif ch in "'\"":
+            quote, started = ch, True
+        elif ch.isspace():
+            if started or buf:
+                out.append("".join(buf))
+            buf, started = [], False
+        else:
+            buf.append(ch)
+    if started or buf:
+        out.append("".join(buf))
+    return out
 
 
 def _program(token: str) -> str:
@@ -81,11 +174,38 @@ def _program(token: str) -> str:
     return base[:-4] if base.endswith(".exe") else base
 
 
+def _git_is_read_only(args: list) -> bool:
+    args = list(args)
+    while args and args[0] in ("-C", "-c"):
+        args = args[2:]  # `git -C <dir>` / `git -c k=v` take a value
+    rest = [a for a in args if not a.startswith("-")]
+    if not rest or rest[0] not in _GIT_READ:
+        return False
+    sub, flags = rest[0], [a for a in args if a.startswith("-")]
+    if sub == "branch":
+        if any(f in _GIT_BRANCH_WRITE for f in flags):
+            return False
+        # `git branch <name>` creates a branch; patterns are fine with --list.
+        return len(rest) == 1 or any(f in ("--list", "-l") for f in flags)
+    if sub == "tag":
+        return any(f in ("-l", "--list") for f in flags)
+    if sub == "config":
+        return (any(f in _GIT_CONFIG_READ for f in flags)
+                and not any(f in _GIT_CONFIG_WRITE for f in flags))
+    if sub == "worktree":
+        return rest[1:2] == ["list"]
+    if sub == "remote":
+        return rest[1:2] in ([], ["show"], ["get-url"])
+    if sub == "stash":
+        return rest[1:2] in (["list"], ["show"])
+    return True
+
+
 def _segment_is_read_only(segment: str) -> bool:
     segment = _REDIRECT_OK_RE.sub(" ", segment)
     if ">" in segment or "`" in segment or "$(" in segment:
         return False  # file redirection or command substitution: not provably read-only
-    tokens = segment.split()
+    tokens = _tokens(segment)
     while tokens and _ENV_RE.match(tokens[0]):
         tokens.pop(0)
     if not tokens:
@@ -93,6 +213,8 @@ def _segment_is_read_only(segment: str) -> bool:
     prog, args = _program(tokens[0]), tokens[1:]
     if prog == "cd":
         return True  # moving around changes no files
+    if prog in _PS_READ:
+        return True
     if prog in _READ_PROGRAMS:
         if prog == "sed" and any(a.startswith("-i") or a.startswith("--in-place") for a in args):
             return False
@@ -101,21 +223,11 @@ def _segment_is_read_only(segment: str) -> bool:
             return False
         return True
     if prog == "git":
-        rest = [a for a in args if not a.startswith("-")]
-        if not rest or rest[0] not in _GIT_READ:
-            return False
-        sub, flags = rest[0], [a for a in args if a.startswith("-")]
-        if sub == "branch" and (len(rest) > 1 or any(
-                f in ("-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy",
-                      "--set-upstream-to", "-u") for f in flags)):
-            return False  # `git branch <name>` creates a branch
-        if sub == "worktree" and rest[1:2] != ["list"]:
-            return False
-        if sub == "remote" and rest[1:2] not in ([], ["show"], ["get-url"]):
-            return False
-        return True
+        return _git_is_read_only(args)
     if prog == "gh":
         rest = [a for a in args if not a.startswith("-")]
+        if rest[:1] == ["api"]:
+            return not any(a.startswith(_GH_API_WRITE_PREFIXES) for a in args)
         return len(rest) >= 2 and rest[1] in _GH_READ.get(rest[0], ())
     if prog == "pytest":
         return True
@@ -142,8 +254,9 @@ def _segment_is_read_only(segment: str) -> bool:
 def is_verification_command(cmd) -> bool:
     """True when every segment of a shell command is read-only or verification.
 
-    Splits on && ; || | and newlines, ignores `cd` and env assignments. An empty or
-    unparsable command is NOT verification (it counts as implementation).
+    Splits on && ; || | and newlines outside quotes, ignores `cd` and env assignments.
+    An empty or unparsable (e.g. unbalanced quotes) command is NOT verification (it
+    counts as implementation).
     """
     if isinstance(cmd, (list, tuple)):
         cmd = " ".join(str(c) for c in cmd)
@@ -154,9 +267,15 @@ def is_verification_command(cmd) -> bool:
         if m:  # bash -lc "..." / powershell -Command "..."
             inner = m.group(1).strip()
             if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in "\"'":
+                q = inner[0]
                 inner = inner[1:-1]
+                if q == '"':
+                    inner = inner.replace('\\"', '"')
             return is_verification_command(inner)
-        segments = [s for s in _SPLIT_RE.split(cmd) if s.strip()]
+        parts = _split_segments(cmd)
+        if parts is None:
+            return False
+        segments = [s for s in parts if s.strip()]
         return bool(segments) and all(_segment_is_read_only(s) for s in segments)
     except Exception:
         return False
@@ -266,10 +385,19 @@ def _state_path(payload: dict) -> Path | None:
 
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
-    """Lock a per-turn state file across hook processes on Windows and POSIX."""
+    """Exclusive cross-process lock around a load-modify-save of one turn state file.
+
+    msvcrt.locking (Windows) / fcntl.flock (POSIX) on `<state>.lock`, taken
+    non-blocking and retried every 20 ms for at most ~2 s (msvcrt.LK_LOCK would block
+    up to ~10 s, beyond the hook budget). If the lock cannot be taken the hook runs
+    unlocked (fail-open): a lost update beats a blocked tool call. Chosen over
+    append-only per-call records because the state is tiny and one file keeps Stop
+    trivially consistent; the Claude copy uses the same approach.
+    """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock_file:
+        got = False
         if os.name == "nt":
             import msvcrt
 
@@ -277,21 +405,37 @@ def _locked(path: Path) -> Iterator[None]:
             if lock_file.tell() == 0:
                 lock_file.write(b"\0")
                 lock_file.flush()
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
+
+            def attempt() -> None:
                 lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
 
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            def attempt() -> None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = time.monotonic() + 2.0
+        while True:
             try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                attempt()
+                got = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            if got:
+                try:
+                    if os.name == "nt":
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
 
 def _fresh_state(turn_id: object = None) -> dict:
