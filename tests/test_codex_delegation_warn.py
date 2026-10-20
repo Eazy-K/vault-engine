@@ -30,9 +30,10 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.data.mkdir()
         self.env["VAULT_DATA"] = str(self.data)
 
-    def _run(self, turn_id="turn-1", tool_name="Bash", agent_id=None, event=None):
+    def _run(self, turn_id="turn-1", tool_name="Bash", agent_id=None, event=None,
+             tool_input=None):
         payload = {"session_id": self.session, "turn_id": turn_id,
-                   "tool_name": tool_name, "tool_input": {}}
+                   "tool_name": tool_name, "tool_input": tool_input or {}}
         if event:
             payload["hook_event_name"] = event
         if agent_id:
@@ -68,13 +69,14 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self.assertEqual(event["coordination_calls"], 27)
         self.assertFalse(event["warned"])
 
-    def test_unverified_names_count_inline(self):
+    def test_unverified_names_are_read_calls(self):
         for name in ("send_input", "update_plan", "close_agent", "wait"):
             for _ in range(2):
                 self._run(tool_name=name)
         self._run(turn_id="turn-2")
         event = self._events()[0]
-        self.assertEqual((event["inline_calls"], event["coordination_calls"]), (8, 0))
+        self.assertEqual((event["inline_calls"], event["read_calls"], event["coordination_calls"]),
+                         (0, 8, 0))
 
     def test_no_warning_after_spawn_in_same_turn(self):
         self._run(tool_name="collaborationspawn_agent")
@@ -90,13 +92,13 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self._run(tool_name="spawn_agent")
         self.assertTrue(all(not self._run().stdout.strip() for _ in range(5)))
 
-    def test_unknown_tools_count_inline_and_appear_in_tools(self):
+    def test_unknown_tools_are_read_calls_and_appear_in_tools(self):
         for _ in range(3):
             self._run(tool_name="mystery_tool")
         self._run(tool_name="wait_agent")
         self._run(turn_id="turn-2")
         event = self._events()[0]
-        self.assertEqual(event["inline_calls"], 3)
+        self.assertEqual((event["inline_calls"], event["read_calls"]), (0, 3))
         self.assertEqual(event["tools"], {"mystery_tool": 3, "wait_agent": 1})
         self.assertEqual(event["threshold"], 8)
 
@@ -205,9 +207,54 @@ class TestCodexDelegationWarn(unittest.TestCase):
             self.assertEqual(self._run(tool_name="collaboration.spawn_agent").stdout.strip(), "")
         self.assertFalse((self.data / ".graph" / "usage.log").exists())
 
-    def test_any_other_tool_counts(self):
-        outs = [self._run(turn_id="t9", tool_name="Other") for _ in range(8)]
+    def _counted(self, tool, tool_input):
+        self.session = f"cnt-{abs(hash((tool, json.dumps(tool_input))))}-{id(self)}"
+        self._run(tool_name=tool, tool_input=tool_input)
+        self._run(event="Stop")
+        event = self._events()[-1]
+        self.assertEqual(event["inline_calls"] + event["read_calls"], 1)
+        return event["inline_calls"] == 1
+
+    def test_read_tools_do_not_count_and_are_tallied(self):
+        outs = [self._run(turn_id="r1", tool_name=n, tool_input={"path": "x"})
+                for n in ("read_file", "list_dir", "grep", "web_search") * 3]
+        self.assertTrue(all(not o.stdout.strip() for o in outs))
+        self._run(turn_id="r2")
+        event = self._events()[0]
+        self.assertEqual((event["inline_calls"], event["read_calls"], event["warned"]),
+                         (0, 12, False))
+
+    def test_write_and_shell_classification(self):
+        self.assertTrue(self._counted("apply_patch", {"input": "*** Begin Patch"}))
+        self.assertTrue(self._counted("exec_command", {"cmd": "git commit -m x"}))
+        self.assertTrue(self._counted("shell", {"command": ["bash", "-lc", "rm a.txt"]}))
+        self.assertTrue(self._counted("local_shell", {"command": ["python", "setup.py", "build"]}))
+        self.assertFalse(self._counted("exec_command", {"cmd": "git status"}))
+        self.assertFalse(self._counted("shell", {"command": ["bash", "-lc", "cd x && git diff --stat"]}))
+        self.assertFalse(self._counted("container.exec", {"command": ["python", "-m", "unittest", "tests.x"]}))
+
+    def test_eight_shell_writes_still_warn(self):
+        outs = [self._run(turn_id="w1", tool_name="apply_patch") for _ in range(8)]
         self.assertTrue(outs[7].stdout.strip())
+        self.assertTrue(all(not o.stdout.strip() for o in outs[:7]))
+
+    def test_classifier_matches_claude_hook_on_command_table(self):
+        import importlib.util
+        from test_delegation_warn import COMMAND_TABLE, SCRIPT as CLAUDE_SCRIPT
+        mods = []
+        for path in (CLAUDE_SCRIPT, SCRIPT):
+            spec = importlib.util.spec_from_file_location(f"hook_{len(mods)}", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mods.append(mod)
+        for cmd, expected in COMMAND_TABLE:
+            self.assertEqual(mods[0].is_verification_command(cmd), expected, cmd)
+            self.assertEqual(mods[1].is_verification_command(cmd), expected, cmd)
+            self.assertEqual(mods[1].is_verification_command(cmd.split(" ")), expected, cmd)
+
+    def test_other_tools_do_not_count(self):
+        outs = [self._run(turn_id="t9", tool_name="Other") for _ in range(12)]
+        self.assertTrue(all(not o.stdout.strip() for o in outs))
 
     def test_stop_flushes_last_turn_once_and_prints_json(self):
         for _ in range(8):

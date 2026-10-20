@@ -13,6 +13,12 @@ subagents at all is unverified live. A completed turn is logged by the Stop
 event (this script is also registered under Stop); if Stop never fires (e.g. an
 interrupt) it is logged when the next turn's first tool call arrives.
 
+Counter (ADR 0012): only implementation calls count toward `inline_calls` --
+apply_patch/write tools and shell calls whose command is not read-only/verification
+(`is_verification_command`, heuristic). Other tools are tallied as `read_calls`. The
+meaning of `inline_calls` changed in this version; `engine_version` on the event
+separates old and new data.
+
 A/B switch: with VAULT_DELEGATION_AB=1|on|true the session id picks an arm
 (`ab_arm` in the event): "warn" behaves as usual, "silent" counts and logs but never
 warns. Events also carry engine_version, cwd and (if VAULT_LAB is set) lab.
@@ -43,6 +49,137 @@ WRAPPER_TOOLS = {"exec"}
 SPAWN_TOOLS = {"Agent", "spawn_agent"}
 COORDINATION_TOOLS = SPAWN_TOOLS | {"wait_agent", "send_message", "interrupt_agent",
                                         "followup_task"}
+# Write/edit tools and shell tools (names after _base_name). Shell calls count only when
+# the command is not read-only/verification; every other tool is a read call.
+WRITE_TOOLS = {"apply_patch", "edit", "write", "write_file", "edit_file", "multiedit",
+               "notebookedit", "Edit", "Write", "MultiEdit", "NotebookEdit"}
+SHELL_TOOLS = {"shell", "exec_command", "local_shell", "container.exec", "Bash", "bash",
+               "shell_command", "unified_exec"}
+
+# --- Bash/shell command classifier (heuristic; duplicated in the Claude and Codex hooks,
+# tests assert both copies agree). Conservative: anything not clearly read-only/verification
+# is treated as implementation work, so the counter errs towards counting, never towards
+# silently ignoring a write.
+_SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_WRAP_RE = re.compile(
+    r"^\s*(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+(?:-[A-Za-z]+\s+)*"
+    r"-(?:l?c|command)\s+(.+)$", re.I | re.S)
+_READ_PROGRAMS = {"cat", "head", "tail", "sed", "grep", "rg", "find", "ls", "wc", "echo",
+                  "printf", "diff", "tree", "type", "which", "pwd"}
+_GIT_READ = {"status", "diff", "log", "show", "branch", "worktree", "remote", "fetch",
+             "rev-parse", "ls-files", "blame"}
+_GH_READ = {"pr": {"view", "checks", "status", "list", "diff"}, "run": {"view", "list"}}
+_GRAPH_READ = {"context", "stats", "show", "search", "tasks", "lint", "leakcheck", "doctor",
+               "models", "--version", "--help"}
+_PYTHONS = {"python", "python3", "py"}
+_REDIRECT_OK_RE = re.compile(r"\d?>\s*&\d|\d?>\s*/dev/null|\d?>\s*NUL\b", re.I)
+
+
+def _program(token: str) -> str:
+    base = token.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base[:-4] if base.endswith(".exe") else base
+
+
+def _segment_is_read_only(segment: str) -> bool:
+    segment = _REDIRECT_OK_RE.sub(" ", segment)
+    if ">" in segment or "`" in segment or "$(" in segment:
+        return False  # file redirection or command substitution: not provably read-only
+    tokens = segment.split()
+    while tokens and _ENV_RE.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return True  # empty segment (e.g. trailing separator)
+    prog, args = _program(tokens[0]), tokens[1:]
+    if prog == "cd":
+        return True  # moving around changes no files
+    if prog in _READ_PROGRAMS:
+        if prog == "sed" and any(a.startswith("-i") or a.startswith("--in-place") for a in args):
+            return False
+        if prog == "find" and any(a in ("-delete", "-exec", "-execdir", "-ok", "-fprint")
+                                  for a in args):
+            return False
+        return True
+    if prog == "git":
+        rest = [a for a in args if not a.startswith("-")]
+        if not rest or rest[0] not in _GIT_READ:
+            return False
+        sub, flags = rest[0], [a for a in args if a.startswith("-")]
+        if sub == "branch" and (len(rest) > 1 or any(
+                f in ("-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy",
+                      "--set-upstream-to", "-u") for f in flags)):
+            return False  # `git branch <name>` creates a branch
+        if sub == "worktree" and rest[1:2] != ["list"]:
+            return False
+        if sub == "remote" and rest[1:2] not in ([], ["show"], ["get-url"]):
+            return False
+        return True
+    if prog == "gh":
+        rest = [a for a in args if not a.startswith("-")]
+        return len(rest) >= 2 and rest[1] in _GH_READ.get(rest[0], ())
+    if prog == "pytest":
+        return True
+    if prog in _PYTHONS:
+        rest = list(args)
+        while rest and rest[0].startswith("-") and rest[0] not in ("-m", "-c"):
+            rest.pop(0)  # interpreter flags such as -u / -I / -B
+        if not rest or rest[0] == "-c":
+            return False
+        if rest[0] == "-m":
+            return len(rest) > 1 and rest[1] in ("unittest", "pytest")
+        script = _program(rest[0])
+        if script == "run_shard.py":
+            return True
+        if script == "graph.py":
+            sub = [a for a in rest[1:] if not a.startswith("-")]
+            if sub:
+                return sub[0] in _GRAPH_READ
+            return any(a in ("--version", "--help") for a in rest[1:])
+        return False
+    return False
+
+
+def is_verification_command(cmd) -> bool:
+    """True when every segment of a shell command is read-only or verification.
+
+    Splits on && ; || | and newlines, ignores `cd` and env assignments. An empty or
+    unparsable command is NOT verification (it counts as implementation).
+    """
+    if isinstance(cmd, (list, tuple)):
+        cmd = " ".join(str(c) for c in cmd)
+    if not isinstance(cmd, str) or not cmd.strip():
+        return False
+    try:
+        m = _SHELL_WRAP_RE.match(cmd)
+        if m:  # bash -lc "..." / powershell -Command "..."
+            inner = m.group(1).strip()
+            if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in "\"'":
+                inner = inner[1:-1]
+            return is_verification_command(inner)
+        segments = [s for s in _SPLIT_RE.split(cmd) if s.strip()]
+        return bool(segments) and all(_segment_is_read_only(s) for s in segments)
+    except Exception:
+        return False
+
+
+def _command_of(payload: dict):
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        for key in ("command", "cmd"):
+            if tool_input.get(key):
+                return tool_input[key]
+    return None
+
+
+def _is_counted(tool: str, payload: dict) -> bool:
+    name = _base_name(tool)
+    if name in WRITE_TOOLS or tool in WRITE_TOOLS:
+        return True
+    if name in SHELL_TOOLS or tool in SHELL_TOOLS:
+        return not is_verification_command(_command_of(payload))
+    return False
+
+
 MESSAGE = ("[delegation-warn] 8 inline tool calls in this turn. Implementation, code "
            "exploration and test writing belong to worker-low/worker-medium (related "
            "steps in one worker); keep only a truly trivial one-line or single-step "
@@ -159,7 +296,7 @@ def _locked(path: Path) -> Iterator[None]:
 
 def _fresh_state(turn_id: object = None) -> dict:
     return {"turn_id": turn_id, "count": 0, "warned": False,
-            "coordination": 0, "spawned": 0, "tools": {}}
+            "coordination": 0, "spawned": 0, "reads": 0, "tools": {}}
 
 
 def _load_state(path: Path) -> dict:
@@ -179,6 +316,7 @@ def _load_state(path: Path) -> dict:
     tools = value.get("tools")
     state = _fresh_state(value.get("turn_id"))
     state.update(count=_int("count"), coordination=_int("coordination"), spawned=_int("spawned"),
+                 reads=_int("reads"),
                  warned=warned if type(warned) is bool else False)
     if isinstance(tools, dict):
         state["tools"] = {k: v for k, v in tools.items()
@@ -200,6 +338,7 @@ def _log_prompt(session_id: str, state: dict, cwd: object = None) -> None:
         event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "codex",
                  "session": session_id, "event": "orchestrator_prompt",
                  "inline_calls": int(state.get("count") or 0),
+                 "read_calls": int(state.get("reads") or 0),
                  "warned": bool(state.get("warned")), "threshold": THRESHOLD,
                  "coordination_calls": int(state.get("coordination") or 0),
                  "spawned": int(state.get("spawned") or 0),
@@ -265,14 +404,18 @@ def main() -> None:
                 if state.get("turn_id") is not None:
                     _log_prompt(session_id, state, payload.get("cwd"))
                 state = _fresh_state(turn_id)
+            counted = False
             state["tools"][tool] = state["tools"].get(tool, 0) + 1
             if kind == "spawn":
                 state["spawned"] += 1
             elif kind == "coordination":
                 state["coordination"] += 1
-            else:
+            elif _is_counted(tool, payload):
                 state["count"] += 1
-            should_warn = (kind == "inline" and state["count"] >= THRESHOLD
+                counted = True
+            else:
+                state["reads"] += 1
+            should_warn = (counted and state["count"] >= THRESHOLD
                            and not state["warned"] and state["spawned"] == 0
                            and ab_arm(session_id) != "silent")
             if should_warn:
