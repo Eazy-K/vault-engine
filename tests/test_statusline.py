@@ -320,5 +320,129 @@ class TestModelShares(unittest.TestCase):
         self.assertEqual(got, expected)
 
 
+def _tool_result(text):
+    return json.dumps({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1",
+         "content": [{"type": "text", "text": text}]}]}}) + "\n"
+
+
+def _load_statusline():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("statusline_vault_test", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestVaultSegment(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.proj = root / "proj"
+        (self.proj / "sess1" / "subagents").mkdir(parents=True)
+        self.main = self.proj / "sess1.jsonl"
+        self.sub = self.proj / "sess1" / "subagents" / "agent-a1.jsonl"
+        self.cache = root / "cache"
+        self.env = {"CLAUDE_STATUSLINE_CACHE": str(self.cache)}
+        self.ctx_text = "done. run: python graph.py reinforce --task 39252e"
+
+    def _line(self, payload=None):
+        out = _run(payload or {"session_id": "sess1",
+                               "transcript_path": str(self.main)}, self.env)
+        self.assertEqual(out.returncode, 0)
+        return out.stdout.strip()
+
+    def _cached_main(self):
+        cached = json.loads(next(self.cache.glob("*.json")).read_text(encoding="utf-8"))
+        return cached["files"][str(self.main)]
+
+    def test_found_in_main(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 5)
+                             + _tool_result(self.ctx_text), encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+
+    def test_not_found(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 5), encoding="utf-8")
+        line = self._line()
+        self.assertIn("vault ✗", line)
+        self.assertNotIn("vault ✓", line)
+
+    def test_subagent_only_does_not_count(self):
+        self.main.write_text(_assistant("m1", "claude-opus-5-5", 5), encoding="utf-8")
+        self.sub.write_text(_tool_result(self.ctx_text), encoding="utf-8")
+        line = self._line()
+        self.assertIn("vault ✗", line)
+        self.assertNotIn("vault ✓", line)
+
+    def test_plain_string_content(self):
+        rec = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": self.ctx_text}]}}
+        self.main.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+
+    def test_sidechain_ignored(self):
+        rec = {"type": "user", "isSidechain": True, "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": self.ctx_text}]}}
+        self.main.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+        self.assertIn("vault ✗", self._line())
+
+    def test_missing_transcript_path(self):
+        self.assertNotIn("vault", self._line({"session_id": "sess1"}))
+
+    def test_cache_survives_append(self):
+        self.main.write_text(_tool_result(self.ctx_text), encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+        with open(self.main, "a", encoding="utf-8") as f:
+            f.write(_assistant("m1", "claude-opus-5-5", 5))
+        self.assertIn("vault ✓ 39252e", self._line())
+        entry = self._cached_main()
+        self.assertEqual(entry["off"], self.main.stat().st_size)
+        self.assertEqual(entry["task"], "39252e")
+        with open(self.main, "a", encoding="utf-8") as f:
+            f.write(_tool_result("run: reinforce --task abc123"))
+        self.assertIn("vault ✓ abc123", self._line())
+
+    def test_old_cache_format_reparsed(self):
+        self.main.write_text(_tool_result(self.ctx_text), encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+        cache_file = next(self.cache.glob("*.json"))
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        # v2 entry without "task": must be discarded and reparsed from zero
+        del cached["files"][str(self.main)]["task"]
+        cache_file.write_text(json.dumps(cached), encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+        # old version number
+        cached["v"] = 1
+        cache_file.write_text(json.dumps(cached), encoding="utf-8")
+        self.assertIn("vault ✓ 39252e", self._line())
+
+    def test_segment_order(self):
+        self.main.write_text(_tool_result(self.ctx_text), encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            line = self._line({
+                "session_id": "sess1", "transcript_path": str(self.main),
+                "model": {"id": "opus-5.5", "display_name": "Opus 5.5"},
+                "workspace": {"current_dir": tmp},
+                "context_window": {"current_usage": {"input_tokens": 1000}},
+                "cost": {"total_cost_usd": 1.0},
+            })
+        parts = line.split(" │ ")
+        self.assertEqual(parts[0], "Opus 5.5")
+        self.assertIn(os.path.basename(tmp), parts[1])
+        self.assertEqual(parts[2], "vault ✓ 39252e")
+        self.assertTrue(parts[3].startswith("ctx"))
+        self.assertEqual(parts[4], "$1.00")
+
+    def test_task_hint_matches_reinforce_check(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "reinforce_check_under_test",
+            REPO_ROOT / "tools" / "claude-hooks" / "reinforce-check.py")
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        self.assertEqual(_load_statusline().TASK_HINT.pattern, other.TASK_HINT.pattern)
+
+
 if __name__ == "__main__":
     unittest.main()
