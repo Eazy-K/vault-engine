@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """PreToolUse hook for the `Agent` tool (Claude Code's subagent launcher, the tool
 formerly named `Task`; existing `Task(...)` references still resolve to it): denies
-spawning a subagent unless its `subagent_type` is exactly `worker-low` or
-`worker-medium` and, when the call also overrides `model`, that override equals the
-model configured for that worker role.
+spawning a subagent unless it is policy-allowed. Allowed (roles come from
+tools/model_config.py): the worker roles (`worker-low`, `worker-medium`; a `model`
+override must equal the configured model) and the read-only built-in agents
+`Explore`, `Plan`, `claude-code-guide` (matched case-insensitively). A read-only
+agent with a configured model (Explore -> haiku by default) gets that model
+injected via `updatedInput` when the call has none; a different `model` is denied.
+Read-only agents configured with no model inherit (nothing injected). `fork`,
+`general-purpose`, `claude`, `default` and everything else are denied.
 
 Reads the hook's JSON on stdin (see
 https://code.claude.com/docs/en/hooks#pretooluse-input and the Agent tool's
@@ -54,23 +59,34 @@ def _load_model_config():
         return None
 
 
-def _configured_model(role: str) -> str:
-    """The model configured for worker `role` (`graph.py models`). Falls back to
-    the role's built-in default if VAULT_DATA/VAULT_HOME is unset, the config
-    can't be read, or anything else about this goes wrong."""
+def _effective(model_config) -> dict:
+    """Layered role config (`graph.py models`); built-in defaults if VAULT_DATA /
+    VAULT_HOME is unset. Raises on read problems -- callers fail open/fall back."""
+    data_raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+    if not data_raw:
+        return {role: dict(v) for role, v in model_config.DEFAULT_MODELS.items()}
+    data_dir = Path(data_raw).expanduser()
+    effective, _ = model_config.load_layered(
+        data_dir / "vault.config.json", data_dir / ".graph" / "machine.json")
+    return effective
+
+
+def _policy():
+    """(workers, readonly, effective): workers = worker role names, readonly =
+    {lowercase agent name: role}, effective = role -> {model, effort}. Falls back
+    to the built-in policy if model_config can't be loaded or read."""
     model_config = _load_model_config()
     if model_config is None:
-        return FALLBACK_MODELS[role]
+        effective = {r: {"model": m} for r, m in FALLBACK_MODELS.items()}
+        return WORKER_ROLES, {}, effective
+    workers = tuple(getattr(model_config, "WORKER_ROLES", WORKER_ROLES))
+    names = getattr(model_config, "READONLY_AGENT_NAMES", {})
+    readonly = {name.lower(): role for role, name in names.items()}
     try:
-        data_raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
-        if not data_raw:
-            return model_config.configured_model(role)
-        data_dir = Path(data_raw).expanduser()
-        effective, _ = model_config.load_layered(
-            data_dir / "vault.config.json", data_dir / ".graph" / "machine.json")
-        return model_config.configured_model(role, effective)
+        effective = _effective(model_config)
     except Exception:
-        return FALLBACK_MODELS[role]
+        effective = {r: dict(v) for r, v in model_config.DEFAULT_MODELS.items()}
+    return workers, readonly, effective
 
 
 def _deny(reason: str) -> None:
@@ -104,19 +120,43 @@ def main() -> None:
     except (ValueError, OSError):
         sys.exit(0)
 
-    if subagent_type not in WORKER_ROLES:
+    workers, readonly, effective = _policy()
+    if isinstance(subagent_type, str) and subagent_type in workers:
+        role = subagent_type
+    elif isinstance(subagent_type, str):
+        role = readonly.get(subagent_type.strip().lower())
+    else:
+        role = None
+    if role is None:
+        allowed = list(workers) + sorted(readonly)
         _deny(f"agent-guard: subagent_type={subagent_type!r} is not allowed; only "
-              "worker-low or worker-medium may be started.")
+              + ", ".join(allowed) + " may be started.")
         return
 
-    if model is not None:
-        configured = _configured_model(subagent_type)
-        if not isinstance(model, str) or model.strip().lower() != configured.lower():
+    configured = (effective.get(role) or {}).get("model")
+    if role in workers:
+        if configured is not None and model is not None and (
+                not isinstance(model, str) or model.strip().lower() != configured.lower()):
             _deny(f"agent-guard: model={model!r} does not match {subagent_type}'s "
                   f"configured model {configured!r}; omit the model override or pass "
                   f"{configured!r}.")
-            return
+        sys.exit(0)
 
+    if configured is None:
+        sys.exit(0)
+    if model is None:
+        updated = dict(tool_input)
+        updated["model"] = configured
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": f"agent-guard: {subagent_type} runs on {configured}.",
+            "updatedInput": updated}}))
+        sys.exit(0)
+    if not isinstance(model, str) or model.strip().lower() != configured.lower():
+        _deny(f"agent-guard: model={model!r} does not match {subagent_type}'s "
+              f"configured model {configured!r}; omit the model override or pass "
+              f"{configured!r}.")
     sys.exit(0)
 
 

@@ -17,12 +17,25 @@ from pathlib import Path
 MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
 ROLES = ("orchestrator", "worker-low", "worker-medium")
+WORKER_ROLES = ("worker-low", "worker-medium")
+
+# Read-only built-in Claude Code agents the guard lets through, role -> the
+# agent name Claude Code uses (matched case-insensitively). They have no
+# tools/claude-agents/<role>.md file, so `graph.py models --apply` never
+# writes frontmatter for them.
+READONLY_AGENT_ROLES = ("explore", "plan", "claude-code-guide")
+READONLY_AGENT_NAMES = {"explore": "Explore", "plan": "Plan",
+                        "claude-code-guide": "claude-code-guide"}
 
 # Built-in defaults: exactly today's behaviour (before this config existed).
 DEFAULT_MODELS = {
     "orchestrator": {"model": "opus", "effort": "medium"},
     "worker-low": {"model": "sonnet", "effort": "low"},
     "worker-medium": {"model": "sonnet", "effort": "medium"},
+    # model None = inherit from the caller (the guard injects nothing).
+    "explore": {"model": "haiku", "effort": "low"},
+    "plan": {"model": None, "effort": None},
+    "claude-code-guide": {"model": None, "effort": None},
 }
 
 
@@ -89,8 +102,9 @@ def load_layered(shared_path: Path, machine_path: Path) -> tuple[dict, dict]:
     return effective, sources
 
 
-def configured_model(role: str, effective: dict | None = None) -> str:
+def configured_model(role: str, effective: dict | None = None) -> str | None:
     """The model configured for `role` (from `effective`, as returned by
-    `load_layered`, else the built-in default)."""
+    `load_layered`, else the built-in default). None means "inherit" (only the
+    read-only agent roles plan / claude-code-guide by default)."""
     source = effective if effective is not None else DEFAULT_MODELS
     return source[role]["model"]

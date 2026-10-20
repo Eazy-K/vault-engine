@@ -82,13 +82,50 @@ class TestAgentGuard(unittest.TestCase):
         out = _run(_agent_call("fork"))
         self.assertDenied(out)
 
-    def test_denies_explore(self):
-        out = _run(_agent_call("Explore"))
-        self.assertDenied(out)
+    def test_explore_without_model_allowed_with_injected_haiku(self):
+        call = _agent_call("Explore")
+        call["tool_input"]["prompt"] = "x"
+        out = _run(call)
+        self.assertEqual(out.returncode, 0)
+        hso = json.loads(out.stdout)["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "allow")
+        self.assertEqual(hso["updatedInput"]["model"], "haiku")
+        self.assertEqual(hso["updatedInput"]["prompt"], "x")
+        self.assertEqual(hso["updatedInput"]["subagent_type"], "Explore")
 
-    def test_denies_plan(self):
-        out = _run(_agent_call("Plan"))
+    def test_explore_case_insensitive(self):
+        hso = json.loads(_run(_agent_call("explore")).stdout)["hookSpecificOutput"]
+        self.assertEqual(hso["updatedInput"]["model"], "haiku")
+
+    def test_explore_with_haiku_allowed(self):
+        out = _run(_agent_call("Explore", "haiku"))
+        self.assertEqual(out.returncode, 0)
+        self.assertNotIn("updatedInput", out.stdout)
+
+    def test_explore_with_opus_denied(self):
+        out = _run(_agent_call("Explore", "opus"))
         self.assertDenied(out)
+        reason = json.loads(out.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("haiku", reason)
+
+    def test_plan_and_claude_code_guide_allowed_unchanged(self):
+        for name in ("Plan", "claude-code-guide"):
+            out = _run(_agent_call(name))
+            self.assertEqual(out.returncode, 0)
+            self.assertEqual(out.stdout.strip(), "", name)
+
+    def test_config_override_changes_injected_model(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "vault.config.json").write_text(
+                json.dumps({"models": {"explore": {"model": "sonnet"}}}), encoding="utf-8")
+            out = _run(_agent_call("Explore"), env_extra={"VAULT_DATA": tmp})
+        hso = json.loads(out.stdout)["hookSpecificOutput"]
+        self.assertEqual(hso["updatedInput"]["model"], "sonnet")
+
+    def test_denies_claude_and_default(self):
+        for name in ("claude", "default"):
+            self.assertDenied(_run(_agent_call(name)))
 
     def test_denies_missing_subagent_type(self):
         out = _run(_agent_call(None))

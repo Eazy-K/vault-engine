@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """PreToolUse guard for Codex sub-agent spawns (`spawn_agent` / `Agent`).
 
-Denies a spawn unless `agent_type` is `worker-low` or `worker-medium` (the
-profiles tools/codex-agents/worker-low.toml and worker-medium.toml; any other
-profile file in that folder is ignored) and any `model` / `reasoning_effort`
+Denies a spawn unless `agent_type` is a configured worker role (worker roles come
+from tools/model_config.py, `worker-low` / `worker-medium`, layered with the vault
+config like the Claude guard) AND its profile tools/codex-agents/<role>.toml
+exists; any other profile file in that folder is ignored. Codex's built-in
+`default` agent is denied explicitly. There are no read-only built-in roles here:
+Explore / Plan / claude-code-guide and haiku are Claude Code only. Any `model` / `reasoning_effort`
 override equals that profile's own configured model and effort.
 Mirrors tools/claude-hooks/agent-guard.py.
 
@@ -32,10 +35,32 @@ AGENTS_DIR = Path(__file__).resolve().parent.parent / "codex-agents"
 WORKER_ROLES = ("worker-low", "worker-medium")
 
 
+def _worker_roles() -> tuple[str, ...]:
+    """Worker roles from model_config (effective layered config); the built-in
+    pair if it can't be loaded or read."""
+    try:
+        import importlib.util
+        path = Path(__file__).resolve().parent.parent / "model_config.py"
+        spec = importlib.util.spec_from_file_location("model_config", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+        if raw:
+            data_dir = Path(raw).expanduser()
+            effective, _ = module.load_layered(
+                data_dir / "vault.config.json", data_dir / ".graph" / "machine.json")
+        else:
+            effective = module.DEFAULT_MODELS
+        roles = tuple(r for r in module.WORKER_ROLES if r in effective)
+        return roles or WORKER_ROLES
+    except Exception:
+        return WORKER_ROLES
+
+
 def _profiles() -> dict[str, tuple[str, str]]:
-    """Map role -> (model, reasoning effort) for WORKER_ROLES only."""
+    """Map role -> (model, reasoning effort) for the configured worker roles."""
     found: dict[str, tuple[str, str]] = {}
-    for role in WORKER_ROLES:
+    for role in _worker_roles():
         path = AGENTS_DIR / f"{role}.toml"
         if not path.is_file():
             continue
@@ -81,8 +106,11 @@ def decide(payload: object, profiles: dict[str, tuple[str, str]]) -> str | None:
     role = args.get("agent_type")
     profile = profiles.get(role) if isinstance(role, str) else None
     if profile is None:
-        return ("agent-guard: only worker-low and worker-medium may be started ("
-                + ", ".join(sorted(profiles)) + ").")
+        allowed = ", ".join(sorted(profiles))
+        if role == "default":
+            return ("agent-guard: Codex's built-in default agent is not allowed; only "
+                    f"{allowed} may be started.")
+        return f"agent-guard: only {allowed} may be started."
     model, effort = profile
     if args.get("model") is not None and args["model"] != model:
         return f"agent-guard: {role} must use model {model}."
