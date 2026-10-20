@@ -1884,6 +1884,19 @@ def cmd_stats(args) -> None:
             print(f"  {agent}: {len(mine)} measured, {mine_over} {mine_what} "
                   f"({mine_over / len(mine):.0%}), median inline calls "
                   f"{statistics.median(mine_calls):g}")
+        def _mean_calls(group):
+            return statistics.fmean(int(e.get("inline_calls") or 0) for e in group)
+        for arm in ("warn", "silent"):  # delegation A/B split; absent in older logs
+            mine = [e for e in prompts if e.get("ab_arm") == arm]
+            if mine:
+                warned = sum(1 for e in mine if e.get("warned"))
+                print(f"  ab_arm {arm}: {len(mine)} measured, mean inline calls "
+                      f"{_mean_calls(mine):.1f}, warned {warned / len(mine):.0%}")
+        for version in sorted({str(e["engine_version"]) for e in prompts
+                               if e.get("engine_version")}):
+            mine = [e for e in prompts if str(e.get("engine_version")) == version]
+            print(f"  engine {version}: {len(mine)} measured, mean inline calls "
+                  f"{_mean_calls(mine):.1f}")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.
