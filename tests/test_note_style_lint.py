@@ -91,19 +91,24 @@ class TestEntryNoteLint(unittest.TestCase):
             graph.cmd_lint(Namespace(), self.paths)
         return out.getvalue(), ctx.exception.code
 
-    def test_big_status_warns_without_failing(self):
+    def test_big_status_is_an_error(self):
         out, code = self.lint("projects/p/p-status.md", 6000)
-        self.assertIn("projects/p/p-status: project entry note has", out)
+        self.assertIn("ERROR  projects/p/p-status: project entry note has", out)
         self.assertIn("max 5000", out)
-        self.assertEqual(code, 0)
+        self.assertIn("rotate p", out)
+        self.assertEqual(code, 1)
 
     def test_small_status_is_silent(self):
-        out, _ = self.lint("projects/p/p-status.md", 4000)
+        out, code = self.lint("projects/p/p-status.md", 4000)
         self.assertNotIn("project entry note", out)
+        self.assertEqual(code, 0)
 
-    def test_overview_is_checked(self):
-        out, _ = self.lint("projects/p/p-overview.md", 6000)
-        self.assertIn("projects/p/p-overview: project entry note has", out)
+    def test_big_overview_is_an_error_to_fix_by_hand(self):
+        out, code = self.lint("projects/p/p-overview.md", 6000)
+        self.assertIn("ERROR  projects/p/p-overview: project entry note has", out)
+        self.assertIn("move older content to p-history", out)
+        self.assertNotIn("rotate", out)
+        self.assertEqual(code, 1)
 
     def test_other_note_is_not_checked(self):
         out, _ = self.lint("notes/x.md", 6000)
