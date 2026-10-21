@@ -2,6 +2,14 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.18.1] - 2026-10-21
+
+### Docs
+- `defaults/standards/orchestration-details.md` Claude Code section names the denied agent types (`general-purpose`, `fork`, `claude`, `default`) and the read-only built-ins allowed since 0.18.0 (`Explore`, forced to `haiku`; `Plan` and `claude-code-guide`, inherit), with roles and models from `models` in `vault.config.json` (`graph.py models`). The Codex section states that Codex has no read-only built-ins (#137, #138).
+
+### Upgrade notes
+- Docs only: no hook, agent, model or AGENTS.md change. `python tools/graph.py update` is enough; `--all` is harmless.
+
 ## [0.18.0] - 2026-10-21
 
 ### Added
