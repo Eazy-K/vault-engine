@@ -77,5 +77,44 @@ class TestSentenceLint(unittest.TestCase):
         self.assertNotIn("sentence(s)", out)
 
 
+class TestEntryNoteLint(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.paths = graph.Paths(self.tmp / "engine", self.tmp / "data")
+
+    def lint(self, rel: str, size: int) -> tuple[str, int]:
+        body = (SHORT + " ") * (size // (len(SHORT) + 1))
+        write(self.paths.data / rel, note("N", body, extra="keywords: [n]
+"))
+        out = StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            graph.cmd_lint(Namespace(), self.paths)
+        return out.getvalue(), ctx.exception.code
+
+    def test_big_status_warns_without_failing(self):
+        out, code = self.lint("projects/p/p-status.md", 6000)
+        self.assertIn("projects/p/p-status: project entry note has", out)
+        self.assertIn("max 5000", out)
+        self.assertEqual(code, 0)
+
+    def test_small_status_is_silent(self):
+        out, _ = self.lint("projects/p/p-status.md", 4000)
+        self.assertNotIn("project entry note", out)
+
+    def test_overview_is_checked(self):
+        out, _ = self.lint("projects/p/p-overview.md", 6000)
+        self.assertIn("projects/p/p-overview: project entry note has", out)
+
+    def test_other_note_is_not_checked(self):
+        out, _ = self.lint("notes/x.md", 6000)
+        self.assertNotIn("project entry note", out)
+
+    def test_limit_is_module_constant(self):
+        with mock.patch.object(graph, "MAX_ENTRY_CHARS", 10000):
+            out, _ = self.lint("projects/p/p-status.md", 6000)
+        self.assertNotIn("project entry note", out)
+
+
 if __name__ == "__main__":
     unittest.main()
