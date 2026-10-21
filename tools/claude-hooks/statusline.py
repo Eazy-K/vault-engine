@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """statusLine command for Claude Code: prints a short one-line status,
-e.g. "Opus 5.5·med │ vault-engine (fix/windows-hook-quoting) │ ctx 80K/1000K 8% │ $1.42".
+e.g. "Opus 5.5·med │ vault-engine (fix/windows-hook-quoting) │ vault ✓ 39252e │ ctx 80K/1000K 8% │ $1.42".
 
 Reads the JSON session object Claude Code sends on stdin (see
-https://code.claude.com/docs/en/statusline) and prints up to five
+https://code.claude.com/docs/en/statusline) and prints up to six
 segments, joined by " │ ", omitting any segment whose data is missing:
 
 1. Model name and reasoning effort (model.display_name). Effort is read
@@ -15,15 +15,20 @@ segments, joined by " │ ", omitting any segment whose data is missing:
 2. Folder (branch): basename of workspace.current_dir (falling back to
    top-level cwd), plus the current git branch in parentheses when the
    directory is inside a git repository.
-3. Context window usage: context_window.current_usage (input_tokens +
+3. Vault: "vault ✓ <task id>" once `graph.py context` was run in this
+   session (its output's `reinforce --task <id>` line is found in a
+   tool_result of the main transcript; the latest id wins), else
+   "vault ✗". Subagent transcripts do not count. Omitted when
+   transcript_path is missing.
+4. Context window usage: context_window.current_usage (input_tokens +
    cache_creation_input_tokens + cache_read_input_tokens +
    output_tokens), context_window.context_window_size and
    context_window.used_percentage. `current_usage`/`used_percentage` are
    null before the first model call in a session and right after
    /compact, so that case is reported as "no data yet" rather than as an
    error.
-4. Session cost: cost.total_cost_usd formatted as "$1.42".
-5. Model shares of this session by total tokens (input + cache + output),
+5. Session cost: cost.total_cost_usd formatted as "$1.42".
+6. Model shares of this session by total tokens (input + cache + output),
    main transcript plus its subagent transcripts combined, e.g.
    "Opus 65%·Sonnet 35%". Omitted when only one model was used, when
    there is no data, or on any error. Transcripts are parsed
@@ -53,9 +58,12 @@ SETTINGS_ENV_VAR = "CLAUDE_STATUSLINE_SETTINGS"
 
 # Overridable so tests never write into the real temp/cache dir.
 CACHE_ENV_VAR = "CLAUDE_STATUSLINE_CACHE"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 MAX_SEEN_IDS = 20000  # per file; oldest ids are forgotten beyond this
 HEAD_BYTES = 256  # file-identity fingerprint (start of the file)
+
+# Must stay identical to TASK_HINT in reinforce-check.py.
+TASK_HINT = re.compile(r"reinforce --task ([0-9a-f]{6})\b")
 
 EFFORT_ABBREV = {
     "low": "low",
@@ -234,11 +242,30 @@ def _save_cache(path: str, cache: dict) -> None:
         pass
 
 
+def _text_of(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_text_of(v.get("text") if isinstance(v, dict) else v) for v in value)
+    return ""
+
+
 def _apply_line(line: bytes, entry: dict) -> None:
     """Fold one transcript line into entry (same rules as token_stats.load_calls)."""
     try:
         rec = json.loads(line)
     except ValueError:
+        return
+    if isinstance(rec, dict) and rec.get("type") == "user":
+        if not rec.get("isSidechain"):
+            message = rec.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        ids = TASK_HINT.findall(_text_of(block.get("content")))
+                        if ids:
+                            entry["task"] = ids[-1]
         return
     if not isinstance(rec, dict) or rec.get("type") != "assistant":
         return
@@ -269,7 +296,9 @@ def _valid_entry(entry) -> bool:
     return (isinstance(entry, dict) and isinstance(entry.get("off"), int)
             and isinstance(entry.get("fp"), str)
             and isinstance(entry.get("totals"), dict)
-            and isinstance(entry.get("seen"), dict))
+            and isinstance(entry.get("seen"), dict)
+            and "task" in entry
+            and (entry["task"] is None or isinstance(entry["task"], str)))
 
 
 def _update_file(path: str, entry: dict | None) -> dict | None:
@@ -284,7 +313,7 @@ def _update_file(path: str, entry: dict | None) -> dict | None:
                     entry["off"] >= len(head) and entry["fp"] != fp):
                 entry = None
             if entry is None:
-                entry = {"off": 0, "fp": fp, "totals": {}, "seen": {}}
+                entry = {"off": 0, "fp": fp, "totals": {}, "seen": {}, "task": None}
             f.seek(entry["off"])
             chunk = f.read()
     except OSError:
@@ -300,11 +329,13 @@ def _update_file(path: str, entry: dict | None) -> dict | None:
     return entry
 
 
-def session_model_totals(data: dict) -> dict[str, int]:
-    """Per-model total tokens for the session (main + subagents), cached."""
+def session_scan(data: dict) -> dict:
+    """One cached pass over the session: per-model totals (main + subagents),
+    the latest task id from the main transcript only, and whether a
+    transcript path was given."""
     transcript = data.get("transcript_path")
     if not isinstance(transcript, str) or not transcript:
-        return {}
+        return {"totals": {}, "task": None, "has_transcript": False}
     session_id = data.get("session_id")
     if not isinstance(session_id, str) or not session_id:
         session_id = os.path.splitext(os.path.basename(transcript))[0]
@@ -331,7 +362,21 @@ def session_model_totals(data: dict) -> dict[str, int]:
     for entry in new_files.values():
         for model, n in entry["totals"].items():
             merged[model] = merged.get(model, 0) + n
-    return merged
+    main_entry = new_files.get(transcript)
+    task = main_entry.get("task") if main_entry else None
+    return {"totals": merged, "task": task, "has_transcript": True}
+
+
+def session_model_totals(data: dict) -> dict[str, int]:
+    """Per-model total tokens for the session (main + subagents), cached."""
+    return session_scan(data)["totals"]
+
+
+def vault_segment(scan: dict) -> str | None:
+    if not scan.get("has_transcript"):
+        return None
+    task = scan.get("task")
+    return f"vault ✓ {task}" if task else "vault ✗"
 
 
 def short_model_name(model_id: str) -> str:
@@ -342,9 +387,9 @@ def short_model_name(model_id: str) -> str:
     return re.sub(r"^claude-", "", lower)[:16]
 
 
-def model_shares_segment(data: dict) -> str | None:
+def model_shares_segment(scan: dict) -> str | None:
     try:
-        totals = {m: n for m, n in session_model_totals(data).items() if n > 0}
+        totals = {m: n for m, n in scan["totals"].items() if n > 0}
         grand = sum(totals.values())
         if grand <= 0:
             return None
@@ -363,12 +408,18 @@ def model_shares_segment(data: dict) -> str | None:
 
 
 def format_line(data: dict, settings_path: str | None = None) -> str:
+    try:
+        scan = session_scan(data)
+        vault, shares = vault_segment(scan), model_shares_segment(scan)
+    except Exception:
+        vault = shares = None
     segments = [
         model_segment(data, settings_path),
         folder_segment(data),
+        vault,
         ctx_segment(data),
         cost_segment(data),
-        model_shares_segment(data),
+        shares,
     ]
     return " │ ".join(s for s in segments if s)
 

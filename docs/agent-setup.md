@@ -534,8 +534,10 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   reinforced but without `--outcome ok|partial|fail`, it only prints a one-time
   non-blocking reminder (a `systemMessage`) per id; it never blocks for that.
 - a `statusLine` command (`statusline.py`) that shows the model and effort, the current
-  folder with its git branch, context usage, and session cost, e.g. `Opus 5.5·med │
-  vault-engine (main) │ ctx 44K/200K 22% │ $1.42` (segments with missing data are
+  folder with its git branch, a vault segment (`vault ✓ <task id>` once `graph.py
+  context` was run in the session, detected from the main transcript, and `vault ✗`
+  otherwise), context usage, and session cost, e.g. `Opus 5.5·med │
+  vault-engine (main) │ vault ✓ 39252e │ ctx 44K/200K 22% │ $1.42` (segments with missing data are
   omitted; effort comes from Claude Code's input if available, otherwise from
   `settings.json`'s `modelSettings.<model>.effortLevel` or `effortLevel`) --
   **only if `settings.json` has no `statusLine` configured yet**; an existing one is
