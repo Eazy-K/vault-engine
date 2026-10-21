@@ -29,7 +29,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 7. The orchestrator watches CI itself (`gh pr checks <no> --watch`, short output); agents are not woken for it.
 
 ## In Claude Code
-- Start a subagent with the `Agent` tool: `subagent_type` `worker-low` or `worker-medium` and either omit `model` or pass the worker's own configured model (default `sonnet`). `general-purpose` is not allowed.
+- Start a subagent with the `Agent` tool: `subagent_type` `worker-low` or `worker-medium` and either omit `model` or pass the worker's own configured model (default `sonnet`). `general-purpose`, `fork`, `claude` and `default` are not allowed. Read-only built-ins are allowed: `Explore` (omit `model`; the guard sets `haiku`, another model is denied), `Plan` and `claude-code-guide` (inherit). Roles and models come from `models` in `vault.config.json`; `python "$VAULT_ENGINE/tools/graph.py" models` shows them.
 - `isolation: worktree` only when the orchestrator has not already created the worktree; otherwise the agent opens its own and cannot write to the prompt's folder.
 - Stop a subagent with `TaskStop`. An agent that returns at `maxTurns` ("partial") may keep running background work.
 - Resume only if the completion notice's `subagent_tokens` (approximate last context size) is 50K or less; otherwise start a new agent with short instructions (PR number, failing test, file/line).
@@ -37,7 +37,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - Definitions live in `$VAULT_ENGINE/tools/claude-agents/` and are copied to `~/.claude/agents/`. Subagents do not load `CLAUDE.md` at startup (`omitClaudeMd: true`), but reading vault files adds `CLAUDE.md`/`AGENTS.md` as nested memory, so the definitions say not to follow it.
 
 ## In Codex
-- Start a subagent with `spawn_agent` and `agent_type: worker-low` or `worker-medium`; never `default`. The worker TOML profiles set model and effort (there is no model parameter).
+- Start a subagent with `spawn_agent` and `agent_type: worker-low` or `worker-medium`; never `default`. The worker TOML profiles set model and effort (there is no model parameter). Codex has no read-only built-in agents; only the two workers may be spawned.
 - Stop a subagent with `interrupt_agent`; confirm it stopped before giving the same work to a new one. Completion notices give no history size, so do not resume; start a new agent.
 - The `developer_instructions` managed block (installed by `user-config --install`) carries the core rules.
 - Hooks: `context-warn` on every prompt; `delegation-warn` nudges once per turn at 8 inline calls (Codex adapter). Coordination calls (`collaborationspawn_agent`/`wait_agent`/`send_message`/`followup_task`/`interrupt_agent`, verified on Codex CLI 0.160.0) are not counted. Subagent calls are detected through the rollout `session_meta` and excluded.
