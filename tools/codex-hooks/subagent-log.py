@@ -6,7 +6,8 @@ if VAULT_DATA/VAULT_HOME points at an existing directory).
 Documented Codex SubagentStop fields (https://learn.chatgpt.com/docs/hooks):
 turn_id, agent_id, agent_type, agent_transcript_path, stop_hook_active,
 last_assistant_message. Logged: agent_type, agent_id, stop_hook_active and the
-length of last_assistant_message (not its text). No status/outcome field is
+length of last_assistant_message (not its text); when it is empty, the last assistant
+transcript record that has text (empty ones are skipped, like the Claude hook). No status/outcome field is
 documented, so none is logged.
 
 Codex requires JSON on stdout for SubagentStop, so this prints `{}` and exits 0.
@@ -43,7 +44,7 @@ def _assistant_chars(rec) -> int | None:
         return None
     if rec.get("type") == "assistant":
         msg = rec.get("message")
-        return _text_len(msg.get("content")) if isinstance(msg, dict) else 0
+        return _text_len(msg.get("content")) if isinstance(msg, dict) else 0  # 0: skipped by the scan
     pl = rec.get("payload")
     if isinstance(pl, dict):
         if rec.get("type") == "response_item" and pl.get("type") == "message" \
@@ -74,7 +75,7 @@ def transcript_last_chars(payload: dict) -> int | None:
                 found = _assistant_chars(json.loads(raw.decode("utf-8", "replace")))
             except Exception:
                 continue
-            if found is not None:
+            if found:  # skip assistant records without text, walk back to an earlier one
                 return found
     except Exception:
         pass
