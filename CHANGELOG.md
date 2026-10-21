@@ -2,6 +2,35 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.18.0] - 2026-10-21
+
+### Added
+- `delegation-warn` A/B switch `VAULT_DELEGATION_AB=1` (Claude and Codex): the session id picks the `warn` or `silent` arm deterministically; the silent arm counts and logs but never warns. Every `orchestrator_prompt` event now carries `ab_arm`, `engine_version`, `cwd` and, when `VAULT_LAB` is set, `lab`. `stats` reports orchestrator prompts per arm and per engine version (#129).
+- `subagent-log` falls back to the agent transcript (last 2 MB, tolerant of bad lines) when the payload has no `last_assistant_message`, and writes `last_message_source` (`payload` | `transcript` | `none`). Claude also counts the length of a `SubagentHandback` report, skips empty records while walking back and writes `last_message_kind` (`handback` | `text` | `none`); the Codex hook gets the same walk-back (#129, #133).
+- `delegation-warn` events carry `read_calls`; delegation-only prompts (only Agent/Task calls) are logged at Stop with `spawned` and `coordination_calls` (#131, #135).
+- Status line `vault` segment (`tools/claude-hooks/statusline.py`), after the folder segment: `vault ✓ <task id>` once `graph.py context` has run in the session (its `reinforce --task <id>` line found in a tool result of the main transcript; latest id wins), `vault ✗` otherwise; omitted when `transcript_path` is missing; subagent transcripts do not count. The transcript scan cache moved to version 2 (old entries reparse) (#134).
+
+### Changed
+- The agent guard is policy-based. Roles come from `model_config` / `vault.config.json` (`models`): `explore` (haiku, low), `plan` and `claude-code-guide` (inherit) are overridable and listed read-only by `graph.py models`. Claude: `Explore` without a model is allowed and gets `model: haiku` through `updatedInput` (another model is denied), `Plan` and `claude-code-guide` pass, `fork`, `general-purpose`, `claude`, `default` stay denied. Codex: roles come from the same config and `default` is denied; Codex has no read-only built-ins. This supersedes the "hooks stay as they are" rule of ADR 0005 (#130).
+- `defaults/standards/orchestration.md` worker line allows the read-only built-ins Explore, Plan and claude-code-guide; the Codex developer instructions note that Codex has none (#130).
+- `delegation-warn` counts only implementation calls (Edit, Write, MultiEdit, NotebookEdit, Bash unless read-only); other tools go to `read_calls`; Agent/Task are exempt. `inline_calls` now means implementation calls. Codex uses the same rule, with a parity test over a shared command table (#131).
+- `reinforce-check` blocks once per task and session (`blocked-no-outcome`) when a finish signal (`git commit`, `git push`, `gh pr create`) follows a `reinforce` call without `--outcome`; without a finish signal it still only warns. Codex stays instruction-only (#129).
+
+### Fixed
+- `delegation-warn` shell classifier: quote-aware splitting (`grep -iE "WARN|FAIL"` is no longer split), more read-only `git` (`stash list|show`, `describe`, `rev-list`, `ls-files`, `worktree list`, ...) and `gh` (`pr checks`, `run list|view`, plain `api`) subcommands, read-only PowerShell cmdlets and `pwsh -Command` unwrapping. Unbalanced quotes and unknown commands count as implementation. Claude and Codex copies are identical (#135).
+- Parallel PostToolUse hooks raced on the delegation state file; both hooks now take an exclusive lock with a non-blocking retry of about 2 s and fail open (#135).
+- `subagent-log` no longer logs a false `last_message_chars: 0` for workers that report through `SubagentHandback` (#133).
+
+### Docs
+- `docs/agent-setup.md` covers the agent-guard policy, `VAULT_DELEGATION_AB`, `VAULT_LAB`, the new event fields, implementation-call counting, per-arm and per-engine `stats` lines, the `blocked-no-outcome` behaviour, handback counting and the status line `vault` segment (#130, #132, #133, #134).
+- Verified live on Claude Code 2.1.300 and Codex CLI 0.162.1 (spawn deny enforced non-interactively).
+
+### Upgrade notes
+- Run `python tools/graph.py update --all` on every computer: the Claude and Codex hook scripts changed. The Codex `hooks.json` entries are unchanged, so no `/hooks` re-approval should be needed; re-approve if Codex asks. The status line `vault` segment needs no new setting or install step.
+- Run `user-config --install` so Codex picks up the new `developer_instructions`.
+- Vault copies of `standards/orchestration*.md` are user-owned and not updated automatically: align the worker line with the engine default (read-only Explore, Plan and claude-code-guide allowed).
+- The AGENTS.md template is unchanged.
+
 ## [0.17.0] - 2026-10-15
 
 ### Changed
