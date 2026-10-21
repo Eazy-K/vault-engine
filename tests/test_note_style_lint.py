@@ -85,8 +85,7 @@ class TestEntryNoteLint(unittest.TestCase):
 
     def lint(self, rel: str, size: int) -> tuple[str, int]:
         body = (SHORT + " ") * (size // (len(SHORT) + 1))
-        write(self.paths.data / rel, note("N", body, extra="keywords: [n]
-"))
+        write(self.paths.data / rel, note("N", body, extra="keywords: [n]\n"))
         out = StringIO()
         with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
             graph.cmd_lint(Namespace(), self.paths)
