@@ -45,6 +45,78 @@ COMMAND_TABLE = [
     ("echo hi > out.txt", False),
     ("sed -i s/a/b/ f.txt", False),
     ("", False),
+    # quote-aware splitting: operators inside quotes do not split
+    ('grep -iE "WARN|FAIL" file', True),
+    ("grep -iE 'WARN|FAIL' file", True),
+    ('grep -n "a" f | head -5', True),
+    ('echo "a && b; c"', True),
+    ('grep "unbalanced f', False),
+    ('echo "ok" && rm "x y"', False),
+    ('cat f | grep "a|b" | tee out', False),
+    # git: stash list/show only, extra read-only subcommands
+    ("git stash list", True),
+    ("git stash show -p", True),
+    ("git stash", False),
+    ("git stash push -m x", False),
+    ("git stash pop", False),
+    ("git stash drop", False),
+    ("git stash apply", False),
+    ("git describe --tags", True),
+    ("git shortlog -sn", True),
+    ("git rev-list --count HEAD", True),
+    ("git ls-tree HEAD", True),
+    ("git ls-files", True),
+    ("git cat-file -p HEAD", True),
+    ("git name-rev HEAD", True),
+    ("git merge-base a b", True),
+    ("git tag -l", True),
+    ("git tag --list 'v*'", True),
+    ("git tag", False),
+    ("git tag v1.0", False),
+    ("git config --get user.name", True),
+    ("git config --list", True),
+    ("git config user.name x", False),
+    ("git config --unset user.name", False),
+    ("git remote", True),
+    ("git remote -v", True),
+    ("git remote show origin", True),
+    ("git remote add o u", False),
+    ("git worktree list", True),
+    ("git worktree add ../x", False),
+    ("git branch", True),
+    ("git branch -a", True),
+    ("git branch -r", True),
+    ("git branch --show-current", True),
+    ("git branch --list 'feat/*'", True),
+    ("git branch foo", False),
+    ("git branch -D foo", False),
+    # gh
+    ("gh run list", True),
+    ("gh run view 12", True),
+    ("gh api repos/o/r/pulls", True),
+    ("gh api -X POST repos/o/r/issues", False),
+    ("gh api repos/o/r/issues -f title=x", False),
+    ("gh api repos/o/r/issues -F a=b", False),
+    ("gh api repos/o/r --method=DELETE", False),
+    # PowerShell cmdlets (case-insensitive) and pipelines
+    ("Get-ChildItem -Force", True),
+    ("get-childitem -Recurse", True),
+    ("GCI", True),
+    ("Get-Content README.md", True),
+    ("Get-Content a.txt | Select-String foo | Select-Object -First 3", True),
+    ("Test-Path x; Get-Location; Get-Date", True),
+    ("Get-Content a | ConvertFrom-Json | ConvertTo-Json", True),
+    ("Set-Content -Path hello.txt -Value hello", False),
+    ("Out-File x.txt", False),
+    ("New-Item x.txt", False),
+    ("Remove-Item x", False),
+    ("Copy-Item a b", False),
+    ("Get-Content a | Set-Content b", False),
+    ("Get-Content a > b", False),
+    ('pwsh -Command "Get-ChildItem -Force | Select-Object -First 5"', True),
+    ('powershell -c "Get-Content a | Where-Object Length"', True),
+    ('powershell -NoProfile -Command "Get-Content a | Set-Content b"', False),
+    ('bash -lc "grep -E \\"a|b\\" f"', True),
 ]
 
 
@@ -304,6 +376,49 @@ class TestDelegationWarn(unittest.TestCase):
         self._run(prompt_id="p1", env_extra=env, event="Stop")  # no double log
         self._run(prompt_id="p2", env_extra=env)  # nothing pending to flush
         self.assertEqual(len(self._log(data)), 1)
+
+    def test_delegation_only_prompt_logs_zero_inline_at_stop(self):
+        data, env = self._data_env()
+        self._run(tool_name="Agent", env_extra=env)
+        self._run(tool_name="Task", env_extra=env)
+        self._run(event="Stop", env_extra=env)
+        (event,) = self._log(data)
+        self.assertEqual((event["event"], event["inline_calls"], event["read_calls"]),
+                         ("orchestrator_prompt", 0, 0))
+        self.assertEqual((event["spawned"], event["coordination_calls"]), (2, 2))
+        self.assertFalse(event["warned"])
+
+    def test_delegation_after_inline_calls_keeps_counts(self):
+        data, env = self._data_env()
+        self._run(tool_name="Edit", env_extra=env)
+        self._run(tool_name="Agent", env_extra=env)
+        self._run(event="Stop", env_extra=env)
+        (event,) = self._log(data)
+        self.assertEqual((event["inline_calls"], event["spawned"]), (1, 1))
+
+    def test_parallel_hook_processes_do_not_lose_updates(self):
+        data, env = self._data_env()
+        full = dict(self.env)
+        full.update(env)
+        calls = [("Read", None)] * 4 + [("Bash", "python setup.py build")] * 2 +                 [("Agent", None)] * 2
+        procs = []
+        for tool, cmd in calls:
+            payload = {"session_id": self.session_id, "prompt_id": "par", "tool_name": tool,
+                       "tool_input": {} if cmd is None else {"command": cmd}}
+            proc = subprocess.Popen([sys.executable, str(SCRIPT)], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, env=full)
+            proc.stdin.write(json.dumps(payload))
+            proc.stdin.close()
+            procs.append(proc)
+        for proc in procs:
+            proc.wait(timeout=30)
+            proc.stdout.close()
+            proc.stderr.close()
+        self._run(prompt_id="par", event="Stop", env_extra=env)
+        (event,) = self._log(data)
+        self.assertEqual((event["read_calls"], event["inline_calls"], event["spawned"]),
+                         (4, 2, 2))
 
     def test_stop_without_pending_prompt_logs_nothing(self):
         data, env = self._data_env()

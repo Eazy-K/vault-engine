@@ -269,6 +269,44 @@ class TestCodexDelegationWarn(unittest.TestCase):
         self._run(turn_id="turn-2")
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
 
+    def test_delegation_only_turn_logs_zero_inline_at_stop(self):
+        self._run(tool_name="spawn_agent")
+        self._run(tool_name="collaborationspawn_agent")
+        self._run(event="Stop")
+        (event,) = self._events()
+        self.assertEqual((event["inline_calls"], event["spawned"], event["read_calls"]), (0, 2, 0))
+        self.assertIn("coordination_calls", event)
+
+    def test_codex_reads_via_powershell_are_not_counted(self):
+        for cmd in ("Get-ChildItem -Force", "Get-Content README.md",
+                    'Get-Content a | Select-String "x|y"'):
+            self._run(turn_id="ps", tool_input={"command": cmd})
+        self._run(turn_id="ps", tool_input={"command": "Set-Content -Path h.txt -Value h"})
+        self._run(turn_id="ps", event="Stop")
+        event = self._events()[-1]
+        self.assertEqual((event["inline_calls"], event["read_calls"]), (1, 3))
+
+    def test_parallel_hook_processes_do_not_lose_updates(self):
+        payloads = []
+        for tool, cmd in [("Bash", "git status")] * 4 + [("Bash", "python setup.py build")] * 2                 + [("spawn_agent", None)] * 2:
+            payloads.append({"session_id": self.session, "turn_id": "par", "tool_name": tool,
+                             "tool_input": {} if cmd is None else {"command": cmd}})
+        procs = []
+        for payload in payloads:
+            proc = subprocess.Popen([sys.executable, str(SCRIPT)], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, env=self.env)
+            proc.stdin.write(json.dumps(payload))
+            proc.stdin.close()
+            procs.append(proc)
+        for proc in procs:
+            proc.wait(timeout=30)
+            proc.stdout.close()
+            proc.stderr.close()
+        self._run(turn_id="par", event="Stop")
+        event = self._events()[-1]
+        self.assertEqual((event["read_calls"], event["inline_calls"], event["spawned"]), (4, 2, 2))
+
 
 if __name__ == "__main__":
     unittest.main()
