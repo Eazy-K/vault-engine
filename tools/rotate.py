@@ -36,6 +36,14 @@ def _append_to_journal(text: str, journal: str, items: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _size_hint(status_id: str, history_id: str, status_text: str) -> None:
+    """Second line when the status note body is still over the entry-note limit."""
+    _, body = g.parse_frontmatter(status_text)
+    if len(body) > g.MAX_ENTRY_CHARS:
+        print(f"{status_id} still has {len(body)} chars (max {g.MAX_ENTRY_CHARS}); "
+              f"move older sections to {history_id} by hand")
+
+
 def cmd_rotate(args) -> None:
     paths = g.default_paths()
     project = args.project
@@ -57,6 +65,7 @@ def cmd_rotate(args) -> None:
     if len(items) <= g.MAX_STATUS_ITEMS:
         print(f"nothing to rotate: {status_id} has {len(items)} dated items "
               f"(max {g.MAX_STATUS_ITEMS})")
+        _size_hint(status_id, history_id, text)
         return
     # Oldest first; among equal dates the item lower in the section is the older one.
     order = sorted(range(len(items)), key=lambda i: (items[i][0], -i))
@@ -83,10 +92,7 @@ def cmd_rotate(args) -> None:
     g.atomic_write_text(history_path, new_history)
     g.atomic_write_text(status_path, new_status)
     print(summary)
-    _, body = g.parse_frontmatter(new_status)
-    if len(body) > g.MAX_ENTRY_CHARS:
-        print(f"{status_id} still has {len(body)} chars (max {g.MAX_ENTRY_CHARS}); "
-              f"move older sections to {history_id} by hand")
+    _size_hint(status_id, history_id, new_status)
     if not args.no_commit:
         files = [status_id + ".md", history_id + ".md"]
         g.report_commit(paths.data, files,

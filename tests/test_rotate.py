@@ -182,6 +182,17 @@ class TestRotate(RotateBase):
         self.assertEqual(code, 1)
         self.assertIn("no status note projects/p/p-status", out)
 
+    def test_nothing_to_rotate_but_oversized_prints_hint(self):
+        write(self.status, status_text(ITEMS[1:], extra=FILLER))
+        before = self.status.read_bytes()
+        out, code = self.run_rotate("--no-commit")
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to rotate", out)
+        self.assertIn("still has", out)
+        self.assertIn("by hand", out)
+        self.assertEqual(self.status.read_bytes(), before)
+        self.assertFalse(self.history.exists())
+
     def test_still_too_big_prints_second_line(self):
         write(self.status, status_text(extra=FILLER))
         out, _ = self.run_rotate("--no-commit")
