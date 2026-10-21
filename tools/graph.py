@@ -213,10 +213,11 @@ SEMANTIC_TEMPERATURE = 0.03
 # Below this best-chunk cosine nothing in the vault is about the query (bge-m3,
 # tuned on small samples: relevant >= 0.50, unrelated ~0.36).
 SEMANTIC_FLOOR = 0.42
-DEFAULT_BUDGET = 2000  # tokens of note content printed by `context`
+DEFAULT_BUDGET = 5000  # tokens of note content printed by `context` (entry notes load outside it)
 CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
+MAX_ENTRY_CHARS = 5000  # project status/overview notes load outside the budget on every context call
 MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
@@ -2183,6 +2184,10 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
         lines = [line for line in note.body.splitlines() if line.strip()]
         if note.core and len(lines) > MAX_CORE_LINES:
             warnings.append(f"{nid}: core note has {len(lines)} lines (max {MAX_CORE_LINES})")
+    for nid, note in graph.notes.items():
+        if is_project_entry(nid) and len(note.body) > MAX_ENTRY_CHARS:
+            warnings.append(f"{nid}: project entry note has {len(note.body)} chars "
+                            f"(max {MAX_ENTRY_CHARS}); move older items to <project>-history")
     for nid, note in graph.notes.items():
         if note.meta.get("type") == "task" or nid.startswith("inbox/"):
             continue  # task notes are working logs, not search content

@@ -364,7 +364,7 @@ class TestProjectSeedingAndHint(unittest.TestCase):
 
     def test_status_and_overview_load_before_larger_project_notes(self):
         folder = self.data / "projects" / "example-project"
-        write(folder / "example-project-aaa-research.md", note("Research", "filler " * 2000))
+        write(folder / "example-project-aaa-research.md", note("Research", "filler " * 6000))
         write(folder / "example-project-overview.md", note("Overview", "what it is"))
         write(folder / "example-project-status.md", note("Status", "where we are"))
         output = self._run_context()

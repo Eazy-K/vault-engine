@@ -38,6 +38,15 @@ weights:
 - Weight guide: 0.8-1.0 strong relation, 0.5-0.7 related, 0.3 weak relation. Defaults to 0.7 if omitted.
 - `core: true` is only for mandatory rules that apply to every task. Core notes load on every call, so they **must not exceed 15 lines**.
 
+## Project status note
+- `projects/<project>/<project>-status.md` is a compiled summary, not a journal. `context` loads it outside the budget on every call.
+- The body of a status or overview note stays under 5,000 characters; `lint` warns above that.
+- Sections: purpose and decisions (short), "Where we are" (at most 5 dated items, newest first), "Open work", "Next step".
+- When a sixth item arrives, move the oldest to the "Journal" section of `<project>-history.md`. History is the raw record: append-only, loaded only when a search matches.
+- "Lesson:" lines go to `<project>-lessons.md`, not to the status note: short, keyword-rich, one lesson per bullet.
+- Recipes (seeds, scripts, command sequences, edit files) live in the project repository, not in the vault; the status note gives the path only.
+- Every claim in the status note carries a date. Update or delete a "not yet" or "in progress" claim older than 7 days.
+
 ## Folders
 - `profile/`: the user and their preferences
 - `projects/<project>/`: project information
@@ -52,7 +61,7 @@ weights:
 - `show`: shows a note's edges (`--body` prints its full text; `context` names this command for notes it truncated or left out)
 - `reinforce --task <id> [--outcome ok|partial|fail] [--rework]`, `decay`: learning. `reinforce` also runs `decay` by itself when more than 7 days have passed since this computer's last decay (the timestamp is kept per computer, not committed), so running `decay` by hand is rarely needed
 - `stats`: shows what fraction of `context` calls were closed with `reinforce`, and which notes get fetched but never used, and (when the delegation hook has logged them) how often the orchestrator did multi-call work inline
-- `lint`: consistency check (also warns about notes with sentences over 30 words)
+- `lint`: consistency check (also warns about notes with sentences over 30 words and status/overview notes over 5,000 characters)
 - `mv <note> <new path or name>`: moves or renames a note and updates `[[links]]`, `weights` and learned edges. Don't move notes by hand.
 - `index`: precomputes embeddings
 - `tasks`: lists inbox tasks (`--status`, `--project`)
