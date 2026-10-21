@@ -218,9 +218,10 @@ CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
 MAX_CORE_LINES = 15  # non-empty body lines
 MAX_ENTRY_CHARS = 5000  # project status/overview notes load outside the budget on every context call
+MAX_STATUS_ITEMS = 5  # dated items under the status note's recent section; `rotate` moves the rest
 MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "schema", "update",
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
 
 
@@ -1045,6 +1046,93 @@ def is_project_entry(nid: str) -> bool:
             and parts[2] in (f"{parts[1]}-status", f"{parts[1]}-overview"))
 
 
+def status_note_config(paths: Paths) -> dict:
+    """Section headings of the project status and history notes: English defaults,
+    overridden by vault.config.json under "status_note" (recent_heading, journal_heading)."""
+    out = {"recent_heading": "Where we are", "journal_heading": "Journal"}
+    raw = load_state_json(paths.config_file).get("status_note")
+    if isinstance(raw, dict):
+        for key in out:
+            if isinstance(raw.get(key), str) and raw[key].strip():
+                out[key] = raw[key].strip()
+    return out
+
+
+DATED_ITEM = re.compile(r"^- (\d{4}-\d{2}-\d{2})")
+
+
+def section_span(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """(start, end) line indexes of the body of `## <heading>` (case-insensitive,
+    trimmed): after the heading line, up to the next `## ` heading or the end."""
+    want = heading.strip().casefold()
+    for i, line in enumerate(lines):
+        if line.startswith("## ") and line[3:].strip().casefold() == want:
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].startswith("## ")),
+                       len(lines))
+            return i + 1, end
+    return None
+
+
+def dated_items(section_text: str) -> list[tuple[str, str]]:
+    """Top-level `- YYYY-MM-DD ...` bullets of a section with their indented
+    continuation lines, as (date, text); text has no trailing newline."""
+    return [(d, "\n".join(ls)) for d, _, ls in dated_item_lines(section_text.split("\n"))]
+
+
+def dated_item_lines(lines: list[str]) -> list[tuple[str, int, list[str]]]:
+    """(date, index of the first line, the item's lines) for each dated item in `lines`."""
+    items: list[tuple[str, int, list[str]]] = []
+    current: list[str] | None = None
+    for i, line in enumerate(lines):
+        match = DATED_ITEM.match(line)
+        if match:
+            current = [line]
+            items.append((match.group(1), i, current))
+        elif current is not None and line[:1] in (" ", "\t") and line.strip():
+            current.append(line)
+        else:
+            current = None
+    return items
+
+
+def status_note_id(project: str) -> str:
+    return f"projects/{project}/{project}-status"
+
+
+def status_note_warning(paths: Paths, project: str) -> list[str]:
+    """Lines `reinforce` prints when the project's entry notes outgrew their limits."""
+    command = f'python "{Path(__file__).resolve()}" rotate {project}'
+    out: list[str] = []
+    status = paths.data / (status_note_id(project) + ".md")
+    if status.is_file():
+        try:
+            _, body = parse_frontmatter(status.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            body = ""
+        heading = status_note_config(paths)["recent_heading"]
+        lines = body.split("\n")
+        span = section_span(lines, heading)
+        count = len(dated_items("\n".join(lines[span[0]:span[1]]))) if span else 0
+        facts = []
+        if count > MAX_STATUS_ITEMS:
+            facts.append(f'{count} dated items under "{heading}" (max {MAX_STATUS_ITEMS})')
+        if len(body) > MAX_ENTRY_CHARS:
+            facts.append(f"{len(body)} chars (max {MAX_ENTRY_CHARS})")
+        if facts:
+            out.append(f"WARN: {status_note_id(project)} has {' and '.join(facts)}; "
+                       f"run: {command}")
+    overview = paths.data / f"projects/{project}/{project}-overview.md"
+    if overview.is_file():
+        try:
+            _, body = parse_frontmatter(overview.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            body = ""
+        if len(body) > MAX_ENTRY_CHARS:
+            out.append(f"WARN: projects/{project}/{project}-overview has {len(body)} chars "
+                       f"(max {MAX_ENTRY_CHARS}); move older content to {project}-history by hand")
+    return out
+
+
 def is_done_task(note: Note) -> bool:
     return note.meta.get("type") == "task" and note.meta.get("status") == "done"
 
@@ -1708,6 +1796,10 @@ def cmd_reinforce(args) -> None:
     # Committed here rather than left for the agent's note commit (AGENTS.md step
     # 4): most tasks write no note, and the file would stay uncommitted for good.
     graph.commit_learned("chore: update learned links")
+    project = detect_project(Path.cwd(), paths)
+    if project:
+        for line in status_note_warning(paths, project):
+            print(line)
 
 
 DELIBERATE_FALLBACKS = {"disabled by --no-semantic", "no query text"}
@@ -2186,8 +2278,12 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
             warnings.append(f"{nid}: core note has {len(lines)} lines (max {MAX_CORE_LINES})")
     for nid, note in graph.notes.items():
         if is_project_entry(nid) and len(note.body) > MAX_ENTRY_CHARS:
-            warnings.append(f"{nid}: project entry note has {len(note.body)} chars "
-                            f"(max {MAX_ENTRY_CHARS}); move older items to <project>-history")
+            parts = nid.split("/")
+            fix = (f'run: python "{Path(__file__).resolve()}" rotate {parts[1]}'
+                   if parts[2].endswith("-status")
+                   else f"move older content to {parts[1]}-history")
+            errors.append(f"{nid}: project entry note has {len(note.body)} chars "
+                          f"(max {MAX_ENTRY_CHARS}); {fix}")
     for nid, note in graph.notes.items():
         if note.meta.get("type") == "task" or nid.startswith("inbox/"):
             continue  # task notes are working logs, not search content
