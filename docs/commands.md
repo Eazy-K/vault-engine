@@ -8,6 +8,7 @@ Commands are written as `python tools/graph.py <command>` from the engine folder
 - Layout: [Structure](#structure)
 - Install and connect: [Setup](#setup) (`init`, `setup`, `onboard`, `doctor`, `doctor --live`), [Machine name](#machine-name) (`machine`)
 - Projects: [Project discovery](#project-discovery) (`projects`), [Project recognition](#project-recognition) (`machine --project-root`, `--project`, `--no-project`)
+- Notes: [Status note rotation](#status-note-rotation) (`rotate`)
 - Several computers: [Updating another computer](#updating-another-computer) (`update --all`, `user-config --install`)
 - Feedback: [Feedback](#feedback) (`feedback status|list|send|set|add`)
 - Automation: [CI (GitHub Actions)](#ci-github-actions)
@@ -60,6 +61,13 @@ Every installer backs up a file before changing it and does nothing on a second 
 
 ## Machine name
 Learned links are saved per computer in `<data repo>/.graph/learned/<name>.json`, which `reinforce` and `decay` commit on their own (only that file), so two computers never edit the same file and the next `git pull --rebase` finds nothing uncommitted. Decay runs on its own: when `reinforce` finds that more than 7 days have passed since this computer's last decay (timestamp in the gitignored `.graph/last-decay`, also updated by a manual `decay`), it first weakens the learned edges by 5% and prints one `auto-decay:` line; the change lands in the same learned-links commit. The first `reinforce` after an upgrade only records the timestamp, so nothing decays right away. Older versions used the hostname as `<name>`, which can reveal a person or an employer. `setup` now asks for a neutral name (default `pc-` and four random characters, also used with `--yes`) and saves it as `"machine"` in this computer's gitignored `.graph/machine.json`. A computer that already has a learned file under its hostname keeps using it; nothing is renamed automatically. Show or change the name with `python tools/graph.py machine [--data <data repo path>] [--name <name>]`; after a change, `git mv` the old file to the new name to keep adding to it. The `VAULT_MACHINE` environment variable, if set, wins over both.
+
+## Status note rotation
+`python tools/graph.py rotate <project>` keeps `projects/<project>/<project>-status.md` short. The status note holds at most 5 dated items (top-level bullets that start with `- YYYY-MM-DD`, with their indented continuation lines) under its "Where we are" section. `rotate` moves the oldest surplus items, oldest first and unchanged, to the end of the "Journal" section of `<project>-history.md`. It creates the history note (linked to the status note) when it is missing. Undated bullets and all other text stay where they are, and existing history is only appended to.
+
+`rotate` is idempotent: with 5 items or fewer it prints `nothing to rotate` and writes nothing. `--dry-run` prints what would move and writes nothing. It commits exactly the two notes it wrote (`chore: rotate <project> status note`) and never pushes; `--no-commit` leaves them in the working tree. Section names come from `vault.config.json`: `{"status_note": {"recent_heading": "Where we are", "journal_heading": "Journal"}}` (these are the defaults; set them when your notes use other headings, matched case-insensitively).
+
+`lint` reports an error for a status or overview note whose body is over 5,000 characters. `reinforce` prints one `WARN:` line, with the exact `rotate` command, when the project it runs in has a status note over that size or with more than 5 dated items. `rotate` does not shorten an overview note or other sections: move that content to the history note by hand.
 
 ## Feedback
 `tools/feedback.py` optionally sends feedback from your setup to the engine's developers (as a GitHub issue). It is off by default; you must explicitly turn it on before anything is sent.
