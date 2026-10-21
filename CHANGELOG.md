@@ -2,6 +2,26 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [0.19.0] - 2026-10-21
+
+### Added
+- `rotate <project>` command (`tools/rotate.py`): keeps `projects/<project>/<project>-status.md` at no more than 5 dated items (top-level `- YYYY-MM-DD ...` bullets with their indented continuation lines) under its "Where we are" section. The oldest surplus items move, oldest first and unchanged, to the end of the "Journal" section of `<project>-history.md`; the history note is created (linked to the status note) when missing. Undated bullets and all other text stay. Idempotent: with 5 items or fewer it prints `nothing to rotate` and writes nothing. `--dry-run` writes nothing; `--no-commit` leaves the two notes uncommitted, otherwise it commits exactly those two (`chore: rotate <project> status note`) and never pushes. When the status note body is still over 5000 chars it prints a hint to move older sections to the history note by hand (#141).
+- `status_note` in `vault.config.json` (`recent_heading`, `journal_heading`; defaults "Where we are" and "Journal", matched case-insensitively) names the section headings `rotate` and the `reinforce` warning use (#141).
+- `reinforce` prints one `WARN:` line with the exact `rotate` command when the project it runs in (detected from the working directory) has a status note with more than 5 dated items or a body over 5000 chars, and a `WARN:` line for an overview note over 5000 chars (move content by hand). `context` output is unchanged (#141).
+
+### Changed
+- `lint` checks project entry notes (`<project>-status`, `<project>-overview`): a body over 5000 chars (`MAX_ENTRY_CHARS`) is an ERROR (exit 1) and names the fix, the `rotate` command for a status note, moving content to `<project>-history` for an overview. #140 introduced this check as a warning; #141 raised it to an error (#140, #141).
+- The default `context` token budget (`DEFAULT_BUDGET`) is 5000 instead of 2000; project status and overview notes still load outside it (#140).
+- `defaults/standards/vault-notes.md` gains a "Project status note" section: purpose, the 5000-char limit, at most 5 dated items, moving older items with `rotate` and not by hand, delegating status and lessons updates to a worker-low subagent, `status_note` headings, "Lesson:" lines in `<project>-lessons.md`, dated claims (#140, #141).
+
+### Docs
+- `docs/commands.md` has a "Status note rotation" section (`rotate`, flags, the `status_note` config, the `lint` error and `reinforce` warning); the Tool list in `vault-notes.md` lists `rotate` (#141).
+
+### Upgrade notes
+- Minor release: a new command and a stricter `lint`. A vault whose status or overview note body is over 5000 chars now fails `lint` with an error (exit 1), and so does a vault CI job that runs `lint`. Fix a status note with `python "$VAULT_ENGINE/tools/graph.py" rotate <project>` (try `--dry-run` first): it moves the surplus dated items to the history note and commits both. If the note is still over 5000 chars afterwards (long sections, undated items) or it is an overview note, `rotate` or `lint` says so and the older content must be moved to `<project>-history` by hand.
+- If your status notes do not use the headings "Where we are" and "Journal", set `status_note.recent_heading` and `status_note.journal_heading` in `vault.config.json`; otherwise `rotate` stops with an error naming the missing section.
+- No hook, agent, template or AGENTS.md change: `python tools/graph.py update` is enough, `--all` is not required. `defaults/standards/vault-notes.md` is a default; a vault copy of `standards/vault-notes.md` is user-owned and is not updated automatically.
+
 ## [0.18.1] - 2026-10-21
 
 ### Docs
