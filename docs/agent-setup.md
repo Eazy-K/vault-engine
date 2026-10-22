@@ -537,6 +537,18 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   rules; `doctor` warns otherwise and `claude-hooks --fix-permissions --install` repairs
   the Claude side. The engine ships no such templates; they come from the data repo's
   `config/claude/settings.json` and `config/codex/default.rules`.
+- a `PreToolUse` hook (`read-guard.py`, matcher `Read|Grep|Glob|Bash`; Claude only, Codex
+  has no read-blocking mechanism and no counterpart) that gives the orchestrator a read
+  budget per user message: the first 3 file-reading calls pass (the `Read`, `Grep` and
+  `Glob` tools, and `Bash` commands that only browse files such as `cat`, `sed`, `head`,
+  `tail`, `grep`, `rg`, `find`, `ls`, `Get-Content`, `Select-String`), the 4th and later
+  are denied with a reason telling it to bundle the remaining reads into one `worker-low`
+  (or read-only `Explore`) subagent. Verification (`git`, `gh`, `pytest`, `graph.py ...`)
+  and writes never count, and calls from inside a subagent (stdin `agent_id`) are never
+  counted or denied. `VAULT_READ_BUDGET=<n>` changes the budget, `VAULT_READ_GUARD=off`
+  disables the hook. The count lives per session and `prompt_id` in
+  `<data>/.graph/read-guard/`; a new user message resets it. Every error path is a silent
+  exit 0. The Bash classifier is shared with `delegation-warn.py` (`tools/shell_classify.py`).
 - a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
   `git push` or `gh pr create` and a `context` call in the session printed a task id
   that has no `reinforce --task <id>` yet, blocks the stop once per id and asks the

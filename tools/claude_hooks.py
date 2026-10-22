@@ -1,6 +1,8 @@
 """Install the engine's Claude Code hooks into a Claude Code settings.json:
 - agent-guard: a PreToolUse hook that stops the orchestrator from starting
   expensive subagents.
+- read-guard: a PreToolUse hook (Read|Grep|Glob|Bash) that denies the
+  orchestrator's own file reads once a per-request budget is used up.
 - context-warn: a UserPromptSubmit hook that warns the model when the
   session's context usage crosses a threshold, and reminds it on every user
   message to decide per task between inline work and a worker subagent.
@@ -44,6 +46,10 @@ GUARD_MARKER = "agent-guard.py"  # substring identifying our hook's command, for
 GIT_GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "git-guard.py"
 GIT_GUARD_MATCHER = "Bash"
 GIT_GUARD_MARKER = "git-guard.py"
+
+READ_GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "read-guard.py"
+READ_GUARD_MATCHER = "Read|Grep|Glob|Bash"
+READ_GUARD_MARKER = "read-guard.py"
 
 CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
@@ -98,6 +104,10 @@ def _guard_command() -> str:
 
 def _git_guard_command() -> str:
     return _command(GIT_GUARD_SCRIPT)
+
+
+def _read_guard_command() -> str:
+    return _command(READ_GUARD_SCRIPT)
 
 
 def _context_warn_command() -> str:
@@ -252,6 +262,12 @@ def _merge_git_guard(settings: dict) -> bool:
     return True
 
 
+def _merge_read_guard(settings: dict) -> bool:
+    """Merge in the read-guard PreToolUse hook (Read|Grep|Glob|Bash). Returns True if changed."""
+    return _merge_simple(settings, "PreToolUse", READ_GUARD_MARKER, _read_guard_command(),
+                         READ_GUARD_MATCHER)
+
+
 def _merge_context_warn(settings: dict) -> bool:
     """Merge in the context-warn UserPromptSubmit hook. Returns True if changed."""
     command = _context_warn_command()
@@ -342,11 +358,12 @@ def _merge_statusline(settings: dict) -> bool:
 
 
 def merge(settings: dict) -> tuple[dict, bool]:
-    """Merge in the agent-guard, context-warn, delegation-warn and reinforce-check hooks, and (if none
+    """Merge in the agent-guard, read-guard, context-warn, delegation-warn and reinforce-check hooks, and (if none
     is configured) the statusLine command, without touching any other existing hook
     or an existing statusLine. Returns (new_settings, changed)."""
     changed = _merge_guard(settings)
     changed = _merge_git_guard(settings) or changed
+    changed = _merge_read_guard(settings) or changed
     changed = _merge_context_warn(settings) or changed
     changed = _merge_delegation_warn(settings) or changed
     changed = _merge_reinforce_check(settings) or changed
@@ -365,6 +382,18 @@ def status(settings_path: Path | None = None) -> tuple[str, str]:
         return "OK", f"agent-guard hook installed ({settings_path})"
     return "WARN", (f"agent-guard hook not installed in {settings_path}: run "
                      f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to stop expensive subagents")
+
+
+def read_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the read-guard hook is installed."""
+    settings_path = settings_path or default_settings()
+    found = _find_entry_hook(_load(settings_path), "PreToolUse", READ_GUARD_MARKER)
+    if (found is not None and found[1].get("command") == _read_guard_command()
+            and found[0].get("matcher") == READ_GUARD_MATCHER):
+        return "OK", f"read-guard hook installed ({settings_path})"
+    return "WARN", (f"read-guard hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to cap "
+                     "the orchestrator's own file reads per request")
 
 
 def git_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -496,6 +525,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
         else:
             print(f"would update: {settings_path}")
             print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
+            print(f"  matcher: {READ_GUARD_MATCHER}  command: {_read_guard_command()}")
             print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
             print(f"  matcher: {DELEGATION_WARN_MATCHER}  "
                   f"command: {_delegation_warn_command()}")
@@ -531,6 +561,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
                               encoding="utf-8", newline="\n")
     print(f"  installed: {settings_path}")
     print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
+    print(f"  matcher: {READ_GUARD_MATCHER}  command: {_read_guard_command()}")
     print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
     print(f"  matcher: {DELEGATION_WARN_MATCHER}  command: {_delegation_warn_command()}")
     print(f"  matcher: Stop  command: {_reinforce_check_command()}")
@@ -543,7 +574,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
 
 
 def register(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("claude-hooks", help="install the agent-guard, context-warn, "
+    p = sub.add_parser("claude-hooks", help="install the agent-guard, read-guard, context-warn, "
                                              "delegation-warn, reinforce-check, subagent-log hooks and a statusLine "
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
