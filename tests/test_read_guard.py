@@ -24,9 +24,10 @@ class TestReadGuard(unittest.TestCase):
         self.data = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.data, ignore_errors=True)
         self.env = dict(os.environ)
-        for k in ("VAULT_READ_GUARD", "VAULT_READ_BUDGET", "VAULT_HOME"):
+        for k in ("VAULT_READ_GUARD", "VAULT_READ_BUDGET"):
             self.env.pop(k, None)
-        self.env["VAULT_DATA"] = str(self.data)
+        for k in ("TMPDIR", "TEMP", "TMP"):
+            self.env[k] = str(self.data)
 
     def run_hook(self, payload, env_extra=None):
         env = dict(self.env)
@@ -112,7 +113,7 @@ class TestReadGuard(unittest.TestCase):
 
     def test_state_lives_under_graph_dir(self):
         self.run_hook(self.call())
-        self.assertTrue(list((self.data / ".graph" / "read-guard").glob("*.json")))
+        self.assertTrue(list((self.data / "vault-engine-read-guard").glob("*.json")))
 
     def test_malformed_or_incomplete_input_is_silent(self):
         for stdin in ("", "not json", "[1, 2]", "null", '{"tool_name": "Read"}',
@@ -124,7 +125,7 @@ class TestReadGuard(unittest.TestCase):
     def test_unwritable_state_fails_open(self):
         blocker = self.data / "file"
         blocker.write_text("x", encoding="utf-8")
-        env = {"VAULT_DATA": str(blocker)}  # not a directory: falls back to temp dir
+        env = {k: str(blocker) for k in ("TMPDIR", "TEMP", "TMP")}  # temp dir is a file
         self.assertPass(self.run_hook(self.call(prompt="fresh-" + self.id()), env))
 
 

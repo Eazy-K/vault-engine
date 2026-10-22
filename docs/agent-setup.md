@@ -547,7 +547,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   and writes never count, and calls from inside a subagent (stdin `agent_id`) are never
   counted or denied. `VAULT_READ_BUDGET=<n>` changes the budget, `VAULT_READ_GUARD=off`
   disables the hook. The count lives per session and `prompt_id` in
-  `<data>/.graph/read-guard/`; a new user message resets it. Every error path is a silent
+  the system temp dir (like `delegation-warn.py`); a new user message resets it. Every error path is a silent
   exit 0. The Bash classifier is shared with `delegation-warn.py` (`tools/shell_classify.py`).
 - a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
   `git push` or `gh pr create` and a `context` call in the session printed a task id

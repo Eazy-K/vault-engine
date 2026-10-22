@@ -14,9 +14,8 @@ Budget: 3 by default, `VAULT_READ_BUDGET=<n>` overrides it (0 denies every read)
 `VAULT_READ_GUARD=off` disables the hook. A call from inside a subagent (stdin JSON
 has `agent_id`) is never counted or denied.
 
-State: one small JSON file per session, `<data>/.graph/read-guard/<session>.json`
-(`<data>` = VAULT_DATA, else VAULT_HOME; the system temp dir if neither points at an
-existing folder), holding the current `prompt_id` and its read count. A new
+State: one small JSON file per session in the system temp dir
+(`vault-engine-read-guard/`, same as delegation-warn.py), holding the current `prompt_id` and its read count. A new
 `prompt_id` (new user message) resets the count. A short lock file serialises the
 load-modify-save, because parallel tool calls run parallel hook processes.
 
@@ -68,11 +67,6 @@ def is_read(payload: dict) -> bool:
 
 
 def state_dir() -> str:
-    raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
-    if raw:
-        data = os.path.expanduser(raw)
-        if os.path.isdir(data):
-            return os.path.join(data, ".graph", "read-guard")
     return os.path.join(tempfile.gettempdir(), "vault-engine-read-guard")
 
 
