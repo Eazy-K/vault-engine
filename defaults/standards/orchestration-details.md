@@ -33,7 +33,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - `isolation: worktree` only when the orchestrator has not already created the worktree; otherwise the agent opens its own and cannot write to the prompt's folder.
 - Stop a subagent with `TaskStop`. An agent that returns at `maxTurns` ("partial") may keep running background work.
 - Resume only if the completion notice's `subagent_tokens` (approximate last context size) is 50K or less; otherwise start a new agent with short instructions (PR number, failing test, file/line).
-- The `agent-guard` hook denies disallowed `Agent` calls (enforced); `delegation-warn` and `context-warn` hooks remind the orchestrator. Adapter note: the Claude `delegation-warn` nudges after 3 inline tool calls (Claude-specific tuning).
+- The `agent-guard` hook denies disallowed `Agent` calls (enforced); `delegation-warn` and `context-warn` hooks remind the orchestrator. Adapter note: the Claude `delegation-warn` nudges after 3 inline tool calls (Claude-specific tuning). A subagent's permission requests are decided by the `permission-request` hook's policy (allow list in a worktree, else deny and log), not by a prompt, so a denied call is a blocker to report, not to retry.
 - Definitions live in `$VAULT_ENGINE/tools/claude-agents/` and are copied to `~/.claude/agents/`. Subagents do not load `CLAUDE.md` at startup (`omitClaudeMd: true`), but reading vault files adds `CLAUDE.md`/`AGENTS.md` as nested memory, so the definitions say not to follow it.
 
 ## In Codex

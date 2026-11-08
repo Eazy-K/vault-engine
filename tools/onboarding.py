@@ -1215,6 +1215,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(*claude_hooks.delegation_warn_status(settings))
             check(*claude_hooks.reinforce_check_status(settings))
             check(*claude_hooks.subagent_log_status(settings))
+            check(*claude_hooks.permission_request_status(settings))
             check(*claude_hooks.git_guard_status(settings))
             check(*claude_hooks.read_guard_status(settings))
             check(*claude_hooks.merge_permission_status(settings))

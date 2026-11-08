@@ -14,6 +14,9 @@
   task id that was never reinforced.
 - git-guard: a PreToolUse hook (Bash) that blocks force push and --no-verify;
   blocks push/merge/branch delete for subagents.
+- permission-request: a PermissionRequest hook that allows calls matching the
+  allow policy inside a git worktree, denies (and logs) a subagent's other
+  calls, and leaves the main session's prompts to the user.
 - statusLine: a command that shows context usage in the status line (only
   set if settings has no statusLine yet -- an existing one is left alone).
 
@@ -62,6 +65,9 @@ DELEGATION_WARN_MARKER = "delegation-warn.py"
 
 SUBAGENT_LOG_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "subagent-log.py"
 SUBAGENT_LOG_MARKER = "subagent-log.py"
+
+PERMISSION_REQUEST_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "permission-request.py"
+PERMISSION_REQUEST_MARKER = "permission-request.py"
 
 REINFORCE_CHECK_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "reinforce-check.py"
 REINFORCE_CHECK_MARKER = "reinforce-check.py"
@@ -122,6 +128,10 @@ def _delegation_warn_command() -> str:
 
 def _subagent_log_command() -> str:
     return _command(SUBAGENT_LOG_SCRIPT)
+
+
+def _permission_request_command() -> str:
+    return _command(PERMISSION_REQUEST_SCRIPT)
 
 
 def _reinforce_check_command() -> str:
@@ -326,6 +336,12 @@ def _merge_subagent_log(settings: dict) -> bool:
                          _subagent_log_command())
 
 
+def _merge_permission_request(settings: dict) -> bool:
+    """Merge in the permission-request PermissionRequest hook. Returns True if changed."""
+    return _merge_simple(settings, "PermissionRequest", PERMISSION_REQUEST_MARKER,
+                         _permission_request_command())
+
+
 def _merge_reinforce_check(settings: dict) -> bool:
     """Merge in the reinforce-check Stop hook. Returns True if changed."""
     command = _reinforce_check_command()
@@ -371,6 +387,7 @@ def merge(settings: dict) -> tuple[dict, bool]:
     changed = _merge_reinforce_check(settings) or changed
     changed = _merge_delegation_flush(settings) or changed
     changed = _merge_subagent_log(settings) or changed
+    changed = _merge_permission_request(settings) or changed
     changed = _merge_statusline(settings) or changed
     return settings, changed
 
@@ -501,6 +518,18 @@ def subagent_log_status(settings_path: Path | None = None) -> tuple[str, str]:
                      "subagent runs to usage.log")
 
 
+def permission_request_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the permission-request hook is
+    installed."""
+    settings_path = settings_path or default_settings()
+    found = _find_entry_hook(_load(settings_path), "PermissionRequest", PERMISSION_REQUEST_MARKER)
+    if found is not None and found[1].get("command") == _permission_request_command():
+        return "OK", f"permission-request hook installed ({settings_path})"
+    return "WARN", (f"permission-request hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) so worker "
+                     "sessions in a worktree never stall on a permission prompt")
+
+
 def reinforce_check_status(settings_path: Path | None = None) -> tuple[str, str]:
     """("OK"|"WARN", message) for `doctor`: whether the reinforce-check Stop hook is
     installed."""
@@ -548,6 +577,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
             print(f"  matcher: Stop  command: {_reinforce_check_command()}")
             print(f"  matcher: Stop  command: {_delegation_warn_command()}")
             print(f"  matcher: SubagentStop  command: {_subagent_log_command()}")
+            print(f"  matcher: PermissionRequest  command: {_permission_request_command()}")
             if not had_statusline:
                 print(f"  statusLine: {_statusline_command()}")
             print("(dry run: pass --install to write it)")
@@ -583,6 +613,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     print(f"  matcher: Stop  command: {_reinforce_check_command()}")
     print(f"  matcher: Stop  command: {_delegation_warn_command()}")
     print(f"  matcher: SubagentStop  command: {_subagent_log_command()}")
+    print(f"  matcher: PermissionRequest  command: {_permission_request_command()}")
     if not had_statusline:
         print(f"  statusLine: {_statusline_command()}")
     else:
@@ -591,7 +622,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("claude-hooks", help="install the agent-guard, read-guard, context-warn, "
-                                             "delegation-warn, reinforce-check, subagent-log hooks and a statusLine "
+                                             "delegation-warn, reinforce-check, subagent-log, permission-request hooks and a statusLine "
                                              "into Claude Code's settings.json")
     p.add_argument("--install", action="store_true",
                     help="write the merged settings (default: dry run, print the diff)")
