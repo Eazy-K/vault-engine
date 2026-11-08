@@ -149,6 +149,58 @@ class TestHookProcess(unittest.TestCase):
         self.assert_silent(_run(CODEX_SCRIPT, "garbage"))
 
 
+class TestSubagentRules(unittest.TestCase):
+    SUB_DENIED = [
+        "git push origin feat/x",
+        "git merge main",
+        "gh pr merge 12 --merge",
+        "git branch -d feat/x",
+        "git branch -D feat/x",
+        "git branch --delete feat/x",
+        "git branch -dr origin/x",
+        "git worktree remove ../wt",
+        "git add -A && git commit -m x && git push",
+    ]
+    SUB_ALLOWED = ["git commit -m x", "git status", "gh pr view 12", "git branch --show-current"]
+
+    def _payload(self, command, agent_type=None):
+        payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+        if agent_type:
+            payload["agent_type"] = agent_type
+        return payload
+
+    def test_subagent_denied(self):
+        for command in self.SUB_DENIED:
+            with self.subTest(command=command):
+                out = _run(CLAUDE_SCRIPT, self._payload(command, "worker-medium"))
+                self.assertEqual(out.returncode, 0)
+                decision = json.loads(out.stdout)["hookSpecificOutput"]
+                self.assertEqual(decision["permissionDecision"], "deny")
+                self.assertIn("subagent 'worker-medium'", decision["permissionDecisionReason"])
+
+    def test_subagent_allowed(self):
+        for command in self.SUB_ALLOWED:
+            with self.subTest(command=command):
+                out = _run(CLAUDE_SCRIPT, self._payload(command, "worker-medium"))
+                self.assertEqual(out.returncode, 0)
+                self.assertEqual(out.stdout.strip(), "")
+
+    def test_main_session_unchanged(self):
+        out = _run(CLAUDE_SCRIPT, self._payload("git push origin feat/x"))
+        self.assertEqual(out.stdout.strip(), "")
+        out = _run(CLAUDE_SCRIPT, self._payload("git push --force"))
+        self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_off_switch_disables_subagent_rule(self):
+        out = _run(CLAUDE_SCRIPT, self._payload("git push origin x", "worker-low"),
+                   {"VAULT_GIT_GUARD": "off"})
+        self.assertEqual(out.stdout.strip(), "")
+
+    def test_decide_without_agent_type_unchanged(self):
+        self.assertIsNone(git_guard.decide("gh pr merge 12"))
+        self.assertTrue(git_guard.decide("gh pr merge 12", "worker-low"))
+
+
 class TestInstallWiring(unittest.TestCase):
     def test_claude_merge_adds_bash_git_guard_idempotently(self):
         settings, changed = claude_hooks.merge({})

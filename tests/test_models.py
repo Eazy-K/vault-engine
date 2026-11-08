@@ -179,15 +179,16 @@ class TestApply(ModelsTestCase):
         low = (self.agents / "worker-low.md").read_text(encoding="utf-8")
         self.assertIn("name: worker-low", low)
         self.assertIn("You are a worker subagent.", low)
-        self.assertIn("disallowedTools: Bash(git push:*)", low)
+        self.assertIn("tools: Read, Grep, Glob, Bash", low)
 
-    def test_worker_templates_forbid_push_and_merge(self):
+    def test_worker_templates_have_no_disallowed_tools_specifier(self):
+        # Docs: a disallowedTools entry with a specifier like Bash(git push *) removes the whole tool.
         for template in (WORKER_LOW_TEMPLATE, WORKER_MEDIUM_TEMPLATE):
             frontmatter = template.split("---")[1]
-            lines = [l for l in frontmatter.splitlines() if l.startswith("disallowedTools:")]
-            self.assertEqual(len(lines), 1)
-            self.assertIn("Bash(git push:*)", lines[0])
-            self.assertIn("Bash(gh pr merge:*)", lines[0])
+            self.assertNotIn("disallowedTools", frontmatter)
+            tools = [l for l in frontmatter.splitlines() if l.startswith("tools:")]
+            self.assertEqual(len(tools), 1)
+            self.assertIn("Bash", [t.strip() for t in tools[0][len("tools:"):].split(",")])
 
     def test_apply_backs_up_agent_file_before_changing(self):
         self._write_agent_files()

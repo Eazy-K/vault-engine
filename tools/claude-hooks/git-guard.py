@@ -10,6 +10,10 @@ a short-flag cluster holding f (-fu), or a `+refspec`; `git push`/`git commit`
 with --no-verify; `git commit` with -n (also inside a cluster such as -an).
 Values of -m/-F/-C/-c/... are skipped, so a message text never trips it.
 
+When the hook input carries a non-empty `agent_type` (the call comes from a
+subagent), it also denies any `git push`, `git merge`, `gh pr merge`, `git branch`
+with -d/-D/--delete and `git worktree remove`; the orchestrator does those.
+
 Same JSON contract as agent-guard.py: deny = hookSpecificOutput JSON on stdout,
 exit 0. Fails open on any error; `VAULT_GIT_GUARD=off` disables it. The Codex
 counterpart (tools/codex-hooks/git-guard.py) reuses `decide()` from this file.
@@ -71,12 +75,56 @@ def _git_args(tokens: list[str]) -> tuple[str, list[str]] | None:
     return tokens[i], tokens[i + 1:]
 
 
-def _check_segment(tokens: list[str]) -> str | None:
+def _gh_args(tokens: list[str]) -> list[str] | None:
+    """Args after `gh` if the segment runs the GitHub CLI, else None."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tok) or _basename(tok) in WRAPPERS \
+                or (tok.startswith("-") and i and _basename(tokens[i - 1]) in WRAPPERS):
+            i += 1
+            continue
+        break
+    if i >= len(tokens) or _basename(tokens[i]) not in ("gh", "gh.exe"):
+        return None
+    return tokens[i + 1:]
+
+
+def _subagent_reason(tokens: list[str], agent_type: str) -> str | None:
+    """Deny reason when a subagent's segment pushes, merges or deletes branches."""
+    reason = (f"git-guard: subagent '{agent_type}' may not push, merge or delete "
+              "branches; the orchestrator does that.")
+    gh = _gh_args(tokens)
+    if gh is not None:
+        words = [a for a in gh if not a.startswith("-")]
+        return reason if words[:2] == ["pr", "merge"] else None
+    found = _git_args(tokens)
+    if found is None:
+        return None
+    sub, args = found
+    if sub in ("push", "merge"):
+        return reason
+    if sub == "branch":
+        for arg in args:
+            if arg == "--delete" or (re.fullmatch(r"-[A-Za-z]+", arg) and set("dD") & set(arg[1:])):
+                return reason
+    if sub == "worktree":
+        words = [a for a in args if not a.startswith("-")]
+        if words[:1] == ["remove"]:
+            return reason
+    return None
+
+
+def _check_segment(tokens: list[str], agent_type: str | None = None) -> str | None:
     for tok in tokens[1:]:  # bash -c "git push -f", sh -lc '...'
-        if " " in tok and "git" in tok:
-            reason = decide(tok)
+        if " " in tok and ("git" in tok or "gh" in tok):
+            reason = decide(tok, agent_type)
             if reason:
                 return reason
+    if agent_type:
+        reason = _subagent_reason(tokens, agent_type)
+        if reason:
+            return reason
     found = _git_args(tokens)
     if found is None:
         return None
@@ -113,16 +161,20 @@ def _check_segment(tokens: list[str]) -> str | None:
     return None
 
 
-def decide(command: str) -> str | None:
-    """A deny reason for a shell command string, or None to let it through."""
-    if not isinstance(command, str) or "git" not in command:
+def decide(command: str, agent_type: str | None = None) -> str | None:
+    """A deny reason for a shell command string, or None to let it through.
+
+    A non-empty agent_type (the call comes from a subagent) also denies push,
+    merge and branch deletion."""
+    agent_type = agent_type if isinstance(agent_type, str) and agent_type else None
+    if not isinstance(command, str) or ("git" not in command and not (agent_type and "gh" in command)):
         return None
     try:
         segments = _split(command)
     except ValueError:  # unbalanced quotes: plain split per operator
         segments = [s.split() for s in re.split(r"[;&|\n]+", command)]
     for tokens in segments:
-        reason = _check_segment(tokens)
+        reason = _check_segment(tokens, agent_type)
         if reason:
             return reason
     return None
@@ -156,7 +208,8 @@ def main() -> None:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
         command = command_of(payload, ("Bash",))
-        reason = decide(command) if command else None
+        agent_type = payload.get("agent_type") if isinstance(payload, dict) else None
+        reason = decide(command, agent_type) if command else None
         if reason:
             print(deny_json(reason))
     except Exception:
