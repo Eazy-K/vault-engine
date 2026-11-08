@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [Unreleased]
+
+### Added
+- `eval` command (`tools/eval_retrieval.py`): `graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` replays a labelled query set (`{task, ts, query, relevant, split}` per line) and reports n, recall@k and MRR per mode, keyword-only and semantic side by side (`--no-semantic`: keyword only; with Ollama unavailable the semantic column says so and the command still succeeds). The ranking is the list `context` builds before its token budget (default threshold and depth; budget-omitted notes keep their place), without core notes and without project seeding from the working directory. It writes no usage log event, task id or learned link; only the embeddings cache can be refreshed, as `index` does.
+
 ## [0.19.0] - 2026-10-21
 
 ### Added

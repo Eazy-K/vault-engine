@@ -221,7 +221,7 @@ MAX_ENTRY_CHARS = 5000  # project status/overview notes load outside the budget 
 MAX_STATUS_ITEMS = 5  # dated items under the status note's recent section; `rotate` moves the rest
 MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
 TASK_STATUSES = ("open", "in-progress", "done", "blocked")
-EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "schema", "update",
+EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
 
 
