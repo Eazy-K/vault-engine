@@ -194,7 +194,6 @@ def decide(payload: dict) -> dict | None:
                "commit your WIP and deliver your report via SubagentHandback before the "
                "limit; past 100% tool calls are denied.")
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                       "permissionDecision": "allow",
                                        "additionalContext": msg}}
     return None
 

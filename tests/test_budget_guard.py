@@ -87,7 +87,7 @@ class TestBudgetGuard(unittest.TestCase):
         out = self._run(self._payload())
         h = out["hookSpecificOutput"]
         self.assertEqual(h["hookEventName"], "PreToolUse")
-        self.assertEqual(h["permissionDecision"], "allow")
+        self.assertNotIn("permissionDecision", h)
         self.assertIn("16/20", h["additionalContext"])
         self.assertTrue((self.data / ".graph" / "budget-warn" / "a1").exists())
         self.assertIsNone(self._run(self._payload()))
