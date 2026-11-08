@@ -4,8 +4,8 @@
 - read-guard: a PreToolUse hook (Read|Grep|Glob|Bash) that denies the
   orchestrator's own file reads once a per-request budget is used up.
 - context-warn: a UserPromptSubmit hook that warns the model when the
-  session's context usage crosses a threshold, and reminds it on every user
-  message to decide per task between inline work and a worker subagent.
+  session's context has grown 50K tokens past its first call, and suggests a
+  handoff at 80K (baseline plus delta).
 - delegation-warn: a PostToolUse hook that additionally warns once a user
   message has driven several tool calls on the orchestrator's own thread,
   instead of delegating them.
