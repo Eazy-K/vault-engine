@@ -178,10 +178,16 @@ class TestEvaluate(unittest.TestCase):
         ok, items = verify_task.evaluate(body_of(TASK), diff_for("docs/legacy.md"), GREEN)
         self.assertFalse(ok)
 
-    def test_missing_acceptance_output_fails(self):
+    def test_missing_acceptance_output_is_human(self):
         ok, items = verify_task.evaluate(body_of(TASK), diff_for("tools/a.py"), None)
+        self.assertTrue(ok)
+        self.assertTrue(any(i.startswith("- human: acceptance") for i in items), items)
+        self.assertFalse(any(i.startswith("- fail:") for i in items), items)
+
+    def test_missing_acceptance_output_does_not_hide_other_failures(self):
+        ok, items = verify_task.evaluate(body_of(TASK), diff_for("CHANGELOG.md"), None)
         self.assertFalse(ok)
-        self.assertTrue(any("acceptance output missing" in i for i in items))
+        self.assertTrue(any(i.startswith("- human:") for i in items), items)
 
     def test_red_acceptance_output_fails(self):
         ok, _ = verify_task.evaluate(body_of(TASK), diff_for("tools/a.py"), "FAILED (errors=1)\n")
@@ -249,10 +255,11 @@ class TestCli(unittest.TestCase):
         self.assertEqual(res.stdout.splitlines()[0], "FAIL")
         self.assertIn("CHANGELOG.md", res.stdout)
 
-    def test_cli_missing_acceptance_output_fails(self):
+    def test_cli_missing_acceptance_output_is_human(self):
         res = self.run_verify(diff_for("tools/a.py"), with_output=False)
-        self.assertEqual(res.returncode, 1, res.stderr)
-        self.assertIn("acceptance output missing", res.stdout)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.splitlines()[0], "PASS")
+        self.assertIn("- human: acceptance", res.stdout)
 
 
 if __name__ == "__main__":

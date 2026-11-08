@@ -6,8 +6,7 @@ only fallbacks used when the key is missing or invalid:
     "budgets": {
       "context": {"warn_delta": 50000, "handoff_delta": 80000},
       "classes": {"S": {"max_turns": 20, "max_tokens": 80000}, ...},
-      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"},
-      "task_total_tokens": 600000
+      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
     }
 
 Used by tools/models.py (maxTurns in worker-*.md frontmatter) and by the SubagentStop
@@ -23,10 +22,10 @@ from pathlib import Path
 FALLBACK_CLASSES = {
     "S": {"max_turns": 20, "max_tokens": 80000},
     "M": {"max_turns": 60, "max_tokens": 250000},
+    "L": {"max_turns": 150, "max_tokens": 600000},
     "verify": {"max_turns": 25, "max_tokens": 100000},
 }
 FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
-FALLBACK_TASK_TOTAL = 600000
 
 
 def _pos_int(value) -> bool:
@@ -35,7 +34,7 @@ def _pos_int(value) -> bool:
 
 def _fallback() -> dict:
     return {"classes": {k: dict(v) for k, v in FALLBACK_CLASSES.items()},
-            "roles": dict(FALLBACK_ROLES), "task_total_tokens": FALLBACK_TASK_TOTAL}
+            "roles": dict(FALLBACK_ROLES)}
 
 
 def data_dir_from_env() -> Path | None:
@@ -45,7 +44,7 @@ def data_dir_from_env() -> Path | None:
 
 
 def load_budgets(data_dir) -> dict:
-    """{"classes": {...}, "roles": {...}, "task_total_tokens": int}.
+    """{"classes": {...}, "roles": {...}}.
 
     Reads `<data_dir>/vault.config.json` `budgets`. Invalid parts (non-positive or
     non-int numbers, roles pointing at unknown classes) are ignored and replaced by
@@ -78,8 +77,6 @@ def load_budgets(data_dir) -> dict:
             result["roles"] = valid_roles
     # Roles must always point at an existing class (a classes override can drop one).
     result["roles"] = {r: c for r, c in result["roles"].items() if c in result["classes"]}
-    if _pos_int(block.get("task_total_tokens")):
-        result["task_total_tokens"] = block["task_total_tokens"]
     return result
 
 
