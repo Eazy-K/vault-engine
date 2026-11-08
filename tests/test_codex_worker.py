@@ -132,16 +132,18 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     def test_config_trim_flags(self):
-        self.assertIn("--ignore-user-config", self.run_cli("--dry-run").stdout)
-        blank = self.run_cli("--dry-run", "--config-trim", "blank-instructions").stdout
-        self.assertIn('developer_instructions=""', blank)
-        self.assertNotIn("--ignore-user-config", blank)
+        default = self.run_cli("--dry-run").stdout  # default: blank-instructions
+        self.assertIn('developer_instructions=""', default)
+        self.assertNotIn("--ignore-user-config", default)
+        ignore = self.run_cli("--dry-run", "--config-trim", "ignore-user-config").stdout
+        self.assertIn("--ignore-user-config", ignore)
+        self.assertNotIn("developer_instructions", ignore)
         none = self.run_cli("--dry-run", "--config-trim", "none").stdout
         self.assertNotIn("developer_instructions", none)
         self.assertNotIn("--ignore-user-config", none)
 
     def test_run_passes_flags_and_prompt_to_codex(self):
-        r = self.run_cli("--model", "m-x", "--effort", "high")
+        r = self.run_cli("--model", "m-x", "--effort", "high", "--config-trim", "ignore-user-config")
         self.assertEqual(r.returncode, 0, r.stderr)
         seen = json.loads((self.out / "fake-args.json").read_text(encoding="utf-8"))
         args = seen["args"]

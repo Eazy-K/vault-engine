@@ -26,14 +26,16 @@ DEFAULT_TIMEOUT = 1800
 DEFAULT_BASE = "origin/main"
 CONFIG_TRIMS = ("ignore-user-config", "blank-instructions", "none")
 # ~/.codex/config.toml injects the vault AGENTS.md through developer_instructions on every
-# run (~60k input tokens); the trim strategy drops it. See the smoke-test numbers in the docs.
-DEFAULT_CONFIG_TRIM = "ignore-user-config"
+# run; the trim strategy drops it. `ignore-user-config` is cheapest but also drops the
+# `[windows] sandbox` setting, which leaves the workspace-write sandbox unable to write on
+# Windows, so `blank-instructions` is the default (measured numbers in docs/agent-setup.md).
+DEFAULT_CONFIG_TRIM = "blank-instructions"
 SECTIONS = ("Changed files", "Decisions", "Evidence", "Blockers")
 
 RULES = """\
 You are a worker running one task inside a git worktree. Rules:
 - Work only inside {worktree}. Never write outside it.
-- The branch is {branch}. Do not create or switch branches. WIP commits on it are allowed.
+- The branch is {branch}. Do not create or switch branches. WIP commits on it are allowed; if the sandbox blocks `git add`/`git commit` (the worktree's git dir is outside the writable root), leave the changes uncommitted and list that as a blocker. Do not try to work around the sandbox.
 - Never push, merge, rebase or delete branches. Do not run the vault workflow (graph.py context / reinforce, git pull/push).
 - Never write personal data (names with contact details, IDs, IBAN/card, health data) or secrets; mask them.
 - Do only the assigned task; if the scope is unclear, stop and report the question.
