@@ -23,7 +23,6 @@ import urllib.request
 from contextlib import redirect_stdout
 from pathlib import Path
 
-import budgets
 import claude_dirs
 import graph as g
 
@@ -368,8 +367,6 @@ def cmd_init(args: argparse.Namespace) -> None:
     # config = dict(existing) carries forward any project_roots an older engine
     # version wrote there; init itself never adds or overwrites that key.
     config = dict(existing)
-    if "budgets" not in config:
-        config["budgets"] = budgets.load_budgets(None)
     config["feedback"] = {"level": feedback_level, "mode": feedback_mode}
     if "schema" not in config:
         schema = sys.modules.get("schema")
