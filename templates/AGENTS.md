@@ -12,4 +12,4 @@ A model-independent second brain: information loads through a weighted graph, no
 5. **Before you finish:** if the vault has a remote, run `git pull --rebase --autostash && git push` in it, even with no note — it sends the commits `reinforce` and other engine commands made. No remote: the commits are enough.
 6. **`context` reports a new vault-engine version, or out-of-date Claude Code/Codex hooks, model settings or worker/agent files:** tell the user once and ask before updating; once they agree, run the `update --all` command it prints, exactly as shown (with the full path to graph.py). Never update the engine by hand: no `git pull`/`merge`/`checkout` in the engine folder, no ad-hoc branches. `update` is the only way, on every channel; if it refuses, it prints the fix command.
 
-<!-- vault-engine AGENTS.md template: 13. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->
+<!-- vault-engine AGENTS.md template: 14. If you translate or edit this file, keep this line: `update` and `doctor` use it to tell whether the file is behind the engine's template. -->

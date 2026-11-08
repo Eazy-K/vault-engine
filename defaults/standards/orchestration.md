@@ -9,7 +9,7 @@ weights:
 
 # Orchestration (core rules)
 - The orchestrator owns triage, planning, coordination, verification and the report.
-- Within a scope the user has explicitly authorized, reversible steps proceed without asking again; stay within that scope. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
+- Within a scope the user has explicitly authorized, reversible steps proceed without asking again; stay within the approved scope. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
 - Two gates: the human approves the spec once at the start and the PR at the end; nothing stops in between. A task file with an acceptance command counts as explicit authorization. Design decisions the spec does not list as open questions are made by the agent and reported in the decisions line.
 - Use worker-low (reading, edits, lookup) or worker-medium (code, tests, research, judgment: audits, comparisons, design); read-only Explore, Plan, claude-code-guide ok; never general or default agents. Ask workers for short reports.
 - Verification goes to a separate worker-medium with a clean context (input: spec, diff, acceptance-command output; output: PASS or FAIL plus a list of items); the writing worker does not verify itself. The orchestrator checks only the whole and opens the PR; the PR body carries the acceptance output, the verifier report and a decisions line.
