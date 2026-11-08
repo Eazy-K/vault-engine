@@ -594,6 +594,23 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   disables the hook. The count lives per session and `prompt_id` in
   the system temp dir (like `delegation-warn.py`); a new user message resets it. Every error path is a silent
   exit 0. The Bash classifier is shared with `delegation-warn.py` (`tools/shell_classify.py`).
+- a `PreToolUse` hook (`budget-guard.py`, matcher `*`; Claude only, Codex workers are
+  capped by the `codex-worker` wrapper) that gates worker subagents mid-run. It acts only
+  when the stdin payload has an `agent_id` (a tool call inside a subagent; the main session
+  is never touched) and its `agent_type` has a budget class (`budgets.roles`). It never
+  denies `SubagentHandback`. The subagent transcript is `agent_transcript_path` if present,
+  else `transcript_path` when it already lies under `subagents/`, else
+  `<transcript_path without extension>/subagents/agent-<agent_id>.jsonl`; turns and tokens
+  use the same `budgets.transcript_usage` rule as `subagent-log.py`. At >=80% of the class
+  `max_turns` or `max_tokens` it allows the call once per agent with an `additionalContext`
+  warning (marker file `<data>/.graph/budget-warn/<agent_id>`, ignored by git via the
+  template `.gitignore`; without a data dir it warns on every call). At >=100% it denies
+  the call (`permissionDecision: deny`) on every call, with a reason telling the worker to
+  deliver a short `blocked` report through `SubagentHandback` (BLOCKED, what is done, what
+  remains, where the WIP is), and appends one `budget_block` event per agent (`agent_type`,
+  `agent_id`, `budget_class`, `turns`, `tokens`, `tool_name`; marker
+  `<agent_id>.block`) to `.graph/usage.log`. Fails open: bad stdin, a missing transcript or a
+  failed import print nothing and exit 0.
 - a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
   `git push` or `gh pr create` and a `context` call in the session printed a task id
   that has no `reinforce --task <id>` yet, blocks the stop once per id and asks the

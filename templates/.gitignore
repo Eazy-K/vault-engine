@@ -8,3 +8,4 @@ __pycache__/
 .graph/feedback/
 .graph/machine.json
 .graph/last-decay
+.graph/budget-warn/
