@@ -533,7 +533,9 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
   `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
-  `commit -n`, also inside `&&`, `;`, `|` chains. Fails open; `VAULT_GIT_GUARD=off`
+  `commit -n`, also inside `&&`, `;`, `|` chains. For subagent calls (hook input has
+  `agent_type`) it also denies `git push`, `git merge`, `gh pr merge`, branch deletion
+  and `git worktree remove`. Fails open; `VAULT_GIT_GUARD=off`
   disables it. Merging is the user's job: keep `gh pr merge` in the Claude
   `permissions.deny` list (`git merge` in `ask`) and `forbidden` / `prompt` in the Codex
   rules; `doctor` warns otherwise and `claude-hooks --fix-permissions --install` repairs
@@ -580,6 +582,10 @@ installed profile in `~/.codex/agents/worker-*.toml`. The shipped profiles use `
 with reasoning `low` (worker-low) and `medium` (worker-medium). `models` does not manage
 Codex workers; edit those TOMLs instead (edited copies are kept on update). `VAULT_AGENT_GUARD=off`
 disables this guard too.
+
+Note: a `disallowedTools` entry with a specifier (e.g. `Bash(git push *)`) removes the whole
+tool from a subagent, so `worker-low` / `worker-medium` do not use it; the push/merge bans for
+workers are enforced by `git-guard.py` instead.
 
 Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
 not three: `python tools/graph.py models` shows it (plus whether `settings.json` and

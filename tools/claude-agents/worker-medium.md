@@ -5,7 +5,6 @@ model: sonnet
 effort: medium
 omitClaudeMd: true
 tools: Read, Grep, Glob, Bash, Edit, Write, WebFetch, WebSearch
-disallowedTools: Bash(git push:*), Bash(gh pr merge:*), Bash(git merge:*), Bash(git branch -d:*), Bash(git branch -D:*)
 maxTurns: 100
 ---
 

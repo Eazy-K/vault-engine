@@ -12,6 +12,8 @@
 - reinforce-check: a Stop hook that asks the agent to run `reinforce` once a
   task looks finished (a commit, push or PR in the turn) and `context` gave a
   task id that was never reinforced.
+- git-guard: a PreToolUse hook (Bash) that blocks force push and --no-verify;
+  blocks push/merge/branch delete for subagents.
 - statusLine: a command that shows context usage in the status line (only
   set if settings has no statusLine yet -- an existing one is left alone).
 
