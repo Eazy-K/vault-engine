@@ -46,7 +46,7 @@ class TestMerge(unittest.TestCase):
         settings, changed = claude_hooks.merge({})
         self.assertTrue(changed)
         hooks = settings["hooks"]["PreToolUse"]
-        self.assertEqual(len(hooks), 3)  # agent-guard + git-guard + read-guard
+        self.assertEqual(len(hooks), 4)  # agent-guard + git-guard + read-guard + budget-guard
         self.assertEqual(hooks[0]["matcher"], "Agent")
         self.assertIn("agent-guard.py", hooks[0]["hooks"][0]["command"])
 
@@ -54,7 +54,7 @@ class TestMerge(unittest.TestCase):
         settings, _ = claude_hooks.merge({})
         settings2, changed = claude_hooks.merge(settings)
         self.assertFalse(changed)
-        self.assertEqual(len(settings2["hooks"]["PreToolUse"]), 3)  # agent-guard + git-guard + read-guard
+        self.assertEqual(len(settings2["hooks"]["PreToolUse"]), 4)  # agent-guard + git-guard + read-guard + budget-guard
 
     def test_merge_adds_context_warn_hook(self):
         settings, changed = claude_hooks.merge({})
@@ -150,7 +150,7 @@ class TestMerge(unittest.TestCase):
         settings, changed = claude_hooks.merge(existing)
         self.assertTrue(changed)
         pre = settings["hooks"]["PreToolUse"]
-        self.assertEqual(len(pre), 4)
+        self.assertEqual(len(pre), 5)
         post = settings["hooks"]["PostToolUse"]
         self.assertEqual(len(post), 2)
         self.assertIn(existing["hooks"]["PostToolUse"][0], post)
@@ -169,7 +169,7 @@ class TestMerge(unittest.TestCase):
         settings, changed = claude_hooks.merge(existing)
         self.assertTrue(changed)
         pre = settings["hooks"]["PreToolUse"]
-        self.assertEqual(len(pre), 3)  # + git-guard + read-guard
+        self.assertEqual(len(pre), 4)  # + git-guard + read-guard + budget-guard
         self.assertEqual(pre[0]["hooks"][0]["command"], claude_hooks._guard_command())
 
     def test_merge_refreshes_own_stale_statusline(self):
@@ -241,7 +241,7 @@ class TestCmdClaudeHooks(unittest.TestCase):
         self.assertEqual(backup_data["hooks"]["PreToolUse"][0]["matcher"], "Bash")
         new_data = json.loads(self.settings_path.read_text(encoding="utf-8"))
         matchers = {e["matcher"] for e in new_data["hooks"]["PreToolUse"]}
-        self.assertEqual(matchers, {"Bash", "Agent", "Read|Grep|Glob|Bash"})
+        self.assertEqual(matchers, {"Bash", "Agent", "Read|Grep|Glob|Bash", "*"})
 
     def test_install_creates_missing_parent_dirs(self):
         nested = self.tmp / "nested" / "dir" / "settings.json"
@@ -321,6 +321,25 @@ class TestStatus(unittest.TestCase):
         reinforce = [e for e in settings2["hooks"]["Stop"]
                      if "reinforce-check.py" in e["hooks"][0]["command"]]
         self.assertEqual(len(reinforce), 1)
+
+    def test_merge_adds_budget_guard_idempotently(self):
+        settings, _ = claude_hooks.merge({})
+        entries = [e for e in settings["hooks"]["PreToolUse"]
+                   if "budget-guard.py" in e["hooks"][0]["command"]]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["matcher"], "*")
+        self.assertEqual(entries[0]["hooks"][0]["command"], claude_hooks._budget_guard_command())
+        _, changed = claude_hooks.merge(settings)
+        self.assertFalse(changed)
+
+    def test_budget_guard_status_warn_then_ok(self):
+        self.assertEqual(claude_hooks.budget_guard_status(self.settings_path)[0], "WARN")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            claude_hooks.cmd_claude_hooks(
+                Namespace(install=True, settings=str(self.settings_path)))
+        self.assertIn("budget-guard.py", buf.getvalue())
+        self.assertEqual(claude_hooks.budget_guard_status(self.settings_path)[0], "OK")
 
     def test_subagent_log_status_warn_then_ok(self):
         self.assertEqual(claude_hooks.subagent_log_status(self.settings_path)[0], "WARN")

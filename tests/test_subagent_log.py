@@ -231,11 +231,13 @@ class TestSubagentLog(unittest.TestCase):
         self.assertEqual(self._events(), [])
 
 
-def USAGE_ASSISTANT(input_tokens=0, creation=0, read=0):
+def USAGE_ASSISTANT(input_tokens=0, creation=0, read=0, msg_id=None):
     usage = {"input_tokens": input_tokens, "cache_creation_input_tokens": creation,
              "cache_read_input_tokens": read, "output_tokens": 5}
-    return {"type": "assistant", "message": {"role": "assistant", "usage": usage,
-                                             "content": [{"type": "text", "text": "step"}]}}
+    message = {"role": "assistant", "usage": usage, "content": [{"type": "text", "text": "step"}]}
+    if msg_id is not None:
+        message["id"] = msg_id
+    return {"type": "assistant", "message": message}
 
 
 class TestSubagentBudget(unittest.TestCase):
@@ -283,21 +285,21 @@ class TestSubagentBudget(unittest.TestCase):
 
     def test_block_over_max_turns(self):
         out, event = self._run(turns=61)
-        decision = json.loads(out)
-        self.assertEqual(decision["decision"], "block")
-        self.assertIn("blocked", decision["reason"])
-        self.assertIn("61/60 turns", decision["reason"])
-        self.assertIn("systemMessage", decision)
+        msg = json.loads(out)
+        self.assertEqual(list(msg), ["systemMessage"])  # no decision: block any more
+        self.assertIn("61/60 turns", msg["systemMessage"])
+        self.assertIn("budget-guard", msg["systemMessage"])
         self.assertEqual(event["budget_hit"], "block")
 
-    def test_stop_hook_active_never_blocks(self):
+    def test_stop_hook_active_only_logged(self):
         out, event = self._run(turns=61, stop_hook_active=True)
-        self.assertEqual(out, "")
+        self.assertEqual(list(json.loads(out)), ["systemMessage"])
         self.assertEqual(event["budget_hit"], "block")
+        self.assertTrue(event["stop_hook_active"])
 
     def test_block_over_max_tokens(self):
         out, event = self._run(turns=3, last_usage=(100000, 100000, 60000))
-        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(list(json.loads(out)), ["systemMessage"])
         self.assertEqual(event["tokens"], 260000)
         self.assertEqual(event["budget_hit"], "block")
 
@@ -306,8 +308,35 @@ class TestSubagentBudget(unittest.TestCase):
             "classes": {"M": {"max_turns": 3, "max_tokens": 250000}}}}),
             encoding="utf-8", newline="\n")
         out, event = self._run(turns=4)
-        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(list(json.loads(out)), ["systemMessage"])
         self.assertEqual(event["budget_hit"], "block")
+
+    def _run_records(self, records):
+        path = self.tmp / "agent.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n",
+                        encoding="utf-8", newline="\n")
+        payload = {"session_id": "s1", "agent_type": "worker-medium", "agent_id": "a1",
+                   "agent_transcript_path": str(path)}
+        env = dict(os.environ, VAULT_DATA=str(self.data))
+        env.pop("VAULT_HOME", None)
+        subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, check=True)
+        log = self.data / ".graph" / "usage.log"
+        return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()][-1]
+
+    def test_records_sharing_message_id_are_one_turn(self):
+        event = self._run_records([USAGE_ASSISTANT(10, msg_id="m1") for _ in range(3)])
+        self.assertEqual(event["turns"], 1)
+
+    def test_records_without_id_count_individually(self):
+        event = self._run_records([USAGE_ASSISTANT(10) for _ in range(3)])
+        self.assertEqual(event["turns"], 3)
+
+    def test_mixed_ids_and_anonymous_records(self):
+        event = self._run_records([
+            USAGE_ASSISTANT(10, msg_id="m1"), USAGE_ASSISTANT(10, msg_id="m1"),
+            USAGE_ASSISTANT(10, msg_id="m2"), USAGE_ASSISTANT(10), USAGE_ASSISTANT(10)])
+        self.assertEqual(event["turns"], 4)
 
     def test_unknown_agent_type_has_no_budget_fields(self):
         out, event = self._run(agent_type="Explore", turns=500)

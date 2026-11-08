@@ -20,14 +20,16 @@ content is ever read.
 
 Budget classes (tools/budgets.py; numbers from `budgets` in vault.config.json, with
 fallbacks): for an agent_type that has a class (`budgets.roles`), the transcript is
-streamed once for `turns` (assistant records) and `tokens` (input + cache_creation +
+streamed once (budgets.transcript_usage) for `turns` (distinct `message.id` of assistant
+records; one API reply is several records) and `tokens` (input + cache_creation +
 cache_read of the last assistant usage). The event then also carries `budget_class`,
 `turns`, `tokens` (when the transcript has usage) and `budget_hit` (none | warn >=80% |
-block >=100% of max_turns or max_tokens). On warn it prints a `systemMessage`; on block
-it prints `{"decision": "block", ...}` asking for a short `blocked` report, unless
-`stop_hook_active` is set (then it only logs). Unknown agent types get no budget fields.
+block >=100% of max_turns or max_tokens). On warn and on block it only prints a `systemMessage`; block is
+logged as `budget_hit` but not enforced here (a SubagentStop decision comes after the
+worker already handed back), the mid-run PreToolUse budget-guard hook is the gate.
+`stop_hook_active` is only logged. Unknown agent types get no budget fields.
 
-Exits 0 on any problem and fails open (prints nothing); it only blocks on a budget hit.
+Exits 0 on any problem and fails open (prints nothing); it never blocks.
 """
 from __future__ import annotations
 
@@ -143,39 +145,6 @@ def meta_agent_type(payload: dict) -> tuple[str, bool]:
     return "", checked and not found
 
 
-def transcript_usage(payload: dict) -> tuple[int, int | None]:
-    """(assistant turns, tokens of the last assistant record's usage or None).
-
-    Streams the whole JSONL (one record per line). tokens = input_tokens +
-    cache_creation_input_tokens + cache_read_input_tokens, like context-warn.py."""
-    turns, tokens = 0, None
-    try:
-        path = payload.get("agent_transcript_path") or payload.get("transcript_path")
-        if not path or not os.path.isfile(str(path)):
-            return 0, None
-        with open(str(path), "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(obj, dict) or obj.get("type") != "assistant":
-                    continue
-                turns += 1
-                msg = obj.get("message")
-                usage = msg.get("usage") if isinstance(msg, dict) else None
-                if isinstance(usage, dict):
-                    tokens = sum(int(usage.get(k) or 0) for k in (
-                        "input_tokens", "cache_creation_input_tokens",
-                        "cache_read_input_tokens"))
-    except Exception:
-        pass
-    return turns, tokens
-
-
 class _FallbackBudgets:
     """Used if tools/budgets.py can't be imported; same numbers as the module."""
     CLASSES = {"S": (20, 80000), "M": (60, 250000), "L": (150, 600000), "verify": (25, 100000)}
@@ -184,6 +153,37 @@ class _FallbackBudgets:
     @classmethod
     def load_budgets(cls, data_dir):
         return None
+
+    @staticmethod
+    def transcript_usage(path):
+        """Same rule as budgets.transcript_usage: turns = distinct message.id of
+        assistant records (id-less record = one turn); tokens of the last usage."""
+        ids, anonymous, tokens = set(), 0, None
+        try:
+            if not path or not os.path.isfile(str(path)):
+                return 0, None
+            with open(str(path), "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                        continue
+                    msg = obj.get("message")
+                    mid = msg.get("id") if isinstance(msg, dict) else None
+                    if isinstance(mid, str) and mid:
+                        ids.add(mid)
+                    else:
+                        anonymous += 1
+                    usage = msg.get("usage") if isinstance(msg, dict) else None
+                    if isinstance(usage, dict):
+                        tokens = sum(int(usage.get(k) or 0) for k in (
+                            "input_tokens", "cache_creation_input_tokens",
+                            "cache_read_input_tokens"))
+        except Exception:
+            pass
+        return len(ids) + anonymous, tokens
 
     @classmethod
     def limits_for_role(cls, _budgets, role):
@@ -222,7 +222,8 @@ def budget_check(payload: dict, agent_type: str, data_dir) -> dict | None:
         if not limits:
             return None
         name, max_turns, max_tokens = limits
-        turns, tokens = transcript_usage(payload)
+        path = payload.get("agent_transcript_path") or payload.get("transcript_path")
+        turns, tokens = mod.transcript_usage(path)
         ratio = max(turns / max_turns, (tokens or 0) / max_tokens)
         hit = "block" if ratio >= 1.0 else "warn" if ratio >= 0.8 else "none"
         info = {"budget_class": name, "turns": turns, "budget_hit": hit,
@@ -285,15 +286,10 @@ def _budget_output(payload: dict, agent_type: str, info: dict) -> dict | None:
     if hit == "warn":
         return {"systemMessage": f"subagent-log: {agent_type} used {usage} "
                                  f"(class {info['budget_class']}, >=80%)"}
-    if payload.get("stop_hook_active"):
-        return None
-    msg = (f"subagent-log: budget class {info['budget_class']} exceeded "
-           f"({info['turns']}/{info['max_turns']} turns, "
-           f"{info.get('tokens', 0)}/{info['max_tokens']} tokens)")
-    return {"decision": "block",
-            "reason": msg + ". Stop working: write a short `blocked` report (status BLOCKED, "
-                            "what is done, what remains, where the WIP is) and finish.",
-            "systemMessage": msg}
+    return {"systemMessage": f"subagent-log: budget class {info['budget_class']} exceeded "
+                             f"({info['turns']}/{info['max_turns']} turns, "
+                             f"{info.get('tokens', 0)}/{info['max_tokens']} tokens); "
+                             "the mid-run budget-guard hook is the gate, this is only logged"}
 
 
 def main() -> None:

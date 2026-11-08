@@ -135,10 +135,11 @@ _FRONTMATTER_KEY = re.compile(r"^(model|effort|maxTurns):\s*(.*)$")
 
 
 def _wanted_max_turns(role: str, data_dir) -> str | None:
-    """The role's budget-class max_turns as a string (budgets.classes via
-    vault.config.json, fallbacks without it), or None if the role has no class."""
+    """The role's agent-file maxTurns as a string: budgets.agent_max_turns (1.5x margin)
+    of its class max_turns (budgets.classes via vault.config.json, fallbacks without
+    it), or None if the role has no class."""
     limits = budgets.limits_for_role(budgets.load_budgets(data_dir), role)
-    return str(limits[1]) if limits else None
+    return str(budgets.agent_max_turns(limits[1])) if limits else None
 
 
 def _frontmatter_bounds(text: str) -> tuple[int, int] | None:

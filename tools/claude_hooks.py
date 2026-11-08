@@ -56,6 +56,10 @@ READ_GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "read-guard.py"
 READ_GUARD_MATCHER = "Read|Grep|Glob|Bash"
 READ_GUARD_MARKER = "read-guard.py"
 
+BUDGET_GUARD_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "budget-guard.py"
+BUDGET_GUARD_MATCHER = "*"  # every tool; the script only acts inside budgeted subagents
+BUDGET_GUARD_MARKER = "budget-guard.py"
+
 CONTEXT_WARN_SCRIPT = g.ENGINE / "tools" / "claude-hooks" / "context-warn.py"
 CONTEXT_WARN_MARKER = "context-warn.py"
 
@@ -116,6 +120,10 @@ def _git_guard_command() -> str:
 
 def _read_guard_command() -> str:
     return _command(READ_GUARD_SCRIPT)
+
+
+def _budget_guard_command() -> str:
+    return _command(BUDGET_GUARD_SCRIPT)
 
 
 def _context_warn_command() -> str:
@@ -280,6 +288,12 @@ def _merge_read_guard(settings: dict) -> bool:
                          READ_GUARD_MATCHER)
 
 
+def _merge_budget_guard(settings: dict) -> bool:
+    """Merge in the budget-guard PreToolUse hook (matcher *). Returns True if changed."""
+    return _merge_simple(settings, "PreToolUse", BUDGET_GUARD_MARKER, _budget_guard_command(),
+                         BUDGET_GUARD_MATCHER)
+
+
 def _merge_context_warn(settings: dict) -> bool:
     """Merge in the context-warn UserPromptSubmit hook. Returns True if changed."""
     command = _context_warn_command()
@@ -376,12 +390,13 @@ def _merge_statusline(settings: dict) -> bool:
 
 
 def merge(settings: dict) -> tuple[dict, bool]:
-    """Merge in the agent-guard, read-guard, context-warn, delegation-warn and reinforce-check hooks, and (if none
+    """Merge in the agent-guard, read-guard, budget-guard, context-warn, delegation-warn and reinforce-check hooks, and (if none
     is configured) the statusLine command, without touching any other existing hook
     or an existing statusLine. Returns (new_settings, changed)."""
     changed = _merge_guard(settings)
     changed = _merge_git_guard(settings) or changed
     changed = _merge_read_guard(settings) or changed
+    changed = _merge_budget_guard(settings) or changed
     changed = _merge_context_warn(settings) or changed
     changed = _merge_delegation_warn(settings) or changed
     changed = _merge_reinforce_check(settings) or changed
@@ -413,6 +428,18 @@ def read_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
     return "WARN", (f"read-guard hook not installed in {settings_path}: run "
                      f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to cap "
                      "the orchestrator's own file reads per request")
+
+
+def budget_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: whether the budget-guard hook is installed."""
+    settings_path = settings_path or default_settings()
+    found = _find_entry_hook(_load(settings_path), "PreToolUse", BUDGET_GUARD_MARKER)
+    if (found is not None and found[1].get("command") == _budget_guard_command()
+            and found[0].get("matcher") == BUDGET_GUARD_MATCHER):
+        return "OK", f"budget-guard hook installed ({settings_path})"
+    return "WARN", (f"budget-guard hook not installed in {settings_path}: run "
+                     f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to stop "
+                     "worker subagents at their budget class limit")
 
 
 def git_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
@@ -571,6 +598,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
             print(f"would update: {settings_path}")
             print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
             print(f"  matcher: {READ_GUARD_MATCHER}  command: {_read_guard_command()}")
+            print(f"  matcher: {BUDGET_GUARD_MATCHER}  command: {_budget_guard_command()}")
             print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
             print(f"  matcher: {DELEGATION_WARN_MATCHER}  "
                   f"command: {_delegation_warn_command()}")
@@ -608,6 +636,7 @@ def _apply_to(settings_path: Path, args: argparse.Namespace) -> None:
     print(f"  installed: {settings_path}")
     print(f"  matcher: {GUARD_MATCHER}  command: {_guard_command()}")
     print(f"  matcher: {READ_GUARD_MATCHER}  command: {_read_guard_command()}")
+    print(f"  matcher: {BUDGET_GUARD_MATCHER}  command: {_budget_guard_command()}")
     print(f"  matcher: UserPromptSubmit  command: {_context_warn_command()}")
     print(f"  matcher: {DELEGATION_WARN_MATCHER}  command: {_delegation_warn_command()}")
     print(f"  matcher: Stop  command: {_reinforce_check_command()}")

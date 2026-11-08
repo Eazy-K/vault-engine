@@ -9,13 +9,15 @@ only fallbacks used when the key is missing or invalid:
       "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
     }
 
-Used by tools/models.py (maxTurns in worker-*.md frontmatter) and by the SubagentStop
-hook tools/claude-hooks/subagent-log.py (warn at 80%, block at 100%).
+Used by tools/models.py (maxTurns in worker-*.md frontmatter), by the SubagentStop
+hook tools/claude-hooks/subagent-log.py (logs warn at 80%, block at 100%) and by the
+mid-run PreToolUse budget guard. `transcript_usage` is the single turn/token counter.
 Stdlib only; never raises on bad config.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -25,6 +27,7 @@ FALLBACK_CLASSES = {
     "L": {"max_turns": 150, "max_tokens": 600000},
     "verify": {"max_turns": 25, "max_tokens": 100000},
 }
+MAX_TURNS_MARGIN = 1.5
 FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
 
 
@@ -93,3 +96,55 @@ def limits_for_role(budgets: dict, role: str) -> tuple[str, int, int] | None:
         return None
     spec = budgets["classes"][name]
     return name, spec["max_turns"], spec["max_tokens"]
+
+
+def agent_max_turns(max_turns: int) -> int:
+    """The `maxTurns` to write into an agent file for a class `max_turns`:
+    ceil(MAX_TURNS_MARGIN * max_turns) (S 20 -> 30, M 60 -> 90, L 150 -> 225, verify 25 -> 38).
+
+    Why a margin: Claude Code stops a subagent at `maxTurns` silently, without running
+    any hook, so a cap equal to the class limit would cut the worker off before the
+    SubagentStop / PreToolUse budget hooks could ask for a `blocked` report. The margin
+    lets those hooks fire first."""
+    return math.ceil(MAX_TURNS_MARGIN * max_turns)
+
+
+def transcript_usage(path) -> tuple[int, int | None]:
+    """(turns, tokens) of a Claude transcript JSONL (one record per line).
+
+    turns = distinct `message.id` among `{"type":"assistant"}` records (one API reply is
+    written as several records sharing an id); a record whose message has no id counts as
+    one turn on its own. tokens = input_tokens + cache_creation_input_tokens +
+    cache_read_input_tokens of the last assistant record's usage, or None without usage.
+    Missing/unreadable file or bad lines give (0, None) / are skipped."""
+    ids: set = set()
+    anonymous = 0
+    tokens = None
+    try:
+        if not path or not os.path.isfile(str(path)):
+            return 0, None
+        with open(str(path), "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                    continue
+                msg = obj.get("message")
+                mid = msg.get("id") if isinstance(msg, dict) else None
+                if isinstance(mid, str) and mid:
+                    ids.add(mid)
+                else:
+                    anonymous += 1
+                usage = msg.get("usage") if isinstance(msg, dict) else None
+                if isinstance(usage, dict):
+                    tokens = sum(int(usage.get(k) or 0) for k in (
+                        "input_tokens", "cache_creation_input_tokens",
+                        "cache_read_input_tokens"))
+    except Exception:
+        pass
+    return len(ids) + anonymous, tokens
