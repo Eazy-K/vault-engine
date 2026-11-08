@@ -59,6 +59,14 @@ class TestAgentGuard(unittest.TestCase):
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout.strip(), "")
 
+    def test_allows_worker_verify_with_sonnet(self):
+        out = _run(_agent_call("worker-verify", "sonnet"))
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(out.stdout.strip(), "")
+
+    def test_denies_worker_verify_with_non_configured_model(self):
+        self.assertDenied(_run(_agent_call("worker-verify", "haiku")))
+
     def test_denies_worker_medium_with_non_configured_model(self):
         out = _run(_agent_call("worker-medium", "haiku"))
         self.assertDenied(out)

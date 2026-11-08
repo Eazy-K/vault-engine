@@ -9,7 +9,7 @@ Commands are written as `python tools/graph.py <command>` from the engine folder
 - Install and connect: [Setup](#setup) (`init`, `setup`, `onboard`, `doctor`, `doctor --live`), [Machine name](#machine-name) (`machine`)
 - Projects: [Project discovery](#project-discovery) (`projects`), [Project recognition](#project-recognition) (`machine --project-root`, `--project`, `--no-project`)
 - Notes: [Status note rotation](#status-note-rotation) (`rotate`)
-- Tasks: [Tasks](#tasks) (`tasks --status`, `lint`, `budget:`)
+- Tasks: [Tasks](#tasks) (`tasks --status`, `lint`, `budget:`), [Task verification](#task-verification) (`verify`)
 - Retrieval quality: [Retrieval evaluation](#retrieval-evaluation) (`eval`)
 - Several computers: [Updating another computer](#updating-another-computer) (`update --all`, `user-config --install`)
 - Feedback: [Feedback](#feedback) (`feedback status|list|send|set|add`)
@@ -80,6 +80,11 @@ Task frontmatter has a `budget:` field: `S`, `M` or `L`. The engine maps the cla
 - Error: a `ready` task with no `## Acceptance` block (a fenced block with at least one non-blank line).
 - Error: a `ready` task whose `budget:` is missing or not `S`, `M` or `L`.
 - Warning: any task with a `budget:` value other than `S`, `M` or `L`.
+
+## Task verification
+`python tools/graph.py verify --task <id|path> --diff <file> [--acceptance-output <file>]` is the mechanical part of the `worker-verify` agent's check. `--task` is a note id or the path of a task file; `--diff` is a unified `git diff` saved to a file; `--acceptance-output` is the output of the task's `## Acceptance` command. It prints `PASS` or `FAIL`, then one `- ok:` / `- fail:` line per item, and exits 0 on PASS and 1 on FAIL. Items: the acceptance output is green (last line `OK`, or `exit 0`, and no `FAILED` or non-zero exit; a missing output file fails unless the acceptance block is `human` or absent); no changed file matches the task's exclusions (lines under a `Files not to touch` / `Dokunulmayacak dosyalar` heading and bullets starting with `Exclude:` / `Hariç:`; a pattern with `*` or `?` is a glob, one ending in `/` is a folder); the diff is not empty. It only reads the files you give it: no git command, no `usage.log` entry, no learning.
+
+The `models` command also sets the verifier: `--worker-verify <model>` and `--worker-verify-effort <level>` (see [agent-setup](agent-setup.md)).
 
 ## Retrieval evaluation
 `python tools/graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` measures how well `context` finds the right notes. The set is a JSONL file, one query per line: `{"task": "...", "ts": "...", "query": "...", "relevant": ["note-id", ...], "split": "dev"|"holdout"}`. A relative `--set` path is resolved against the current directory.

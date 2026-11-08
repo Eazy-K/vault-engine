@@ -487,7 +487,7 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool, policy-based on the shared `models` config
-  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` (a model override
+  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` (a model override
   must equal the configured one, `sonnet` by default) and the read-only built-in
   agents `Explore`, `Plan` and `claude-code-guide` (matched case-insensitively; they
   cannot edit files). `Explore` runs on `haiku`: when the call names no model the hook
@@ -590,11 +590,27 @@ Note: a `disallowedTools` entry with a specifier (e.g. `Bash(git push *)`) remov
 tool from a subagent, so `worker-low` / `worker-medium` do not use it; the push/merge bans for
 workers are enforced by `git-guard.py` instead.
 
-Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
-not three: `python tools/graph.py models` shows it (plus whether `settings.json` and
+### worker-verify (Claude Code)
+
+`tools/claude-agents/worker-verify.md` is a Sonnet (medium effort) verifier with a clean
+context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 25; it never edits files,
+commits or runs git write commands. The orchestrator starts it with the `Agent` tool
+(`subagent_type: worker-verify`) after a writing worker reports, and gives it the task
+file path, a diff file (or the branch) and the acceptance-command output file. It answers
+`PASS` or `FAIL` on the first line, then one `- ok:` / `- fail:` bullet per checklist item
+(acceptance green, no excluded file touched, scope complete, tests cover the change,
+the worker's evidence is real). For the mechanical part it can run
+`python tools/graph.py verify --task <id|path> --diff <file> --acceptance-output <file>`
+(see `docs/commands.md`). A `FAIL` list goes to a new writing worker; after two rounds
+the task is `blocked`. Its model is configured like the other workers (`models
+--worker-verify <model>` / `--worker-verify-effort <level>`).
+
+Which model each role (orchestrator, worker-low, worker-medium, worker-verify) uses is one config,
+not four: `python tools/graph.py models` shows it (plus whether `settings.json` and
 `~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
 <level>`, `--worker-low <model>` / `--worker-low-effort <level>`, `--worker-medium
-<model>` / `--worker-medium-effort <level>` change it, shared across every computer
+<model>` / `--worker-medium-effort <level>`, `--worker-verify <model>` /
+`--worker-verify-effort <level>` change it, shared across every computer
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
