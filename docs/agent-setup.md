@@ -500,14 +500,17 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   See `python tools/graph.py models` below to change which model each role
   uses. Set `VAULT_AGENT_GUARD=off` in the environment to disable it without
   uninstalling it.
-- a `UserPromptSubmit` hook (`context-warn.py`) that, on every user message, adds a
-  short one-line reminder to delegate implementation, code exploration and test writing to a worker by default (only a truly trivial one-line or single-step change stays inline) (and to
-  run `context` first if the task hasn't started), and additionally warns the model
-  when the session's estimated context usage crosses a threshold (`VAULT_CONTEXT_WARN`,
-  default 150000 tokens; re-warns after every further ~25K tokens of growth). The
-  context-usage warning tells the model to write the current state to the vault's
-  status note, then suggest the user start a new session or run `/compact`. Neither
-  part of this hook ever blocks the prompt.
+- a `UserPromptSubmit` hook (`context-warn.py`) that records the size of the
+  session's first assistant call as a baseline, warns the model at baseline + 50K
+  tokens (delegate to subagents, keep tool output short) and suggests a handoff at
+  baseline + 80K (write a handoff note, continue in a new session). Both deltas can be
+  set with `budgets.context` (`{"warn_delta": 50000, "handoff_delta": 80000}`) in
+  `vault.config.json`; invalid values fall back to the defaults. `VAULT_CONTEXT_WARN`
+  is an absolute override: a valid integer replaces baseline + warn_delta (the handoff
+  level then sits that value + (handoff_delta - warn_delta)). It re-warns only after
+  a further ~25K tokens of growth, but moving from warn to handoff always emits once.
+  Each warning is also logged to `.graph/usage.log` (event `context_warn`). Nothing
+  is printed under the threshold, and the hook never blocks the prompt.
 - a `PostToolUse` hook (`delegation-warn.py`, matcher `*`) that
   counts implementation calls made directly by the orchestrator (not inside a subagent) for the
   current user message and, once that count exceeds 3, adds a short one-time warning
