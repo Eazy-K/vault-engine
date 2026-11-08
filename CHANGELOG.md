@@ -8,6 +8,13 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `eval` command (`tools/eval_retrieval.py`): `graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` replays a labelled query set (`{task, ts, query, relevant, split}` per line) and reports n, recall@k and MRR per mode, keyword-only and semantic side by side (`--no-semantic`: keyword only; with Ollama unavailable the semantic column says so and the command still succeeds). The ranking is the list `context` builds before its token budget (default threshold and depth; budget-omitted notes keep their place), without core notes and without project seeding from the working directory. It writes no usage log event, task id or learned link; only the embeddings cache can be refreshed, as `index` does.
 - `stats` reads local Claude Code transcripts (`tools/usage_metrics.py`, reuses `token_stats` discovery) and adds two measurement-only sections: an `opened` column next to `retrieved` and `used` (transcripts that opened the note with `graph.py show --body <id>` or a Read under the vault data root after their first `context` call), and a per-project-slug table of main sessions, sessions with a `context` call and the ratio. Sessions with fewer than 3 assistant turns are skipped (count shown); slugs containing `claude-lab-runs` are listed but left out of the total. `stats --json` now prints the counters and these sections. `stats --no-transcripts` skips the scan (it can take about 40 s on large transcript sets). Only counts and note ids leave the module, never transcript text. No learning or hook change.
 
+### Changed
+- Orchestration defaults (`defaults/standards/orchestration.md`, `orchestration-details.md`) use two gates (the human approves the spec at the start and the PR at the end, nothing stops in between), send verification to a separate worker-medium with a clean context (PASS or FAIL plus items) and add a progress-reporting rule (task file Log and PR body; the status note only when the work is done). (#146)
+- `templates/AGENTS.md` step 3: when the work seems finished and `reinforce` has not run, the agent runs it itself and reports it in one line instead of offering it. (#146)
+- Worker agents (`worker-low`, `worker-medium`) get `disallowedTools` for `git push`, `gh pr merge`, `git merge` and branch deletion. (#146)
+- `doctor` warns when `permissions.deny` lacks `Bash(gh pr merge:*)` and names the `user-config --install` fix. (#146)
+- Codex orchestrator parity (`tools/codex-hooks/`, `tools/codex-agents/`, `tools/codex_hooks.py`, the parity list) is frozen: kept and installable, no further maintenance. Codex runs as a worker. (#146)
+
 ## [0.19.0] - 2026-10-21
 
 ### Added
@@ -16,9 +23,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `reinforce` prints one `WARN:` line with the exact `rotate` command when the project it runs in (detected from the working directory) has a status note with more than 5 dated items or a body over 5000 chars, and a `WARN:` line for an overview note over 5000 chars (move content by hand). `context` output is unchanged (#141).
 
 ### Changed
-- `lint` checks project entry notes (`<project>-status`, `<project>-overview`): a body over 5000 chars (`MAX_ENTRY_CHARS`) is an ERROR (exit 1) and names the fix, the `rotate` command for a status note, moving content to `<project>-history` for an overview. #140 introduced this check as a warning; #141 raised it to an error (#140, #141).
-- The default `context` token budget (`DEFAULT_BUDGET`) is 5000 instead of 2000; project status and overview notes still load outside it (#140).
-- `defaults/standards/vault-notes.md` gains a "Project status note" section: purpose, the 5000-char limit, at most 5 dated items, moving older items with `rotate` and not by hand, delegating status and lessons updates to a worker-low subagent, `status_note` headings, "Lesson:" lines in `<project>-lessons.md`, dated claims (#140, #141).
+- `lint` checks project entry notes (`<project>-status`, `<project>-overview`): a body over 5000 chars (`MAX_ENTRY_CHARS`) is an ERROR (exit 1) and names the fix, the `rotate` command for a status note, moving content to `<project>-history` for an overview. #140 introduced this check as a warning; #141 raised it to an error (#140, #141). (#146)
+- The default `context` token budget (`DEFAULT_BUDGET`) is 5000 instead of 2000; project status and overview notes still load outside it (#140). (#146)
+- `defaults/standards/vault-notes.md` gains a "Project status note" section: purpose, the 5000-char limit, at most 5 dated items, moving older items with `rotate` and not by hand, delegating status and lessons updates to a worker-low subagent, `status_note` headings, "Lesson:" lines in `<project>-lessons.md`, dated claims (#140, #141). (#146)
 
 ### Docs
 - `docs/commands.md` has a "Status note rotation" section (`rotate`, flags, the `status_note` config, the `lint` error and `reinforce` warning); the Tool list in `vault-notes.md` lists `rotate` (#141).
@@ -45,10 +52,10 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Status line `vault` segment (`tools/claude-hooks/statusline.py`), after the folder segment: `vault ✓ <task id>` once `graph.py context` has run in the session (its `reinforce --task <id>` line found in a tool result of the main transcript; latest id wins), `vault ✗` otherwise; omitted when `transcript_path` is missing; subagent transcripts do not count. The transcript scan cache moved to version 2 (old entries reparse) (#134).
 
 ### Changed
-- The agent guard is policy-based. Roles come from `model_config` / `vault.config.json` (`models`): `explore` (haiku, low), `plan` and `claude-code-guide` (inherit) are overridable and listed read-only by `graph.py models`. Claude: `Explore` without a model is allowed and gets `model: haiku` through `updatedInput` (another model is denied), `Plan` and `claude-code-guide` pass, `fork`, `general-purpose`, `claude`, `default` stay denied. Codex: roles come from the same config and `default` is denied; Codex has no read-only built-ins. This supersedes the "hooks stay as they are" rule of ADR 0005 (#130).
-- `defaults/standards/orchestration.md` worker line allows the read-only built-ins Explore, Plan and claude-code-guide; the Codex developer instructions note that Codex has none (#130).
-- `delegation-warn` counts only implementation calls (Edit, Write, MultiEdit, NotebookEdit, Bash unless read-only); other tools go to `read_calls`; Agent/Task are exempt. `inline_calls` now means implementation calls. Codex uses the same rule, with a parity test over a shared command table (#131).
-- `reinforce-check` blocks once per task and session (`blocked-no-outcome`) when a finish signal (`git commit`, `git push`, `gh pr create`) follows a `reinforce` call without `--outcome`; without a finish signal it still only warns. Codex stays instruction-only (#129).
+- The agent guard is policy-based. Roles come from `model_config` / `vault.config.json` (`models`): `explore` (haiku, low), `plan` and `claude-code-guide` (inherit) are overridable and listed read-only by `graph.py models`. Claude: `Explore` without a model is allowed and gets `model: haiku` through `updatedInput` (another model is denied), `Plan` and `claude-code-guide` pass, `fork`, `general-purpose`, `claude`, `default` stay denied. Codex: roles come from the same config and `default` is denied; Codex has no read-only built-ins. This supersedes the "hooks stay as they are" rule of ADR 0005 (#130). (#146)
+- `defaults/standards/orchestration.md` worker line allows the read-only built-ins Explore, Plan and claude-code-guide; the Codex developer instructions note that Codex has none (#130). (#146)
+- `delegation-warn` counts only implementation calls (Edit, Write, MultiEdit, NotebookEdit, Bash unless read-only); other tools go to `read_calls`; Agent/Task are exempt. `inline_calls` now means implementation calls. Codex uses the same rule, with a parity test over a shared command table (#131). (#146)
+- `reinforce-check` blocks once per task and session (`blocked-no-outcome`) when a finish signal (`git commit`, `git push`, `gh pr create`) follows a `reinforce` call without `--outcome`; without a finish signal it still only warns. Codex stays instruction-only (#129). (#146)
 
 ### Fixed
 - `delegation-warn` shell classifier: quote-aware splitting (`grep -iE "WARN|FAIL"` is no longer split), more read-only `git` (`stash list|show`, `describe`, `rev-list`, `ls-files`, `worktree list`, ...) and `gh` (`pr checks`, `run list|view`, plain `api`) subcommands, read-only PowerShell cmdlets and `pwsh -Command` unwrapping. Unbalanced quotes and unknown commands count as implementation. Claude and Codex copies are identical (#135).
@@ -68,10 +75,10 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ## [0.17.0] - 2026-10-15
 
 ### Changed
-- Codex workers (`tools/codex-agents/worker-*.toml`) moved to `gpt-6.1-sol`: reasoning `low` for worker-low, `medium` for worker-medium.
-- The rule that a worker must be cheaper than or different from the orchestrator is dropped from the orchestration notes.
-- Codex `agent-guard` allows only `worker-low` and `worker-medium` (other profile files in the agents folder are ignored) and validates any `model` / `reasoning_effort` override against the installed profile.
-- Worker-tier wording: worker-low also covers code lookup (find where X is, read and summarize files); worker-medium covers exploration that needs judgment (audits, comparisons, design). Applies to `orchestration.md` and the Codex developer instructions.
+- Codex workers (`tools/codex-agents/worker-*.toml`) moved to `gpt-6.1-sol`: reasoning `low` for worker-low, `medium` for worker-medium. (#146)
+- The rule that a worker must be cheaper than or different from the orchestrator is dropped from the orchestration notes. (#146)
+- Codex `agent-guard` allows only `worker-low` and `worker-medium` (other profile files in the agents folder are ignored) and validates any `model` / `reasoning_effort` override against the installed profile. (#146)
+- Worker-tier wording: worker-low also covers code lookup (find where X is, read and summarize files); worker-medium covers exploration that needs judgment (audits, comparisons, design). Applies to `orchestration.md` and the Codex developer instructions. (#146)
 
 ### Fixed
 - `codex-hooks --probe-deny` passes `--dangerously-bypass-hook-trust` after checking `codex exec --help`; if the flag is missing it skips the probe, records `inconclusive` and asks to update Codex. It also reports the tool name the hook saw and prints the tail of the `codex exec` output when the hook does not fire.
@@ -86,9 +93,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 ## [0.16.0] - 2026-10-14
 
 ### Changed
-- Context-first delegation (`defaults/standards/orchestration.md`): delegating meaningful, independent, parallelizable or context-intensive subtasks is the strong default; no quota, not mandatory. The orchestrator manages (planning, context selection, delegation, coordination, integration, verification) rather than implements: well-bounded implementation, code exploration and test writing suit a worker even when small, related small tasks share one worker, and only a truly trivial one-line or single-step change stays inline. Codex developer instructions, `orchestration-details.md` and the AGENTS.md template (revision 13) follow it.
-- Worker prompts (Claude and Codex, low and medium) ask for a short hand-back: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence and blockers, with no raw logs or transcripts unless asked.
-- Reminder wording of the Claude and Codex `context-warn` and `delegation-warn` hooks matches the orchestrator role (the "small or tightly coupled work may stay inline" wording is gone). Thresholds, tool classification and telemetry are unchanged.
+- Context-first delegation (`defaults/standards/orchestration.md`): delegating meaningful, independent, parallelizable or context-intensive subtasks is the strong default; no quota, not mandatory. The orchestrator manages (planning, context selection, delegation, coordination, integration, verification) rather than implements: well-bounded implementation, code exploration and test writing suit a worker even when small, related small tasks share one worker, and only a truly trivial one-line or single-step change stays inline. Codex developer instructions, `orchestration-details.md` and the AGENTS.md template (revision 13) follow it. (#146)
+- Worker prompts (Claude and Codex, low and medium) ask for a short hand-back: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence and blockers, with no raw logs or transcripts unless asked. (#146)
+- Reminder wording of the Claude and Codex `context-warn` and `delegation-warn` hooks matches the orchestrator role (the "small or tightly coupled work may stay inline" wording is gone). Thresholds, tool classification and telemetry are unchanged. (#146)
 
 ### Fixed
 - Codex `delegation-warn` counts `followup_task` (`collaborationfollowup_task` in the hook payload) as coordination, not inline work. The Codex developer instructions and `orchestration-details.md` list `followup_task` among the coordination tools.
@@ -104,14 +111,14 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - doctor/update honor a custom `CODEX_HOME`.
 
 ### Changed
-- Codex `delegation-warn` no longer counts coordination tools (spawn/wait/send_message/interrupt) as inline work; it warns at most once per turn at 8 inline calls (was 4, repeating every 2) and not after a worker was spawned in the turn. The `orchestrator_prompt` usage event adds `coordination_calls`, `spawned` and `tools` (tool names only).
-- Codex developer instructions replace "delegate every request" with inline-vs-delegate rules; risk-based approval is kept. Claude instructions and the core orchestration note are unchanged.
-- Shared orchestration rule (`defaults/standards/orchestration.md`) no longer says "delegate every request": decide per task whether to work inline or delegate (complexity, independence, context, cost); delegation is never required. Within a scope the user explicitly authorized, reversible steps proceed; ask before destructive, irreversible or out-of-scope actions. Codex developer instructions, the AGENTS.md template (revision 11) and the Codex context-warn reminder follow it.
-- Claude hook reminders (delegation-warn, context-warn) are conditional text now; thresholds and logic unchanged.
-- `orchestration-details.md` records version-scoped Codex facts (spawn deny enforced on 0.160.0, not dispatched on 0.159.2; others unverified) and that Codex worker models live in `tools/codex-agents/*.toml`.
-- doctor's Codex hook check says it is a file check only; Codex trust and live firing are not verified.
-- Worker prompts show PowerShell equivalents (`$env:VAULT_ENGINE`, `Get-Content -Tail`).
-- Docs: README.md/README.tr.md are short landing pages; command reference moved to docs/commands.md.
+- Codex `delegation-warn` no longer counts coordination tools (spawn/wait/send_message/interrupt) as inline work; it warns at most once per turn at 8 inline calls (was 4, repeating every 2) and not after a worker was spawned in the turn. The `orchestrator_prompt` usage event adds `coordination_calls`, `spawned` and `tools` (tool names only). (#146)
+- Codex developer instructions replace "delegate every request" with inline-vs-delegate rules; risk-based approval is kept. Claude instructions and the core orchestration note are unchanged. (#146)
+- Shared orchestration rule (`defaults/standards/orchestration.md`) no longer says "delegate every request": decide per task whether to work inline or delegate (complexity, independence, context, cost); delegation is never required. Within a scope the user explicitly authorized, reversible steps proceed; ask before destructive, irreversible or out-of-scope actions. Codex developer instructions, the AGENTS.md template (revision 11) and the Codex context-warn reminder follow it. (#146)
+- Claude hook reminders (delegation-warn, context-warn) are conditional text now; thresholds and logic unchanged. (#146)
+- `orchestration-details.md` records version-scoped Codex facts (spawn deny enforced on 0.160.0, not dispatched on 0.159.2; others unverified) and that Codex worker models live in `tools/codex-agents/*.toml`. (#146)
+- doctor's Codex hook check says it is a file check only; Codex trust and live firing are not verified. (#146)
+- Worker prompts show PowerShell equivalents (`$env:VAULT_ENGINE`, `Get-Content -Tail`). (#146)
+- Docs: README.md/README.tr.md are short landing pages; command reference moved to docs/commands.md. (#146)
 
 ### Upgrade notes
 - After `update --all`, re-approve the changed Codex hooks with `/hooks` in Codex on every computer; until then Codex skips them. If `doctor` reports outdated Codex developer instructions, run `user-config --install`.
@@ -135,9 +142,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `token_stats` cost estimate: prices are keyed by model version, cache writes are split into 5m (1.25x) and 1h (2x) with a `~` flag and warning when the breakdown is missing, cache-read multipliers are per model, and the Haiku 5.5 long-prompt tier applies per request. An unknown model gives no cost (`-`, warning, excluded from totals) instead of a silent $0. JSON adds `cache_write_5m`, `cache_write_1h`, `cache_write_unknown`.
 
 ### Changed
-- AGENTS.md template (revision 10): when the work seems finished but there was no commit, push or PR, the agent ends its report with one line offering to run `reinforce` and naming the notes it would pass.
-- `delegation-warn` is also registered under `Stop` and flushes the last prompt's `orchestrator_prompt` event; its inline tool counter now matches all tools except `Agent`/`Task` (Codex: all except `exec`, `Agent`, `spawn_agent`). `doctor` checks the new entries.
-- CI: the Windows job runs as 3 shards (`tests/run_shard.py`, weights in `tests/shard_weights.json`), the update tests build their git fixtures once per process, and a concurrency group cancels superseded PR runs.
+- AGENTS.md template (revision 10): when the work seems finished but there was no commit, push or PR, the agent ends its report with one line offering to run `reinforce` and naming the notes it would pass. (#146)
+- `delegation-warn` is also registered under `Stop` and flushes the last prompt's `orchestrator_prompt` event; its inline tool counter now matches all tools except `Agent`/`Task` (Codex: all except `exec`, `Agent`, `spawn_agent`). `doctor` checks the new entries. (#146)
+- CI: the Windows job runs as 3 shards (`tests/run_shard.py`, weights in `tests/shard_weights.json`), the update tests build their git fixtures once per process, and a concurrency group cancels superseded PR runs. (#146)
 
 ### Upgrade notes
 - Run `python tools/graph.py update --all` (or `claude-hooks --install` / `codex-hooks --install`) to install the `subagent-log` hook, the `Stop` entry for `delegation-warn` and the new `*` matcher, and to get the AGENTS.md template revision 10 (`update --apply-agents`). Then run any subagent once (records written before the `internal` flag are not reclassified) and `doctor --live` verifies the measurement pipeline.
@@ -151,9 +158,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `machine --engine-developer on|off` marks this computer as the engine developer's (key `engine_developer` in the gitignored `.graph/machine.json`).
 
 ### Changed
-- Every `doctor` WARN now names its fix command (preferably `update --all`) or says `manual:`. On a dev checkout `doctor` warns and prints the command that switches to the latest release, unless the computer is marked as the engine developer's (then INFO).
-- `context` prints one hint for out-of-date Claude Code/Codex hooks, models or workers: ask once, then run `update --all` (any channel). The AGENTS.md template (revision 9) and `defaults/standards/agents-details.md` say never to update the engine by hand.
-- Docs: new installs stay on the stable channel; README, README.tr and the agent setup guide point to the single `update` command.
+- Every `doctor` WARN now names its fix command (preferably `update --all`) or says `manual:`. On a dev checkout `doctor` warns and prints the command that switches to the latest release, unless the computer is marked as the engine developer's (then INFO). (#146)
+- `context` prints one hint for out-of-date Claude Code/Codex hooks, models or workers: ask once, then run `update --all` (any channel). The AGENTS.md template (revision 9) and `defaults/standards/agents-details.md` say never to update the engine by hand. (#146)
+- Docs: new installs stay on the stable channel; README, README.tr and the agent setup guide point to the single `update` command. (#146)
 
 ### Upgrade notes
 - On the dev channel `update` now pulls (it used to do nothing). Run `python tools/graph.py update --apply-agents` once to bring the vault's `AGENTS.md` to template revision 9. Existing installs are not switched to stable automatically.
@@ -171,8 +178,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `lint` warns once per note when it has sentences over 30 words (`MAX_SENTENCE_WORDS` in `graph.py`); task notes (`type: task` or under `inbox/`), code blocks, tables, headings and comments are skipped. Warnings never change the exit code. The `vault-notes` standard gains short-sentence, same-term, active-voice and no-filler rules.
 
 ### Changed
-- Worker agent rules (Claude and Codex) now allow worker commits, share one test-output rule (redirect to a file, print the exit code, read the tail, grep for FAIL/ERROR) and tell workers to lint vault notes before and after editing.
-- README gains an "Updating another computer" section.
+- Worker agent rules (Claude and Codex) now allow worker commits, share one test-output rule (redirect to a file, print the exit code, read the tail, grep for FAIL/ERROR) and tell workers to lint vault notes before and after editing. (#146)
+- README gains an "Updating another computer" section. (#146)
 
 ### Fixed
 - Installing Codex hooks updates unedited copies of the worker agent files instead of leaving them stale.
@@ -190,11 +197,11 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - The orchestration note is split into a short always-loaded, tool-neutral core note and `orchestration-details` (Claude Code and Codex mapping). Codex developer instructions carry the same rules, and a test keeps the two in sync. (#81)
 
 ### Changed
-- `user-config --install` adopts identical unmarked workspace files by wrapping them in managed markers (with a backup), so later source changes replace the block. (#80)
-- A temp-directory `CLAUDE_CONFIG_DIR` is no longer recorded in `claude-dirs`; registered Claude directories that no longer exist are skipped, and `doctor` prints one INFO line (`claude-dirs --remove`). (#80)
-- Codex hook matchers cover the real Codex 0.159 tool names (PostToolUse: `exec_command`, `shell_command`, `shell`, `local_shell`; PreToolUse: namespaced `spawn_agent`). Plain `exec` is intentionally not matched to avoid double counting. (#82)
-- Delegating to a single agent also needs approval, as in the core note. (#83)
-- `usage.log` entries older than 90 days are trimmed by `graph.py` (atomic rewrite; hooks never trim). (#85)
+- `user-config --install` adopts identical unmarked workspace files by wrapping them in managed markers (with a backup), so later source changes replace the block. (#80) (#146)
+- A temp-directory `CLAUDE_CONFIG_DIR` is no longer recorded in `claude-dirs`; registered Claude directories that no longer exist are skipped, and `doctor` prints one INFO line (`claude-dirs --remove`). (#80) (#146)
+- Codex hook matchers cover the real Codex 0.159 tool names (PostToolUse: `exec_command`, `shell_command`, `shell`, `local_shell`; PreToolUse: namespaced `spawn_agent`). Plain `exec` is intentionally not matched to avoid double counting. (#82) (#146)
+- Delegating to a single agent also needs approval, as in the core note. (#83) (#146)
+- `usage.log` entries older than 90 days are trimmed by `graph.py` (atomic rewrite; hooks never trim). (#85) (#146)
 
 ### Fixed
 - Codex hook output is ASCII-escaped so it is safe on Windows code page 1252; a regression test runs all hooks with cp1252 output. (#72, #79)
@@ -217,9 +224,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Codex orchestration guidance: plan-and-approve reminders on each prompt while keeping the 150K context warning, delegation warnings repeated at tool calls 4, 6, 8 and later even counts, Codex tool counts logged, and `stats` showing Codex and Claude separately while preserving legacy records. (#71)
 
 ### Changed
-- The AGENTS template gains orchestration guidance. (#71)
-- `codex-hooks` honors `CODEX_HOME` like the other user-level commands. (#76)
-- Top-level `config/**` in a data repo or `defaults/` is no longer loaded as graph notes. (#75)
+- The AGENTS template gains orchestration guidance. (#71) (#146)
+- `codex-hooks` honors `CODEX_HOME` like the other user-level commands. (#76) (#146)
+- Top-level `config/**` in a data repo or `defaults/` is no longer loaded as graph notes. (#75) (#146)
 
 ### Fixed
 - `user-config` stays importable on Python 3.10 without `tomllib`. (#75)
@@ -245,9 +252,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `stats --tokens` reports Codex token, call, and estimated API list-price cost shares by model, with linked subagent usage and per-run details. These cost estimates are not Codex subscription charges. (#67)
 
 ### Changed
-- `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields. (#66)
-- For `stats --tokens --session <codex id>`, JSON `totals` now includes the main session and linked subagents; the main session's totals are available in `main_totals`. (#67)
-- Orchestration guidance clarifies when plan approval is needed: splits across two or more agents or ask-first categories require approval; ambiguous scope gets one clarifying question. (#62)
+- `stats --tokens` model tables show call, token and cost shares and the main/subagent call split per model; the JSON output gains the matching fields. (#66) (#146)
+- For `stats --tokens --session <codex id>`, JSON `totals` now includes the main session and linked subagents; the main session's totals are available in `main_totals`. (#67) (#146)
+- Orchestration guidance clarifies when plan approval is needed: splits across two or more agents or ask-first categories require approval; ambiguous scope gets one clarifying question. (#62) (#146)
 
 ### Fixed
 - Codex cost estimates subtract cached input from the regular input rate; when a model has no listed price, totals and shares are marked partial and use priced models only. (#68)
@@ -270,9 +277,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `update --agents` step and a context notice for worker agent definition files (`worker-low.md`, `worker-medium.md`) that are stale.
 
 ### Changed
-- Worker agent definitions (`worker-low`, `worker-medium`) gain explicit working rules (branch check before editing, commit after each logical step, never pipe test output through `tail`/`head`, commit and report when low on turns).
-- `worker-medium`'s `maxTurns` raised from 60 to 100.
-- The default orchestration standard (`defaults/standards/orchestration.md`) gains rules on waiting for and resuming subagents and on turn limits.
+- Worker agent definitions (`worker-low`, `worker-medium`) gain explicit working rules (branch check before editing, commit after each logical step, never pipe test output through `tail`/`head`, commit and report when low on turns). (#146)
+- `worker-medium`'s `maxTurns` raised from 60 to 100. (#146)
+- The default orchestration standard (`defaults/standards/orchestration.md`) gains rules on waiting for and resuming subagents and on turn limits. (#146)
 
 ### Fixed
 - Windows: `claude-hooks --install` wrote hook and status line commands with single quotes, which failed to parse in the Windows shell, so the hooks never ran; commands are now quoted so they work on Windows.
@@ -292,9 +299,9 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `setup` gains a "Projects:" section that runs discovery and prints the next step (`projects --ask`) when projects without notes are found; `--no-projects` skips it.
 
 ### Changed
-- `context` points at `projects --ask` when the current project has no notes (silent once skipped), and, outside any project, prints one line listing discovered projects without notes, read from the discovery cache only (it never scans).
-- `doctor`'s "projects without notes" warning ignores skipped projects and points at `projects --ask` / `projects --skip <name>`.
-- `templates/AGENTS.md` step 1 adds the project selection rule (template revision 5); the full procedure is in `defaults/standards/agents-details.md` and `docs/agent-setup.md`.
+- `context` points at `projects --ask` when the current project has no notes (silent once skipped), and, outside any project, prints one line listing discovered projects without notes, read from the discovery cache only (it never scans). (#146)
+- `doctor`'s "projects without notes" warning ignores skipped projects and points at `projects --ask` / `projects --skip <name>`. (#146)
+- `templates/AGENTS.md` step 1 adds the project selection rule (template revision 5); the full procedure is in `defaults/standards/agents-details.md` and `docs/agent-setup.md`. (#146)
 
 ### Known limitations
 - Projects are recognised by folder name: two different projects with the same folder name on two computers share one set of notes.
@@ -311,8 +318,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `VAULT_SKIP_DIRS` (comma-separated folder names) adds folders to skip when the engine scans notes, on top of the built-in `.git`, `.obsidian`, `.graph`, `.claude`, `tools` and `__pycache__`.
 
 ### Changed
-- `templates/AGENTS.md` is ~40% shorter (template revision 4): the Windows variable spelling, the `$VAULT_ENGINE`-empty fallback, the full onboarding procedure and the no-Python fallback moved to a new default note, `defaults/standards/agents-details.md`. All steps and their commands are unchanged.
-- The default `orchestration` note gains the token-economy delegation rules: delegate to a subagent by default, the small-job exception (one short tool call stays with the orchestrator), counting per request rather than per step, and subagents running on a cheaper model than the orchestrator's.
+- `templates/AGENTS.md` is ~40% shorter (template revision 4): the Windows variable spelling, the `$VAULT_ENGINE`-empty fallback, the full onboarding procedure and the no-Python fallback moved to a new default note, `defaults/standards/agents-details.md`. All steps and their commands are unchanged. (#146)
+- The default `orchestration` note gains the token-economy delegation rules: delegate to a subagent by default, the small-job exception (one short tool call stays with the orchestrator), counting per request rather than per step, and subagents running on a cheaper model than the orchestrator's. (#146)
 
 ### Experimental
 - `stats --tokens` gains a Codex section (text, and `"codex"` in `--json`): session count, token totals, totals per model and the newest rate limits, read from `~/.codex/sessions` (`--codex-dir`). Read-only, no USD estimate. Codex support is experimental: the output format and fields may change. Known gap: Codex Desktop sessions record only a total, shown under model `unknown`.

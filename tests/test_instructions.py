@@ -60,8 +60,8 @@ REVISION_LINE = re.compile(r"<!-- vault-engine AGENTS\.md template: (\d+)\. ")
 # templates/AGENTS.md, raise N in its last line (`vault-engine AGENTS.md
 # template: N`) so vaults with a translated or edited copy are told about it,
 # then record the new revision and hash here.
-TEMPLATE_REVISION = 13
-TEMPLATE_SHA256 = "1170ec451b99a06a87b27e37d987667cac0f84bc5a2aff6aa340ae678c8be7df"
+TEMPLATE_REVISION = 14
+TEMPLATE_SHA256 = "c2124d98985dbb686f43514410417172597db624ceee0bb46883f0c662b1dc95"
 
 GRAPH_COMMAND = 'python "$VAULT_ENGINE/tools/graph.py"'
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
