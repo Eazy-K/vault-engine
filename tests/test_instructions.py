@@ -282,5 +282,14 @@ class TestReinforceNone(unittest.TestCase):
             self._reinforce(["no-such-note"])
 
 
+class TestCodexSectionEnglish(unittest.TestCase):
+    def test_engine_default_codex_section_is_english(self):
+        text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8")
+        self.assertNotIn("yaptır", text)
+        self.assertIn("## In Codex", text)
+        for word in ("codex-worker", "worker-medium", "worker-verify", "tools/codex-agents"):
+            self.assertIn(word, text)
+
+
 if __name__ == "__main__":
     unittest.main()

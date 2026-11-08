@@ -11,4 +11,4 @@ python "$VAULT_ENGINE/tools/graph.py" codex-worker --task <id|path> --worktree <
 
 Wait for it to finish, then read its report (status, changed files, evidence, blockers). Then run worker-verify on the diff and open the PR.
 
-Full procedure (worktree and branch setup, `--profile`, `--prompt-file` only for smoke tests, verification): the "Codex'e yaptır" bullet in the `orchestration-details` standard note.
+Full procedure (worktree and branch setup, `--profile`, `--prompt-file` only for smoke tests, verification): the "Codex worker" bullet in the "In Codex" section of the `orchestration-details` standard note.
