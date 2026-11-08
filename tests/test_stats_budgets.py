@@ -69,6 +69,16 @@ class TestStatsBudgets(unittest.TestCase):
             graph.cmd_stats(Namespace(no_transcripts=True))
         self.assertNotIn("subagent budgets", out.getvalue())
 
+    def test_resumed_worker_counts_once(self):
+        w = {"agent_id": "a1", "session": "s", "agent_type": "worker"}
+        events = [dict(stop("M", 50, 1, "warn"), **w), dict(stop("M", 61, 2, "block"), **w),
+                  dict(stop("M", 62, 3, "block"), stop_hook_active="1", **w),
+                  dict(stop("M", 10, 4, "block"), session="s", agent_type="x"),
+                  dict(stop("M", 11, 5, "block"), session="s", agent_type="x"),
+                  dict(stop("M", 50, 6, "warn"), agent_id="a2")]
+        r = graph.subagent_budget_stats(events)["M"]
+        self.assertEqual((r["n"], r["hit"], r["warn"]), (6, 2, 1))
+
 
 if __name__ == "__main__":
     unittest.main()
