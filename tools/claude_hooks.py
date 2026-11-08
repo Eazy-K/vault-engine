@@ -424,6 +424,20 @@ def merge_permission_status(settings_path: Path | None = None) -> tuple[str, str
     return "OK", f"no allow rule for gh pr merge / git merge ({settings_path})"
 
 
+def deny_permission_status(settings_path: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message) for `doctor`: `permissions.deny` should block
+    `gh pr merge` so workers and the orchestrator cannot merge (ADR 0014)."""
+    settings_path = settings_path or default_settings()
+    perms = _load(settings_path).get("permissions", {})
+    perms = perms if isinstance(perms, dict) else {}
+    deny = perms.get("deny")
+    if any(isinstance(r, str) and r.startswith("Bash(gh pr merge")
+           for r in (deny if isinstance(deny, list) else [])):
+        return "OK", f"deny rule for gh pr merge present ({settings_path})"
+    return "WARN", (f"permissions.deny lacks Bash(gh pr merge:*) ({settings_path}); fix: "
+                     f'python "{g.ENGINE / "tools" / "graph.py"}" user-config --install')
+
+
 def fix_merge_permissions(settings: dict) -> bool:
     """Move allow rules for `gh pr merge` -> deny and `git merge` -> ask. True if changed."""
     perms = settings.get("permissions")

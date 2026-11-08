@@ -213,6 +213,8 @@ python "<projects folder>/vault-engine/tools/graph.py" setup --data "<projects f
 the git root of the repo it's running in — this adds a pointer in `~/.codex/AGENTS.md`
 so it's picked up everywhere.)
 
+Codex orchestrator parity (`tools/codex-hooks/`, `tools/codex-agents/`, `tools/codex_hooks.py` and the parity list) is frozen since 2026-11-08: kept and installable, no further maintenance. Codex runs as a worker under the Claude orchestrator (ADR 0014 in the user's vault).
+
 `--yes` means `setup` asks nothing itself, so ask the user before this step (it changes
 environment variables). On Windows it saves them with `setx`, which only takes effect in a
 **new terminal window** — mention this to the user. On macOS/Linux it writes

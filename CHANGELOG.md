@@ -8,6 +8,13 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `eval` command (`tools/eval_retrieval.py`): `graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` replays a labelled query set (`{task, ts, query, relevant, split}` per line) and reports n, recall@k and MRR per mode, keyword-only and semantic side by side (`--no-semantic`: keyword only; with Ollama unavailable the semantic column says so and the command still succeeds). The ranking is the list `context` builds before its token budget (default threshold and depth; budget-omitted notes keep their place), without core notes and without project seeding from the working directory. It writes no usage log event, task id or learned link; only the embeddings cache can be refreshed, as `index` does.
 - `stats` reads local Claude Code transcripts (`tools/usage_metrics.py`, reuses `token_stats` discovery) and adds two measurement-only sections: an `opened` column next to `retrieved` and `used` (transcripts that opened the note with `graph.py show --body <id>` or a Read under the vault data root after their first `context` call), and a per-project-slug table of main sessions, sessions with a `context` call and the ratio. Sessions with fewer than 3 assistant turns are skipped (count shown); slugs containing `claude-lab-runs` are listed but left out of the total. `stats --json` now prints the counters and these sections. `stats --no-transcripts` skips the scan (it can take about 40 s on large transcript sets). Only counts and note ids leave the module, never transcript text. No learning or hook change.
 
+### Changed
+- Orchestration defaults (`defaults/standards/orchestration.md`, `orchestration-details.md`) use two gates (the human approves the spec at the start and the PR at the end, nothing stops in between), send verification to a separate worker-medium with a clean context (PASS or FAIL plus items) and add a progress-reporting rule (task file Log and PR body; the status note only when the work is done).
+- `templates/AGENTS.md` step 3: when the work seems finished and `reinforce` has not run, the agent runs it itself and reports it in one line instead of offering it.
+- Worker agents (`worker-low`, `worker-medium`) get `disallowedTools` for `git push`, `gh pr merge`, `git merge` and branch deletion.
+- `doctor` warns when `permissions.deny` lacks `Bash(gh pr merge:*)` and names the `user-config --install` fix.
+- Codex orchestrator parity (`tools/codex-hooks/`, `tools/codex-agents/`, `tools/codex_hooks.py`, the parity list) is frozen: kept and installable, no further maintenance. Codex runs as a worker.
+
 ## [0.19.0] - 2026-10-21
 
 ### Added

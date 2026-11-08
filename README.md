@@ -45,3 +45,5 @@ Never update the engine by hand with `git pull`. Details: [Versions and updates]
 - [Contributing](docs/commands.md#contributing-to-the-engine): enable the leak check, add tests.
 - [Changelog](CHANGELOG.md).
 - License: MIT, see LICENSE.
+
+Codex orchestrator parity (`tools/codex-hooks/`, `tools/codex-agents/`, `tools/codex_hooks.py` and the parity list) is frozen since 2026-11-08: kept and installable, no further maintenance. Codex runs as a worker under the Claude orchestrator (ADR 0014 in the user's vault).

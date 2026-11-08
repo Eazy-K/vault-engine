@@ -23,7 +23,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 1. **Plan:** a short plan (pieces, subagent, model/effort) may be shared when useful; it is not a gate: within an explicitly authorized scope reversible steps proceed without asking again; ask before destructive, irreversible or out-of-scope actions.
 2. **Task definition:** a subagent starts with zero context: give goal, scope, file paths, acceptance criteria and relevant rules from `context`.
 3. **Worktree:** parallel agents that change code use separate git worktrees.
-4. **Verification:** tests, lint, guard, reading the diff. Nothing unverified is presented as correct.
+4. **Verification:** a separate worker with a clean context checks the result against the spec, the diff and the acceptance command and returns PASS or FAIL plus items; the writing worker does not verify itself, the orchestrator checks only the whole. The fix list goes to a new writing worker; after two rounds the task is `blocked`. Nothing unverified is presented as correct.
 5. **Merge:** PR, push, merge and `reinforce` happen only in the orchestrator.
 6. Split feature work: one agent for code and tests, another for docs and PR. Keep jobs small (one PR, narrow scope) and name the function or line range when known.
 7. The orchestrator watches CI itself (`gh pr checks <no> --watch`, short output); agents are not woken for it.

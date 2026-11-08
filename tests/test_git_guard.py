@@ -218,6 +218,24 @@ class TestMergePermissions(unittest.TestCase):
     def test_claude_missing_or_clean_settings_is_ok(self):
         self.assertEqual(claude_hooks.merge_permission_status(self.tmp / "none.json")[0], "OK")
 
+    def test_deny_status_ok_when_deny_rule_present(self):
+        path = self.tmp / "settings.json"
+        path.write_text(json.dumps({"permissions": {"deny": ["Bash(gh pr merge:*)"]}}),
+                        encoding="utf-8")
+        self.assertEqual(claude_hooks.deny_permission_status(path)[0], "OK")
+
+    def test_deny_status_warns_when_deny_rule_missing(self):
+        path = self.tmp / "settings.json"
+        path.write_text(json.dumps({"permissions": {"allow": ["Bash(git push:*)"]}}),
+                        encoding="utf-8")
+        status, message = claude_hooks.deny_permission_status(path)
+        self.assertEqual(status, "WARN")
+        self.assertIn("gh pr merge", message)
+        self.assertIn("user-config --install", message)
+
+    def test_deny_status_missing_file_warns(self):
+        self.assertEqual(claude_hooks.deny_permission_status(self.tmp / "none.json")[0], "WARN")
+
     def test_claude_fix_permissions_flag_writes_settings(self):
         path = self.tmp / "settings.json"
         path.write_text(json.dumps({"permissions": {"allow": ["Bash(git merge:*)"]}}),
