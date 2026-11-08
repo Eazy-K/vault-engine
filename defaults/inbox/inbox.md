@@ -13,14 +13,23 @@ A task written in one session or on one device (e.g. a phone) gets done by an ag
 ## Writing a task
 - File: `inbox/<project>/NNNN-<short-name>.md`. The number increases within the project.
 - Template: `inbox/_template.md`. The `type: task`, `project`, and `status` frontmatter fields are required.
+- Besides Goal and Scope (Include / Exclude / Files not to touch), the template has `## Acceptance` (one command whose exit code decides pass or fail; `human` for non-code work), `## Human gate`, `## Budget`, `## Delivery` and `## Open questions`.
+- Frontmatter `budget:` is `S`, `M` or `L`; the engine maps the class to turn and token caps.
 - No personal data in a task (see [[data-policy]]).
 
 ## The agent doing the task
 1. `git pull --rebase --autostash`, then `python "$VAULT_ENGINE/tools/graph.py" tasks --status open`.
-2. Set the task's status to `in-progress`, commit and push it. That way other machines see the task has been picked up.
+2. Set the task to `in-progress`, commit and push it. That way other machines see the task has been picked up. When an orchestrator hands the task to a worker, it gives the worker only the task path.
 3. Do the work. Follow the project repo's own rules: branch, PR, tests.
 4. Fill in the task's `## Log` section (date, what was done, PR link, test result, issues). Set the status to `done` or `blocked`.
 5. Update the project's status note, then commit and push.
 
 ## Statuses
-`open` → `in-progress` → `done` / `blocked`. Tasks marked `done` remain as history, but are no longer loaded into `context` output.
+`open` → `ready` → `in-progress` → `review` → `done` / `blocked`.
+- `open`: written, spec may be incomplete.
+- `ready`: spec complete (acceptance command and budget present; `lint` enforces).
+- `in-progress`: an agent is working on it.
+- `review`: PR open, waiting for the human.
+- `done` / `blocked`: finished or stuck.
+
+Tasks marked `done` remain as history, but are no longer loaded into `context` output.

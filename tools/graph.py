@@ -220,7 +220,8 @@ MAX_CORE_LINES = 15  # non-empty body lines
 MAX_ENTRY_CHARS = 5000  # project status/overview notes load outside the budget on every context call
 MAX_STATUS_ITEMS = 5  # dated items under the status note's recent section; `rotate` moves the rest
 MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
-TASK_STATUSES = ("open", "in-progress", "done", "blocked")
+TASK_STATUSES = ("open", "ready", "in-progress", "review", "blocked", "done")
+TASK_BUDGETS = ("S", "M", "L")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
 
@@ -1135,6 +1136,30 @@ def status_note_warning(paths: Paths, project: str) -> list[str]:
 
 def is_done_task(note: Note) -> bool:
     return note.meta.get("type") == "task" and note.meta.get("status") == "done"
+
+
+def task_acceptance_command(body: str) -> str | None:
+    """First non-blank line of the fenced block under `## Acceptance` (or `## Kabul`).
+
+    Returns None when there is no such heading or no non-blank line in a fenced
+    block. A block holding the bare word `human` returns "human".
+    """
+    in_section = in_fence = False
+    for line in body.splitlines():
+        if re.match(r"^##\s", line) and not in_fence:
+            in_section = bool(re.match(r"^##\s+(Acceptance|Kabul)\s*$", line, re.I))
+            continue
+        if not in_section:
+            continue
+        if line.strip().startswith("```"):
+            if in_fence:
+                in_fence = False
+            else:
+                in_fence = True
+            continue
+        if in_fence and line.strip():
+            return "human" if line.strip().lower() == "human" else line.strip()
+    return None
 
 
 # --- project detection --------------------------------------------------------
@@ -2294,6 +2319,14 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
             errors.append(f"{nid}: task status must be one of {', '.join(TASK_STATUSES)}")
         if not note.meta.get("project"):
             errors.append(f"{nid}: task has no project")
+        budget = note.meta.get("budget")
+        if budget is not None and str(budget) not in TASK_BUDGETS:
+            warnings.append(f"{nid}: budget must be one of {'|'.join(TASK_BUDGETS)}")
+        if note.meta.get("status") == "ready":
+            if task_acceptance_command(note.body) is None:
+                errors.append(f"{nid}: ready task needs an acceptance command (## Acceptance block)")
+            if str(budget) not in TASK_BUDGETS:
+                errors.append(f"{nid}: ready task needs budget: S|M|L")
     # Core notes ride along with every context call, so their size is a fixed cost.
     for nid, note in graph.notes.items():
         lines = [line for line in note.body.splitlines() if line.strip()]

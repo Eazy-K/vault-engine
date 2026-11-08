@@ -9,6 +9,7 @@ Commands are written as `python tools/graph.py <command>` from the engine folder
 - Install and connect: [Setup](#setup) (`init`, `setup`, `onboard`, `doctor`, `doctor --live`), [Machine name](#machine-name) (`machine`)
 - Projects: [Project discovery](#project-discovery) (`projects`), [Project recognition](#project-recognition) (`machine --project-root`, `--project`, `--no-project`)
 - Notes: [Status note rotation](#status-note-rotation) (`rotate`)
+- Tasks: [Tasks](#tasks) (`tasks --status`, `lint`, `budget:`)
 - Retrieval quality: [Retrieval evaluation](#retrieval-evaluation) (`eval`)
 - Several computers: [Updating another computer](#updating-another-computer) (`update --all`, `user-config --install`)
 - Feedback: [Feedback](#feedback) (`feedback status|list|send|set|add`)
@@ -69,6 +70,16 @@ Learned links are saved per computer in `<data repo>/.graph/learned/<name>.json`
 `rotate` is idempotent: with 5 items or fewer it prints `nothing to rotate` and writes nothing. `--dry-run` prints what would move and writes nothing. It commits exactly the two notes it wrote (`chore: rotate <project> status note`) and never pushes; `--no-commit` leaves them in the working tree. Section names come from `vault.config.json`: `{"status_note": {"recent_heading": "Where we are", "journal_heading": "Journal"}}` (these are the defaults; set them when your notes use other headings, matched case-insensitively).
 
 `lint` reports an error for a status or overview note whose body is over 5,000 characters. `reinforce` prints one `WARN:` line, with the exact `rotate` command, when the project it runs in has a status note over that size or with more than 5 dated items. `rotate` does not shorten an overview note or other sections: move that content to the history note by hand.
+
+## Tasks
+`python tools/graph.py tasks [--status <status>] [--project <project>]` lists the task notes under `inbox/`, sorted by project and then by status. The six statuses, in order: `open`, `ready`, `in-progress`, `review`, `blocked`, `done`. A task goes `open` → `ready` → `in-progress` → `review` → `done` (or `blocked`). `ready` means the spec is complete; `review` means a PR is open and waits for the human. Only `done` tasks stop loading into `context` output.
+
+Task frontmatter has a `budget:` field: `S`, `M` or `L`. The engine maps the class to turn and token caps. The task template (`templates/inbox/_template.md`) also has a `## Acceptance` section: a fenced code block with the one command whose exit code decides pass or fail (`human` for non-code work).
+
+`lint` checks tasks:
+- Error: a `ready` task with no `## Acceptance` block (a fenced block with at least one non-blank line).
+- Error: a `ready` task whose `budget:` is missing or not `S`, `M` or `L`.
+- Warning: any task with a `budget:` value other than `S`, `M` or `L`.
 
 ## Retrieval evaluation
 `python tools/graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` measures how well `context` finds the right notes. The set is a JSONL file, one query per line: `{"task": "...", "ts": "...", "query": "...", "relevant": ["note-id", ...], "split": "dev"|"holdout"}`. A relative `--set` path is resolved against the current directory.
