@@ -194,6 +194,31 @@ class TestRuleMatching(unittest.TestCase):
         self.assertIsNone(perm.any_rule_matches(rules, "Bash", {"command": "git add $(rm x)"},
                                                 self.CWD))
 
+    def test_background_ampersand_splits_segments(self):
+        rules = ["Bash(git commit:*)"]
+        self.assertIsNone(perm.any_rule_matches(
+            rules, "Bash", {"command": "git commit -m x & rm -rf build"}, self.CWD))
+        self.assertIsNotNone(perm.any_rule_matches(
+            rules, "Bash", {"command": "git commit -m x & git commit -m y"}, self.CWD))
+
+    def test_redirect_ampersand_does_not_split(self):
+        rules = ["Bash(git status:*)"]
+        for cmd in ("git status 2>&1", "git status >&2", "git status &> out.txt",
+                    "git status <&0", "git status 2>&1 && git status"):
+            self.assertEqual(perm.any_rule_matches(rules, "Bash", {"command": cmd}, self.CWD),
+                             "Bash(git status:*)", cmd)
+
+    def test_substitution_forms_never_match(self):
+        rules = ["Bash(echo:*)", "Bash(cat:*)"]
+        for cmd in ("echo $(id)", "cat <(ls)", "echo ${HOME}", "echo >(tee x)", "echo `id`"):
+            self.assertIsNone(perm.any_rule_matches(rules, "Bash", {"command": cmd}, self.CWD), cmd)
+
+    def test_bash_segments_unit(self):
+        self.assertEqual(perm.bash_segments("a && b & c | d"), ["a", "b", "c", "d"])
+        self.assertEqual(perm.bash_segments("cmd 2>&1"), ["cmd"])
+        self.assertIsNone(perm.bash_segments("cat <(ls)"))
+        self.assertIsNone(perm.bash_segments("echo ${HOME}"))
+
     def test_read_glob(self):
         self.assertTrue(self.m("Read(**/*.md)", "Read", {"file_path": self.CWD + "/docs/a.md"}))
         self.assertTrue(self.m("Read(**/*.md)", "Read", {"file_path": "a.md"}))

@@ -28,8 +28,9 @@ Rule forms (`rule_matches`; anything else never matches):
                             `Edit` also covers Write/MultiEdit/NotebookEdit)
   `Bash(exact)`             the whole command equals exact
   `Bash(prefix:*)`          command starts with prefix on a word boundary; every
-                            `&&` / `||` / `;` / `|` / newline segment must match a
-                            rule; a command with `$(...)` or backticks never matches
+                            `&&` / `||` / `;` / `|` / `&` / newline segment must match
+                            a rule (redirects like `2>&1` do not split); a command with
+                            `$(`, `${`, `<(`, `>(` or backticks never matches
   `Bash(git * --short)`     `*` wildcard anywhere in the specifier
   `Read(glob)` `Edit(glob)` `Write(glob)` `Glob(glob)` `Grep(glob)`
                             gitignore-style glob on file_path / path / pattern
@@ -216,10 +217,16 @@ def _bash_part_ok(part: str, spec: str) -> bool:
 
 
 def bash_segments(command: str) -> list[str] | None:
-    """Segments of a compound command; None when it holds `$(...)` or backticks."""
-    if "$(" in command or "`" in command:
+    """Segments of a compound command.
+
+    None when it holds `$(`, `${`, `<(`, `>(` or backticks. Redirect tokens (`2>&1`,
+    `>&2`, `<&0`, `&>`, `&>>`) are dropped first so their `&` does not split; then the
+    split is on `&&`, `||`, `;`, `|`, a single `&` (background) and newline.
+    """
+    if any(tok in command for tok in ("$(", "${", "<(", ">(", "`")):
         return None
-    return [p.strip() for p in re.split(r"&&|\|\||;|\||\r?\n", command) if p.strip()]
+    work = re.sub(r"\d*[<>]&\d*|&>>?", " ", command)
+    return [p.strip() for p in re.split(r"&&|\|\||;|\||&|\r?\n", work) if p.strip()]
 
 
 def _path_regex(pattern: str) -> "re.Pattern[str]":
