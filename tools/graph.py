@@ -1180,7 +1180,19 @@ def task_files_section(body: str) -> str | None:
             lines.append(line)
     text = re.sub(r"<!--.*?-->", "", "\n".join(lines), flags=re.S)
     kept = [ln.rstrip() for ln in text.splitlines() if ln.strip() not in ("", "-", "*")]
-    return "\n".join(kept) if kept else None
+    label = re.compile(r"^\s*(?:[-*]\s+)?do not touch\s*:\s*$", re.I)
+
+    def indent(ln: str) -> int:
+        return len(ln) - len(ln.lstrip())
+
+    out = []
+    for i, ln in enumerate(kept):
+        if label.match(ln):
+            nxt = kept[i + 1] if i + 1 < len(kept) else None
+            if nxt is None or indent(nxt) <= indent(ln):
+                continue
+        out.append(ln)
+    return "\n".join(out) if out else None
 
 
 # --- project detection --------------------------------------------------------

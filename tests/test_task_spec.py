@@ -105,7 +105,15 @@ class TestTaskSpec(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertLess(text.index("## Scope"), text.index("\n## Files"))
         self.assertLess(text.index("\n## Files"), text.index("\n## Acceptance\n"))
-        self.assertIn("Do not touch", graph.task_files_section(text))
+        self.assertIsNone(graph.task_files_section(text))
+
+    def test_files_section_do_not_touch_label(self):
+        f = graph.task_files_section
+        self.assertIsNone(f("## Files\n- Do not touch:\n  -\n"))
+        self.assertIsNone(f("## Files\n-\nDO NOT TOUCH:\n"))
+        self.assertEqual(f("## Files\n- Do not touch: x.py\n"), "- Do not touch: x.py")
+        self.assertEqual(f("## Files\n- a.py\n- Do not touch:\n  - x.py\n"),
+                         "- a.py\n- Do not touch:\n  - x.py")
 
 
 if __name__ == "__main__":
