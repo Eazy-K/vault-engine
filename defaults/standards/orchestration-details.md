@@ -23,13 +23,13 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 1. **Plan:** a short plan (pieces, subagent, model/effort) may be shared when useful; it is not a gate: within an explicitly authorized scope reversible steps proceed without asking again; ask before destructive, irreversible or out-of-scope actions.
 2. **Task definition:** a subagent starts with zero context: give goal, scope, file paths, acceptance criteria and relevant rules from `context`.
 3. **Worktree:** parallel agents that change code use separate git worktrees.
-4. **Verification:** a separate worker with a clean context checks the result against the spec, the diff and the acceptance command and returns PASS or FAIL plus items; the writing worker does not verify itself, the orchestrator checks only the whole. The fix list goes to a new writing worker; after two rounds the task is `blocked`. Nothing unverified is presented as correct.
+4. **Verification:** a separate worker with a clean context (Claude Code: `worker-verify`, Sonnet, read-only plus the acceptance command; input: task file, diff, acceptance output; the engine's verify command does the mechanical part) checks the result against the spec, the diff and the acceptance command and returns PASS or FAIL plus items; the writing worker does not verify itself, the orchestrator checks only the whole. The fix list goes to a new writing worker; after two rounds the task is `blocked`. Nothing unverified is presented as correct.
 5. **Merge:** PR, push, merge and `reinforce` happen only in the orchestrator.
 6. Split feature work: one agent for code and tests, another for docs and PR. Keep jobs small (one PR, narrow scope) and name the function or line range when known.
 7. The orchestrator watches CI itself (`gh pr checks <no> --watch`, short output); agents are not woken for it.
 
 ## In Claude Code
-- Start a subagent with the `Agent` tool: `subagent_type` `worker-low` or `worker-medium` and either omit `model` or pass the worker's own configured model (default `sonnet`). `general-purpose`, `fork`, `claude` and `default` are not allowed. Read-only built-ins are allowed: `Explore` (omit `model`; the guard sets `haiku`, another model is denied), `Plan` and `claude-code-guide` (inherit). Roles and models come from `models` in `vault.config.json`; `python "$VAULT_ENGINE/tools/graph.py" models` shows them.
+- Start a subagent with the `Agent` tool: `subagent_type` `worker-low`, `worker-medium` or `worker-verify` (verification only) and either omit `model` or pass the worker's own configured model (default `sonnet`). `general-purpose`, `fork`, `claude` and `default` are not allowed. Read-only built-ins are allowed: `Explore` (omit `model`; the guard sets `haiku`, another model is denied), `Plan` and `claude-code-guide` (inherit). Roles and models come from `models` in `vault.config.json`; `python "$VAULT_ENGINE/tools/graph.py" models` shows them.
 - `isolation: worktree` only when the orchestrator has not already created the worktree; otherwise the agent opens its own and cannot write to the prompt's folder.
 - Stop a subagent with `TaskStop`. An agent that returns at `maxTurns` ("partial") may keep running background work.
 - Resume only if the completion notice's `subagent_tokens` (approximate last context size) is 50K or less; otherwise start a new agent with short instructions (PR number, failing test, file/line).
@@ -45,7 +45,7 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
 ## Models
-`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort` change it (`--this-computer` for one machine), `--apply` writes it out. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
+`python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort`, `--worker-verify`, `--worker-verify-effort` change it (`--this-computer` for one machine), `--apply` writes it out. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
 
 ## Other tools
 Without subagent support, work proceeds with a single agent.

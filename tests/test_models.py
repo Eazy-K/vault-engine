@@ -44,11 +44,13 @@ import models  # noqa: E402
 
 WORKER_LOW_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-low.md").read_text(encoding="utf-8")
 WORKER_MEDIUM_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-medium.md").read_text(encoding="utf-8")
+WORKER_VERIFY_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-verify.md").read_text(encoding="utf-8")
 
 
 def _ns(**kwargs) -> Namespace:
     base = dict(orchestrator=None, effort=None, worker_low=None, worker_low_effort=None,
-                worker_medium=None, worker_medium_effort=None, this_computer=False,
+                worker_medium=None, worker_medium_effort=None, worker_verify=None,
+                worker_verify_effort=None, this_computer=False,
                 apply=False, data=None, settings=None, agents_dir=None)
     base.update(kwargs)
     return Namespace(**base)
@@ -75,6 +77,7 @@ class ModelsTestCase(unittest.TestCase):
     def _write_agent_files(self):
         (self.agents / "worker-low.md").write_text(WORKER_LOW_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-medium.md").write_text(WORKER_MEDIUM_TEMPLATE, encoding="utf-8")
+        (self.agents / "worker-verify.md").write_text(WORKER_VERIFY_TEMPLATE, encoding="utf-8")
 
 
 class TestShowDefaults(ModelsTestCase):
@@ -83,6 +86,7 @@ class TestShowDefaults(ModelsTestCase):
         self.assertIn("orchestrator: model=opus (default)", out)
         self.assertIn("worker-low: model=sonnet (default)", out)
         self.assertIn("worker-medium: model=sonnet (default)", out)
+        self.assertIn("worker-verify: model=sonnet (default)", out)
 
     def test_show_lists_readonly_agents_read_only(self):
         out = self._run()
@@ -92,7 +96,7 @@ class TestShowDefaults(ModelsTestCase):
         self._write_agent_files()
         self._run(apply=True)
         self.assertEqual(sorted(p.name for p in self.agents.iterdir() if p.suffix == ".md"),
-                         ["worker-low.md", "worker-medium.md"])
+                         ["worker-low.md", "worker-medium.md", "worker-verify.md"])
 
     def test_show_does_not_write_anything(self):
         self._run()
@@ -183,12 +187,20 @@ class TestApply(ModelsTestCase):
 
     def test_worker_templates_have_no_disallowed_tools_specifier(self):
         # Docs: a disallowedTools entry with a specifier like Bash(git push *) removes the whole tool.
-        for template in (WORKER_LOW_TEMPLATE, WORKER_MEDIUM_TEMPLATE):
+        for template in (WORKER_LOW_TEMPLATE, WORKER_MEDIUM_TEMPLATE, WORKER_VERIFY_TEMPLATE):
             frontmatter = template.split("---")[1]
             self.assertNotIn("disallowedTools", frontmatter)
             tools = [l for l in frontmatter.splitlines() if l.startswith("tools:")]
             self.assertEqual(len(tools), 1)
             self.assertIn("Bash", [t.strip() for t in tools[0][len("tools:"):].split(",")])
+
+    def test_apply_writes_worker_verify_model(self):
+        self._write_agent_files()
+        self._run(worker_verify="haiku", worker_verify_effort="low", apply=True)
+        text = (self.agents / "worker-verify.md").read_text(encoding="utf-8")
+        self.assertIn("model: haiku", text)
+        self.assertIn("effort: low", text)
+        self.assertIn("name: worker-verify", text)
 
     def test_apply_backs_up_agent_file_before_changing(self):
         self._write_agent_files()
