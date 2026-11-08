@@ -35,7 +35,7 @@ SECTIONS = ("Changed files", "Decisions", "Evidence", "Blockers")
 RULES = """\
 You are a worker running one task inside a git worktree. Rules:
 - Work only inside {worktree}. Never write outside it.
-- The branch is {branch}. Do not create or switch branches. WIP commits on it are allowed; if the sandbox blocks `git add`/`git commit` (the worktree's git dir is outside the writable root), leave the changes uncommitted and list that as a blocker. Do not try to work around the sandbox.
+- The branch is {branch}. Do not create or switch branches. Do not commit; leave your changes in the working tree, the orchestrator's wrapper commits them.
 - Never push, merge, rebase or delete branches. Do not run the vault workflow (graph.py context / reinforce, git pull/push).
 - Never write personal data (names with contact details, IDs, IBAN/card, health data) or secrets; mask them.
 - Do only the assigned task; if the scope is unclear, stop and report the question.
@@ -189,6 +189,20 @@ def git_info(wt: Path, base: str) -> dict:
             "files": lines(_git(wt, "diff", "--name-only", f"{base}...HEAD"))}
 
 
+def wip_commit(wt: Path, message: str) -> str:
+    """Commit everything in the worktree; returns a short hash, 'none (clean)' or 'failed: <reason>'."""
+    if not _git(wt, "status", "--porcelain").stdout.strip():
+        return "none (clean)"
+    add = _git(wt, "add", "-A")
+    if add.returncode == 0:
+        com = _git(wt, "commit", "-q", "-m", message)
+        if com.returncode == 0:
+            return _git(wt, "rev-parse", "--short", "HEAD").stdout.strip() or "unknown"
+        add = com
+    err = (add.stderr or add.stdout).strip().splitlines()
+    return "failed: " + (err[0] if err else f"git exit {add.returncode}")
+
+
 def _kill(proc: subprocess.Popen) -> None:
     if os.name == "nt":
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
@@ -224,6 +238,7 @@ def render(r: dict) -> str:
         "## Codex evidence", bullets(sec["Evidence"]), "",
         "## Codex blockers", bullets(r["blockers"]), "",
         "## Acceptance", acc_line, "",
+        *([f"WIP commit: {r['wip_commit']}", ""] if r.get("wip_commit") else []),
         "## Metrics",
         f"- duration: {m['duration_s']} s, turns: {m['turns']}",
         f"- tokens: in {m['input']}, cached {m['cached']}, out {m['output']}, reasoning {m['reasoning']}",
@@ -275,9 +290,15 @@ def _run(args) -> dict | None:
     if rc not in (0, None):
         blockers.append(f"codex exited with code {rc}")
     blockers.extend(b for b in sections["Blockers"] if b.lower() != "none")
+    wip = None
+    if args.commit:
+        wip = wip_commit(wt, args.commit_message or f"wip(codex): {task_id if args.task else 'prompt'}")
+        if wip.startswith("failed"):
+            blockers.append(f"WIP commit {wip}")
+    git = git_info(wt, args.base)  # after the commit, so changed files / log include it
     report = {"task": task_id, "status": status, "exit": exit_code, "worktree": str(wt),
-              "branch": branch, "git": git_info(wt, args.base), "codex": sections,
-              "blockers": blockers, "acceptance": run_acceptance(acceptance, wt),
+              "branch": branch, "git": git, "codex": sections,
+              "blockers": blockers, "wip_commit": wip, "acceptance": run_acceptance(acceptance, wt),
               "thread_id": events["thread_id"],
               "metrics": {"duration_s": duration, "turns": events["turns"], "input": events["input"],
                           "cached": events["cached"], "output": events["output"],
@@ -314,6 +335,9 @@ def register(sub) -> None:
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds (default 1800)")
     p.add_argument("--config-trim", choices=CONFIG_TRIMS, default=DEFAULT_CONFIG_TRIM,
                    help="how to keep ~/.codex/config.toml instructions out of the run")
+    p.add_argument("--commit", action="store_true",
+                   help="after the run, commit uncommitted worktree changes (git add -A) as a WIP commit")
+    p.add_argument("--commit-message", help="WIP commit message (default: wip(codex): <task id or 'prompt'>)")
     p.add_argument("--allow-main", action="store_true", help="allow a worktree on main/master")
     p.add_argument("--dry-run", action="store_true", help="print the command and prompt, run nothing")
     p.add_argument("--json", action="store_true", help="machine-readable report")

@@ -39,6 +39,9 @@ if mode == "commit":
         f.write("x\n")
     subprocess.run(["git", "-C", wt, "add", "new.txt"], check=True)
     subprocess.run(["git", "-C", wt, "commit", "-qm", "wip: new"], check=True)
+if mode == "write":
+    with open(os.path.join(wt, "new.txt"), "w") as f:
+        f.write("x\n")
 if mode != "nostatus":
     with open(last, "w") as f:
         f.write("All done.\n\nSTATUS: SUCCESS\nChanged files:\n- new.txt\nDecisions:\n- kept it simple\n"
@@ -102,6 +105,38 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertIn("STATUS: SUCCESS|PARTIAL|FAILED", prompt)
         self.assertIn("## Task\n\nSpec body.", prompt)
         self.assertTrue(prompt.rstrip().endswith("Be brief."))
+
+    def test_prompt_rules_say_do_not_commit(self):
+        prompt = codex_worker.build_prompt("/w", "feat/x", "Spec.", None)
+        self.assertIn("Do not commit", prompt)
+
+    def test_commit_flag_commits_codex_changes(self):
+        r = self.run_cli("--json", "--commit", mode="write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        h = rep["wip_commit"]
+        self.assertRegex(h, r"^[0-9a-f]{7,}$")
+        self.assertIn(h, git(self.wt, "log", "--oneline").stdout)
+        self.assertIn("wip(codex): 0099-demo", git(self.wt, "log", "-1", "--format=%s").stdout)
+        self.assertEqual(git(self.wt, "status", "--porcelain").stdout.strip(), "")
+        self.assertEqual(rep["git"]["files"], ["new.txt"])
+
+    def test_commit_flag_custom_message_and_text_report(self):
+        r = self.run_cli("--commit", "--commit-message", "wip: custom", mode="write")
+        self.assertRegex(r.stdout, r"WIP commit: [0-9a-f]{7,}")
+        self.assertEqual(git(self.wt, "log", "-1", "--format=%s").stdout.strip(), "wip: custom")
+
+    def test_commit_flag_on_clean_tree(self):
+        r = self.run_cli("--json", "--commit")
+        rep = json.loads(r.stdout)
+        self.assertEqual(rep["wip_commit"], "none (clean)")
+        self.assertEqual(len(git(self.wt, "log", "--oneline").stdout.splitlines()), 1)
+
+    def test_no_commit_flag_leaves_file_untracked(self):
+        rep = json.loads(self.run_cli("--json", mode="write").stdout)
+        self.assertIsNone(rep["wip_commit"])
+        self.assertEqual(git(self.wt, "status", "--porcelain").stdout.strip(), "?? new.txt")
+        self.assertEqual(len(git(self.wt, "log", "--oneline").stdout.splitlines()), 1)
 
     def test_refuses_main_checkout(self):
         r = self.run_cli(worktree=self.main)
