@@ -1312,6 +1312,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check(*result)
         check(*codex_hooks.rules_status())
 
+    if codex_hooks is not None:
+        for result in codex_hooks.cli_statuses(found.get("codex")):
+            check(*result)
+
     if codex_hooks is not None and found.get("codex"):
         try:
             retest = codex_hooks.deny_retest_status(found["codex"], data)

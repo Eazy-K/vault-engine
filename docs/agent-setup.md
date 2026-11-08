@@ -376,6 +376,12 @@ available, want me to check what changed?"). If they agree:
    older version are refreshed, edited ones are kept, and the Codex hooks
    (`hooks.json`, backed up first) are installed when `~/.codex` exists. Every `doctor`
    `WARN` names its fix command (preferably `update --all`) or says `manual:`.
+   With the `codex` CLI installed, `doctor` also reports the Codex version, login
+   (`codex login status`), a static workspace-write sandbox note (the `[windows]
+   sandbox` setting; it never runs Codex), the worker profiles, the `codex-worker`
+   skill and the git-guard hook, and an `INFO` when `config.toml`'s
+   `model_reasoning_effort` differs from `worker-medium`'s. Without the CLI it prints
+   one `INFO` line and skips the CLI checks.
 
 Only 0.3.0 and later check for new versions and have `update`. On 0.1.0 and 0.2.0 you
 get no update line, and `update` fails with `invalid choice: 'update'`; use the next
