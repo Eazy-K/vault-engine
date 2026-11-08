@@ -19,6 +19,12 @@ What needs to be done, and why?
 - Exclude:
 - Files not to touch:
 
+## Files
+<!-- Filled from Explore output. One bullet per file: path, symbol(s), line range. Then a "Do not touch" sub-list. Optional; worker prompts carry this section. -->
+-
+- Do not touch:
+  -
+
 ## Acceptance criteria
 - [ ]
 

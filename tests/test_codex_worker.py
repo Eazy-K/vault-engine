@@ -155,6 +155,16 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertIn("## Task\n\nSpec body.", prompt)
         self.assertTrue(prompt.rstrip().endswith("Be brief."))
 
+    def test_prompt_files_block_only_when_section_exists(self):
+        body = "## Scope\nx\n## Files\n- a.py: f, 1-5\n## Goal\ny\n"
+        prompt = codex_worker.build_prompt("/w", "b", body, None)
+        self.assertIn("## Files to work on\n\n- a.py: f, 1-5\n\n## Task\n\n" + body.strip(), prompt)
+        self.assertLess(prompt.index("STATUS: SUCCESS|PARTIAL|FAILED"),
+                        prompt.index("## Files to work on"))
+        plain = codex_worker.build_prompt("/w", "b", "Spec.", None)
+        self.assertNotIn("Files to work on", plain)
+        self.assertTrue(plain.endswith("## Task\n\nSpec.\n"))
+
     def test_prompt_rules_say_do_not_commit(self):
         prompt = codex_worker.build_prompt("/w", "feat/x", "Spec.", None)
         self.assertIn("Do not commit", prompt)
