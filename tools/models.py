@@ -16,6 +16,7 @@ import re
 import sys
 from pathlib import Path
 
+import budgets
 import claude_dirs
 import graph as g
 import model_config as mc
@@ -129,7 +130,14 @@ def _apply_settings(effective: dict, settings_path: Path) -> bool:
     return True
 
 
-_FRONTMATTER_KEY = re.compile(r"^(model|effort):\s*(.*)$")
+_FRONTMATTER_KEY = re.compile(r"^(model|effort|maxTurns):\s*(.*)$")
+
+
+def _wanted_max_turns(role: str, data_dir) -> str | None:
+    """The role's budget-class max_turns as a string (budgets.classes via
+    vault.config.json, fallbacks without it), or None if the role has no class."""
+    limits = budgets.limits_for_role(budgets.load_budgets(data_dir), role)
+    return str(limits[1]) if limits else None
 
 
 def _frontmatter_bounds(text: str) -> tuple[int, int] | None:
@@ -159,22 +167,28 @@ def worker_frontmatter(text: str) -> dict[str, str]:
     return found
 
 
-def worker_md_matches(effective: dict, role: str, agents_dir: Path) -> bool:
+def worker_md_matches(effective: dict, role: str, agents_dir: Path,
+                      data_dir: Path | None = None) -> bool:
     """True if <agents_dir>/<role>.md's frontmatter already has this role's
-    configured model and effort. False (not an error) if the file is missing."""
+    configured model, effort and budget-class maxTurns (from `data_dir`'s
+    vault.config.json budgets, fallbacks without it). False (not an error) if
+    the file is missing."""
     path = agents_dir / f"{role}.md"
     if not path.exists():
         return False
     found = worker_frontmatter(path.read_text(encoding="utf-8"))
     wanted = effective[role]
-    return found.get("model") == wanted["model"] and found.get("effort") == wanted["effort"]
+    turns = _wanted_max_turns(role, data_dir)
+    return (found.get("model") == wanted["model"] and found.get("effort") == wanted["effort"]
+            and (turns is None or found.get("maxTurns") == turns))
 
 
-def _apply_worker_md(effective: dict, role: str, agents_dir: Path) -> bool:
-    """Set model:/effort: in <agents_dir>/<role>.md's frontmatter to this role's
-    configured values, adding either key if missing, touching nothing else in
-    the file. Returns True if it wrote anything; False (not an error) if the
-    file doesn't exist or has no frontmatter block."""
+def _apply_worker_md(effective: dict, role: str, agents_dir: Path,
+                     data_dir: Path | None = None) -> bool:
+    """Set model:/effort:/maxTurns: in <agents_dir>/<role>.md's frontmatter to this
+    role's configured values (maxTurns from its budget class), adding any key if
+    missing, touching nothing else in the file. Returns True if it wrote anything;
+    False (not an error) if the file doesn't exist or has no frontmatter block."""
     path = agents_dir / f"{role}.md"
     if not path.exists():
         return False
@@ -182,11 +196,14 @@ def _apply_worker_md(effective: dict, role: str, agents_dir: Path) -> bool:
     bounds = _frontmatter_bounds(text)
     if bounds is None:
         return False
-    if worker_md_matches(effective, role, agents_dir):
+    if worker_md_matches(effective, role, agents_dir, data_dir):
         return False
     start, end = bounds
     lines = text.splitlines(keepends=True)
     wanted = {"model": effective[role]["model"], "effort": effective[role]["effort"]}
+    turns = _wanted_max_turns(role, data_dir)
+    if turns is not None:
+        wanted["maxTurns"] = turns
     seen: set[str] = set()
     new_body = []
     for line in lines[start:end]:
@@ -196,7 +213,7 @@ def _apply_worker_md(effective: dict, role: str, agents_dir: Path) -> bool:
             seen.add(m.group(1))
         else:
             new_body.append(line)
-    for key in ("model", "effort"):
+    for key in wanted:
         if key not in seen:
             new_body.append(f"{key}: {wanted[key]}\n")
     new_text = "".join(lines[:start] + new_body + lines[end:])
@@ -205,14 +222,16 @@ def _apply_worker_md(effective: dict, role: str, agents_dir: Path) -> bool:
     return True
 
 
-def apply_config(effective: dict, settings_path: Path, agents_dir: Path) -> list[str]:
+def apply_config(effective: dict, settings_path: Path, agents_dir: Path,
+                 data_dir: Path | None = None) -> list[str]:
     """Write `effective` into settings.json and the worker-*.md frontmatter
-    files. Returns the list of paths actually changed."""
+    files (maxTurns from the budget classes in `data_dir`). Returns the list of
+    paths actually changed."""
     changed = []
     if _apply_settings(effective, settings_path):
         changed.append(str(settings_path))
     for role in WORKER_ROLES:
-        if _apply_worker_md(effective, role, agents_dir):
+        if _apply_worker_md(effective, role, agents_dir, data_dir):
             changed.append(str(agents_dir / f"{role}.md"))
     return changed
 
@@ -234,7 +253,7 @@ def status(data_dir: Path, settings_path: Path | None = None,
     if not settings_matches(effective, settings_path):
         stale.append(settings_path.name)
     for role in WORKER_ROLES:
-        if not worker_md_matches(effective, role, agents_dir):
+        if not worker_md_matches(effective, role, agents_dir, data_dir):
             stale.append(f"{role}.md")
     if stale:
         return "WARN", (f"model config out of date in {', '.join(stale)}: run "
@@ -290,11 +309,11 @@ def cmd_models(args: argparse.Namespace) -> None:
         pairs = [(d / "settings.json", d / "agents")
                  for d in claude_dirs.targets(prompt=args.apply)]
     for settings_path, agents_dir in pairs:
-        _report_and_apply(args, effective, settings_path, agents_dir)
+        _report_and_apply(args, effective, settings_path, agents_dir, data_dir)
 
 
 def _report_and_apply(args: argparse.Namespace, effective: dict, settings_path: Path,
-                      agents_dir: Path) -> None:
+                      agents_dir: Path, data_dir: Path | None = None) -> None:
     if settings_path.exists():
         note = "matches" if settings_matches(effective, settings_path) else "OUT OF DATE"
         print(f"  {settings_path}: {note}")
@@ -304,13 +323,13 @@ def _report_and_apply(args: argparse.Namespace, effective: dict, settings_path: 
     for role in WORKER_ROLES:
         path = agents_dir / f"{role}.md"
         if path.exists():
-            note = "matches" if worker_md_matches(effective, role, agents_dir) else "OUT OF DATE"
+            note = "matches" if worker_md_matches(effective, role, agents_dir, data_dir) else "OUT OF DATE"
             print(f"  {path}: {note}")
         else:
             print(f"  {path}: not found")
 
     if args.apply:
-        changed = apply_config(effective, settings_path, agents_dir)
+        changed = apply_config(effective, settings_path, agents_dir, data_dir)
         if changed:
             print("applied:")
             for path in changed:

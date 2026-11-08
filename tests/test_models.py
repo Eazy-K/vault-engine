@@ -230,6 +230,57 @@ class TestApply(ModelsTestCase):
         self.assertIn("OUT OF DATE", out)
 
 
+class TestMaxTurns(ModelsTestCase):
+    def _turns(self, role):
+        return models.worker_frontmatter(
+            (self.agents / f"{role}.md").read_text(encoding="utf-8")).get("maxTurns")
+
+    def test_apply_writes_class_max_turns(self):
+        self._write_agent_files()
+        for role in models.WORKER_ROLES:  # stale values, as in an old install
+            path = self.agents / f"{role}.md"
+            text = path.read_text(encoding="utf-8")
+            path.write_text("".join(
+                "maxTurns: 999\n" if l.startswith("maxTurns:") else l
+                for l in text.splitlines(keepends=True)), encoding="utf-8", newline="\n")
+        self._run(apply=True)
+        self.assertEqual(self._turns("worker-low"), "20")
+        self.assertEqual(self._turns("worker-medium"), "60")
+        self.assertEqual(self._turns("worker-verify"), "25")
+
+    def test_apply_adds_missing_max_turns(self):
+        self._write_agent_files()
+        path = self.agents / "worker-low.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text("".join(l for l in text.splitlines(keepends=True)
+                                if not l.startswith("maxTurns:")), encoding="utf-8", newline="\n")
+        self.assertIsNone(self._turns("worker-low"))
+        self._run(apply=True)
+        self.assertEqual(self._turns("worker-low"), "20")
+        self.assertIn("You are a worker subagent.", path.read_text(encoding="utf-8"))
+
+    def test_config_budget_class_overrides_max_turns(self):
+        self._write_agent_files()
+        (self.data / "vault.config.json").write_text(json.dumps({"schema": 1, "budgets": {
+            "classes": {"M": {"max_turns": 33, "max_tokens": 1000}}}}),
+            encoding="utf-8", newline="\n")
+        self._run(apply=True)
+        self.assertEqual(self._turns("worker-medium"), "33")
+
+    def test_matches_false_when_max_turns_stale(self):
+        self._write_agent_files()
+        effective = {r: {"model": "sonnet", "effort": e} for r, e in
+                     (("worker-low", "low"), ("worker-medium", "medium"),
+                      ("worker-verify", models.worker_frontmatter(
+                          WORKER_VERIFY_TEMPLATE)["effort"]))}
+        self.assertTrue(models.worker_md_matches(effective, "worker-low", self.agents))
+        path = self.agents / "worker-low.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("maxTurns: 20", "maxTurns: 40"),
+                        encoding="utf-8", newline="\n")
+        self.assertFalse(models.worker_md_matches(effective, "worker-low", self.agents))
+        self.assertIn("OUT OF DATE", self._run())
+
+
 class TestVariantSuffix(ModelsTestCase):
     def _settings(self, **kw):
         self.settings.write_text(json.dumps(kw), encoding="utf-8")
