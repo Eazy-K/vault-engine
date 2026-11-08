@@ -178,7 +178,7 @@ def transcript_usage(payload: dict) -> tuple[int, int | None]:
 
 class _FallbackBudgets:
     """Used if tools/budgets.py can't be imported; same numbers as the module."""
-    CLASSES = {"S": (20, 80000), "M": (60, 250000), "verify": (25, 100000)}
+    CLASSES = {"S": (20, 80000), "M": (60, 250000), "L": (150, 600000), "verify": (25, 100000)}
     ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
 
     @classmethod

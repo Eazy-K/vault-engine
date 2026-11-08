@@ -105,6 +105,10 @@ class TestInit(unittest.TestCase):
         # A fresh init never writes this computer's paths into the shared config.
         self.assertNotIn("project_roots", config)
         self.assertEqual(config["feedback"], {"level": "off", "mode": "ask"})
+        self.assertEqual(set(config["budgets"]), {"classes", "roles"})
+        self.assertEqual(config["budgets"]["classes"]["L"],
+                         {"max_turns": 150, "max_tokens": 600000})
+        self.assertNotIn("L", config["budgets"]["roles"].values())
 
         hooks_path = git(["config", "core.hooksPath"], target).stdout.strip()
         self.assertEqual(hooks_path, (graph.ENGINE / "tools" / "hooks").as_posix())
