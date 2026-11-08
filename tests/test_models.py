@@ -77,7 +77,7 @@ class ModelsTestCase(unittest.TestCase):
     def _write_agent_files(self):
         (self.agents / "worker-low.md").write_text(WORKER_LOW_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-medium.md").write_text(WORKER_MEDIUM_TEMPLATE, encoding="utf-8")
-        (self.agents / "worker-verify.md").write_text(WORKER_VERIFY_TEMPLATE, encoding="utf-8")
+        (self.agents / "worker-verify.md").write_text(WORKER_VERIFY_TEMPLATE, encoding="utf-8", newline="\n")
 
 
 class TestShowDefaults(ModelsTestCase):

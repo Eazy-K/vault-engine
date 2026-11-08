@@ -14,12 +14,21 @@ import graph as g
 
 EXCLUDE_HEADING_RE = re.compile(r"^#{2,3}\s+(Files not to touch|Dokunulmayacak dosyalar)\s*$", re.I)
 EXCLUDE_BULLET_RE = re.compile(r"^\s*[-*]\s*(?:Exclude|Hari[cç]):\s*(.*)$", re.I)
-EXIT_ZERO_RE = re.compile(r"exit(?:\s*code)?[=: ]\s*0\b", re.I)
-EXIT_FAIL_RE = re.compile(r"exit(?:\s*code)?[=: ]\s*[1-9]", re.I)
+EXIT_ZERO_RE = re.compile(r"^exit(?:\s*code)?\s*[=:]?\s*0\s*$", re.I)
+EXIT_FAIL_RE = re.compile(r"^exit(?:\s*code)?\s*[=:]?\s*[1-9]\d*\s*$", re.I)
+PLAIN_FILE_RE = re.compile(r"^[\w.-]+\.\w{1,5}$")
+STOPLIST = {"etc.", "e.g.", "i.e.", "vs."}
 
 
 def _looks_like_path(token: str) -> bool:
     return bool(token) and any(c in token for c in "/\\.")
+
+
+def _plain_is_path(token: str) -> bool:
+    if token.lower() in STOPLIST:
+        return False
+    token = token.lstrip("(").rstrip(".,;:)")
+    return bool(token) and ("/" in token or "\\" in token or bool(PLAIN_FILE_RE.match(token)))
 
 
 def _norm(token: str) -> str:
@@ -31,16 +40,22 @@ def _norm(token: str) -> str:
 
 def _line_tokens(line: str) -> list[str]:
     ticked = re.findall(r"`([^`]+)`", line)
-    candidates = ticked or [t for t in re.split(r"[\s,;]+", line.strip().lstrip("-*").strip()) if t]
-    return [_norm(t) for t in candidates if _looks_like_path(t.strip().strip("`\"'"))]
+    if ticked:
+        return [_norm(t) for t in ticked if _looks_like_path(t.strip().strip("`\"'"))]
+    plain = [t for t in re.split(r"[\s,;]+", line.strip().lstrip("-*").strip()) if t]
+    return [_norm(t.strip("\"'").lstrip("(").rstrip(".,;:)")) for t in plain if _plain_is_path(t.strip("\"'"))]
 
 
 def excluded_paths(body: str) -> list[str]:
     """Path patterns the task forbids touching (exclusion heading section + Exclude:/Hariç: bullets)."""
     found: list[str] = []
     in_section = False
+    in_fence = False
     for line in body.splitlines():
-        if re.match(r"^#{1,6}\s", line):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and re.match(r"^#{1,6}\s", line):
             in_section = bool(EXCLUDE_HEADING_RE.match(line))
             continue
         bullet = EXCLUDE_BULLET_RE.match(line)
@@ -52,36 +67,47 @@ def excluded_paths(body: str) -> list[str]:
 
 
 def diff_paths(text: str) -> list[str]:
-    """Changed paths of a unified diff: `diff --git` headers (b/ side), else `+++ b/` lines."""
-    paths = [m.group(2) for m in re.finditer(r"^diff --git a/(.+?) b/(.+?)\s*$", text, re.M)]
+    """Changed paths of a unified diff: both sides of `diff --git` headers, else `+++ b/` lines."""
+    side_a = r'(?:"a/((?:[^"\\]|\\.)*)"|a/(.+?))'
+    side_b = r'(?:"b/((?:[^"\\]|\\.)*)"|b/(.+?))'
+    header = re.compile(rf"^diff --git {side_a} {side_b}\s*$", re.M)
+    paths: list[str] = []
+    for m in header.finditer(text):
+        for quoted, plain in ((m.group(1), m.group(2)), (m.group(3), m.group(4))):
+            if quoted is not None:
+                paths.append(re.sub(r"\\(.)", r"\1", quoted))
+            elif plain:
+                paths.append(plain)
     if not paths:
         paths = [m.group(1).strip() for m in re.finditer(r"^\+\+\+ b/(.+)$", text, re.M)]
-    return list(dict.fromkeys(p for p in paths if p != "/dev/null"))
+    return list(dict.fromkeys(p for p in paths if p and p != "/dev/null"))
 
 
 def acceptance_green(text: str) -> tuple[bool, str]:
-    """Judge an acceptance-command output; returns (green, summary)."""
+    """Judge an acceptance-command output; returns (green, reason)."""
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         return False, "output is empty"
     for ln in lines:
-        if ln.startswith("FAILED") or EXIT_FAIL_RE.search(ln):
-            return False, ln[:100]
+        if ln.startswith("FAILED") or EXIT_FAIL_RE.match(ln):
+            return False, f"failure marker: {ln[:80]}"
+    if any(re.match(r"^Ran 0 tests?\b", ln) for ln in lines):
+        return False, "no tests ran"
     last = lines[-1]
-    if re.match(r"^OK\b", last) or re.search(r"\bOK$", last):
+    if last == "OK" or last.startswith("OK ("):
         return True, last[:100]
     for ln in lines:
-        if EXIT_ZERO_RE.search(ln):
+        if EXIT_ZERO_RE.match(ln):
             return True, ln[:100]
-    return False, f"no OK / exit 0 marker (last line: {last[:80]})"
+    return False, "no OK / exit 0 marker"
 
 
 def _matches(pattern: str, path: str) -> bool:
-    if any(c in pattern for c in "*?"):
+    if path == pattern or path.startswith(pattern.rstrip("/") + "/"):
+        return True
+    if any(c in pattern for c in "*?["):
         return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern)
-    if pattern.endswith("/"):
-        return path.startswith(pattern) or ("/" + pattern) in ("/" + path)
-    return path == pattern or path.endswith("/" + pattern)
+    return path.endswith("/" + pattern)
 
 
 def evaluate(body: str, diff_text: str, acceptance_text: str | None) -> tuple[bool, list[str]]:
@@ -95,9 +121,14 @@ def evaluate(body: str, diff_text: str, acceptance_text: str | None) -> tuple[bo
         ok = False
         items.append("- fail: acceptance output missing (pass --acceptance-output)")
     else:
-        green, summary = acceptance_green(acceptance_text)
+        green, reason = acceptance_green(acceptance_text)
         ok = ok and green
-        items.append(f"- {'ok' if green else 'fail'}: acceptance {'green' if green else 'not green'} ({summary})")
+        if green:
+            items.append(f"- ok: acceptance green ({reason})")
+        else:
+            nonblank = [ln.strip() for ln in acceptance_text.splitlines() if ln.strip()]
+            last = nonblank[-1][:80] if nonblank else ""
+            items.append(f"- fail: acceptance not green ({reason}; last line: {last})")
     changed = diff_paths(diff_text)
     patterns = excluded_paths(body)
     if not changed:

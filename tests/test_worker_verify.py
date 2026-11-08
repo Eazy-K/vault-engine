@@ -100,6 +100,66 @@ class TestHelpers(unittest.TestCase):
         self.assertFalse(m("CHANGELOG.md", "NOTCHANGELOG.md"))
 
 
+class TestReviewFixes(unittest.TestCase):
+    def test_bare_exclude_bullet(self):
+        self.assertEqual(verify_task.excluded_paths("- Exclude:\n"), [])
+        body = "## Files not to touch\n- Exclude:\n- `a.py`\n"
+        self.assertEqual(verify_task.excluded_paths(body), ["a.py"])
+
+    def test_heading_inside_fence_does_not_end_section(self):
+        body = "## Files not to touch\n```\n# comment\nx.py\n```\n- `y.py`\n## Next\n- z.py\n"
+        self.assertEqual(verify_task.excluded_paths(body), ["x.py", "y.py"])
+
+    def test_plain_tokens_strip_punctuation_and_stoplist(self):
+        body = "## Files not to touch\nfoo.py, bar/baz.md; etc. e.g. vs. and v1.2 plus (q.txt)\n"
+        found = verify_task.excluded_paths(body)
+        self.assertIn("foo.py", found)
+        self.assertIn("bar/baz.md", found)
+        self.assertIn("q.txt", found)
+        for bad in ("etc", "etc.", "e.g.", "vs.", "and"):
+            self.assertNotIn(bad, found)
+
+    def test_not_ok_is_not_green(self):
+        self.assertFalse(verify_task.acceptance_green("check\nNOT OK\n")[0])
+        self.assertFalse(verify_task.acceptance_green("not OK\n")[0])
+        self.assertTrue(verify_task.acceptance_green("Ran 1 test\nOK (skipped=1)\n")[0])
+
+    def test_ran_zero_tests_is_not_green(self):
+        green, reason = verify_task.acceptance_green("Ran 0 tests in 0.0s\n\nOK\n")
+        self.assertFalse(green)
+        self.assertIn("no tests ran", reason)
+
+    def test_not_green_item_shows_reason(self):
+        _, items = verify_task.evaluate(body_of(TASK), diff_for("tools/a.py"), "x\nNOT OK\n")
+        self.assertTrue(any(i.startswith("- fail: acceptance not green") and "NOT OK" in i
+                            for i in items), items)
+
+    def test_rename_away_from_excluded_path_is_caught(self):
+        text = ("diff --git a/CHANGELOG.md b/docs/changes.md\nsimilarity index 90%\n"
+                "rename from CHANGELOG.md\nrename to docs/changes.md\n")
+        self.assertEqual(verify_task.diff_paths(text), ["CHANGELOG.md", "docs/changes.md"])
+        ok, _ = verify_task.evaluate(body_of(TASK), text, GREEN)
+        self.assertFalse(ok)
+
+    def test_delete_of_excluded_path_is_caught(self):
+        text = ("diff --git a/CHANGELOG.md b/CHANGELOG.md\ndeleted file mode 100644\n"
+                "--- a/CHANGELOG.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n")
+        ok, items = verify_task.evaluate(body_of(TASK), text, GREEN)
+        self.assertFalse(ok)
+        self.assertTrue(any("CHANGELOG.md" in i for i in items if i.startswith("- fail:")))
+
+    def test_quoted_path_header(self):
+        text = 'diff --git "a/x y.py" "b/x y.py"\n--- "a/x y.py"\n+++ "b/x y.py"\n'
+        self.assertEqual(verify_task.diff_paths(text), ["x y.py"])
+
+    def test_directory_pattern_without_trailing_slash(self):
+        m = verify_task._matches
+        self.assertTrue(m("tools/codex-agents", "tools/codex-agents/a.toml"))
+        self.assertTrue(m("tools/codex-agents/", "tools/codex-agents/a.toml"))
+        self.assertFalse(m("tools/codex", "tools/codex-agents/a.toml"))
+        self.assertTrue(m("tools/[ab].py", "tools/a.py"))
+
+
 class TestEvaluate(unittest.TestCase):
     def test_clean_diff_and_green_output_passes(self):
         ok, items = verify_task.evaluate(body_of(TASK), diff_for("tools/a.py"), GREEN)
@@ -167,6 +227,25 @@ class TestCli(unittest.TestCase):
     def test_cli_fail_names_excluded_file(self):
         res = self.run_verify(diff_for("CHANGELOG.md"))
         self.assertEqual(res.returncode, 1, res.stderr)
+        self.assertEqual(res.stdout.splitlines()[0], "FAIL")
+        self.assertIn("CHANGELOG.md", res.stdout)
+
+    def test_cli_task_id_resolves_through_graph(self):
+        data = self.tmp / "data"
+        (data / "inbox" / "p").mkdir(parents=True)
+        (data / "vault.config.json").write_text('{"schema": 1}', encoding="utf-8", newline="\n")
+        (data / "inbox" / "p" / "idtask.md").write_text(
+            TASK.replace("Do the thing.", "# idtask\nDo the thing.").replace(
+                "status: in-progress\n", "status: in-progress\nproject: p\nkeywords: [idtask]\n"),
+            encoding="utf-8", newline="\n")
+        diff = self.tmp / "id.diff"
+        diff.write_text(diff_for("CHANGELOG.md"), encoding="utf-8", newline="\n")
+        env = {k: v for k, v in os.environ.items() if k not in ("VAULT_DATA", "VAULT_HOME")}
+        env["VAULT_DATA"] = str(data)
+        cmd = [sys.executable, "-I", str(GRAPH_PATH), "verify", "--task", "idtask",
+               "--diff", str(diff), "--acceptance-output", str(self.out)]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
         self.assertEqual(res.stdout.splitlines()[0], "FAIL")
         self.assertIn("CHANGELOG.md", res.stdout)
 
