@@ -62,7 +62,9 @@ def is_read(payload: dict) -> bool:
     if tool == "Bash":
         tool_input = payload.get("tool_input")
         cmd = tool_input.get("command") if isinstance(tool_input, dict) else None
-        return bool(_load_classifier().is_browse_command(cmd))
+        classifier = _load_classifier()
+        return (not classifier.is_coordination_command(cmd)
+                and bool(classifier.is_browse_command(cmd)))
     return False
 
 
@@ -130,6 +132,19 @@ def deny_reason(limit: int) -> str:
             "read, the user can raise VAULT_READ_BUDGET or set VAULT_READ_GUARD=off.")
 
 
+def log_read_block(payload: dict, limit: int, count: int) -> None:
+    """Reuse the git guard's fail-open usage event writer."""
+    try:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "git-guard.py")
+        spec = importlib.util.spec_from_file_location("vault_git_guard", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.log_block("read_block", payload, limit=limit, count=count)
+    except Exception:
+        pass
+
+
 def main() -> None:
     if os.environ.get("VAULT_READ_GUARD", "").strip().lower() == "off":
         return
@@ -141,12 +156,14 @@ def main() -> None:
     if not session_id or not prompt_id or not is_read(payload):
         return
     limit = budget()
-    if bump(str(session_id), str(prompt_id)) > limit:
+    count = bump(str(session_id), str(prompt_id))
+    if count > limit:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": deny_reason(limit),
         }}))
+        log_read_block(payload, limit, count)
 
 
 if __name__ == "__main__":

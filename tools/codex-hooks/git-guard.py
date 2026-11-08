@@ -29,10 +29,12 @@ def main() -> None:
         if os.environ.get("VAULT_GIT_GUARD") == "off":
             return
         shared = _shared()
-        command = shared.command_of(json.load(sys.stdin), SHELL_TOOLS)
+        payload = json.load(sys.stdin)
+        command = shared.command_of(payload, SHELL_TOOLS)
         reason = shared.decide(command) if command else None
         if reason:
             print(shared.deny_json(reason))
+            shared.log_block("git_block", payload, agent="codex", reason=reason[:200])
     except Exception:
         return
 

@@ -25,6 +25,8 @@ import os
 import re
 import shlex
 import sys
+import socket
+from datetime import datetime
 
 OPERATORS = set(";&|()")
 WRAPPERS = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
@@ -201,6 +203,34 @@ def deny_json(reason: str) -> str:
     }})
 
 
+def log_block(event_name: str, payload: dict, agent: str = "claude", **fields) -> None:
+    """Append a denial measurement; logging can never affect the guard decision."""
+    try:
+        raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+        if not raw or not os.path.isdir(os.path.expanduser(raw)):
+            return
+        graph_dir = os.path.join(os.path.expanduser(raw), ".graph")
+        os.makedirs(graph_dir, exist_ok=True)
+        sanitize = lambda value: re.sub(r"[^a-z0-9-]+", "-", str(value).lower()).strip("-")
+        machine = sanitize(os.environ.get("VAULT_MACHINE") or "")
+        if not machine:
+            try:
+                with open(os.path.join(graph_dir, "machine.json"), encoding="utf-8") as stream:
+                    saved = json.load(stream).get("machine")
+                machine = sanitize(saved) if isinstance(saved, str) else ""
+            except (OSError, ValueError, AttributeError):
+                pass
+        machine = machine or sanitize(socket.gethostname()) or "unknown"
+        event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": agent,
+                 "session": str(payload.get("session_id") or ""), "machine": machine,
+                 "event": event_name, **fields}
+        with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
+                  newline="\n") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def main() -> None:
     try:
         if os.environ.get("VAULT_GIT_GUARD") == "off":
@@ -212,6 +242,7 @@ def main() -> None:
         reason = decide(command, agent_type) if command else None
         if reason:
             print(deny_json(reason))
+            log_block("git_block", payload, reason=reason[:200])
     except Exception:
         return
 

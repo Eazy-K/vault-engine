@@ -222,6 +222,65 @@ def is_verification_command(cmd) -> bool:
         return False
 
 
+def _segment_is_coordination(segment: str) -> bool:
+    # Reject shell execution hidden in arguments or redirections, including echo glue.
+    if any(marker in segment for marker in ("`", "$(")):
+        return False
+    quote = None
+    for ch in segment:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "><&":
+            return False
+    tokens = _tokens(segment)
+    if not tokens:
+        return False
+    prog, args = _program(tokens[0]), tokens[1:]
+    if prog == "cd":
+        return len(args) == 1
+    if prog == "echo":
+        return True
+    if prog == "git":
+        while args and args[0] in ("-C", "-c"):
+            if len(args) < 3:
+                return False
+            args = args[2:]
+        return bool(args) and args[0] in ("worktree", "fetch")
+    if prog == "gh":
+        return len(args) >= 2 and args[0] == "pr" and args[1] in {
+            "create", "view", "checks", "list", "status"}
+    if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py)", prog):
+        while args and args[0] in ("-I", "-u", "-B", "-E", "-s", "-S"):
+            args = args[1:]
+        return (len(args) >= 2 and _program(args[0]) == "graph.py"
+                and args[1] == "codex-worker")
+    return False
+
+
+def is_coordination_command(cmd) -> bool:
+    """True only when every shell segment is coordination or harmless cd/echo glue.
+
+    Uses the same quote-aware separators as verification; mixed commands containing
+    other work are never exempted. Interpreter paths and quoted graph paths work in
+    both Bash and PowerShell without expanding variables or executing the command.
+    """
+    if isinstance(cmd, (list, tuple)):
+        cmd = " ".join(str(c) for c in cmd)
+    if not isinstance(cmd, str) or not cmd.strip():
+        return False
+    try:
+        parts = _split_segments(cmd)
+        if parts is None:
+            return False
+        segments = [s for s in parts if s.strip()]
+        return bool(segments) and all(_segment_is_coordination(s) for s in segments)
+    except Exception:
+        return False
+
+
 # Programs whose main purpose is browsing files (what read-guard budgets). git, gh,
 # python/pytest and friends are never browsing, even though they may be read-only.
 _BROWSE_PROGRAMS = {"cat", "head", "tail", "sed", "grep", "rg", "find", "ls", "tree", "type"}

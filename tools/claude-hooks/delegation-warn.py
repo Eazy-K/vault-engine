@@ -90,6 +90,7 @@ def _load_classifier():
 
 _classify = _load_classifier()
 is_verification_command = _classify.is_verification_command
+is_coordination_command = _classify.is_coordination_command
 
 
 
@@ -101,8 +102,16 @@ def is_counted(payload: dict) -> bool:
     if tool == "Bash":
         tool_input = payload.get("tool_input")
         cmd = tool_input.get("command") if isinstance(tool_input, dict) else None
-        return not is_verification_command(cmd)
+        return not (is_coordination_command(cmd) or is_verification_command(cmd))
     return False
+
+
+def is_coordination(payload: dict) -> bool:
+    if payload.get("tool_name") in DELEGATION_TOOLS:
+        return True
+    tool_input = payload.get("tool_input")
+    return (payload.get("tool_name") == "Bash" and isinstance(tool_input, dict)
+            and is_coordination_command(tool_input.get("command")))
 
 WARNING_MESSAGE = (
     "[delegation-warn] 4+ inline tool calls in this request. Implementation, "
@@ -285,11 +294,12 @@ def main() -> None:
             state = {"prompt_id": prompt_id, "count": 0, "reads": 0, "warned": False,
                      "coordination": 0, "spawned": 0}
 
-        if payload.get("tool_name") in DELEGATION_TOOLS:
+        if is_coordination(payload):
             # Delegation: neither inline nor read, but the prompt must still exist so a
             # delegation-only prompt produces an orchestrator_prompt event at Stop.
             state["coordination"] = int(state.get("coordination") or 0) + 1
-            state["spawned"] = int(state.get("spawned") or 0) + 1
+            if payload.get("tool_name") in DELEGATION_TOOLS:
+                state["spawned"] = int(state.get("spawned") or 0) + 1
         elif not is_counted(payload):
             state["reads"] = int(state.get("reads") or 0) + 1
         else:

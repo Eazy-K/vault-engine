@@ -46,6 +46,18 @@ import time
 from typing import Iterator
 from datetime import datetime
 
+
+def _load_coordination_classifier():
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "shell_classify.py"
+    spec = importlib.util.spec_from_file_location("shell_classify", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.is_coordination_command
+
+
+is_coordination_command = _load_coordination_classifier()
+
 THRESHOLD = 8
 # Code mode's outer `exec` wrapper would double count its inner tools.exec_command/
 # apply_patch calls (which arrive as "Bash"/"apply_patch"), so it is not counted.
@@ -295,7 +307,8 @@ def _is_counted(tool: str, payload: dict) -> bool:
     if name in WRITE_TOOLS or tool in WRITE_TOOLS:
         return True
     if name in SHELL_TOOLS or tool in SHELL_TOOLS:
-        return not is_verification_command(_command_of(payload))
+        command = _command_of(payload)
+        return not (is_coordination_command(command) or is_verification_command(command))
     return False
 
 
@@ -526,6 +539,9 @@ def main() -> None:
         kind = _classify(tool)
         if kind == "wrapper":
             return
+        if ((_base_name(tool) in SHELL_TOOLS or tool in SHELL_TOOLS)
+                and is_coordination_command(_command_of(payload))):
+            kind = "coordination"
 
     path = _state_path(payload)
     if path is None:
