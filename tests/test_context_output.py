@@ -68,7 +68,7 @@ class _Ctx(unittest.TestCase):
         out = StringIO()
         with mock.patch.object(graph, "default_paths", return_value=self.paths), \
              redirect_stdout(out):
-            graph.cmd_stats(Namespace())
+            graph.cmd_stats(Namespace(no_transcripts=True))
         return out.getvalue()
 
 

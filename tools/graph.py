@@ -1922,7 +1922,7 @@ def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
         from datetime import date
-        projects_dir = (Path(args.projects_dir).expanduser() if args.projects_dir
+        projects_dir = (Path(args.projects_dir).expanduser() if getattr(args, "projects_dir", None)
                         else claude_config_dir() / "projects")
         codex_dir = Path(args.codex_dir).expanduser()
         since = date.fromisoformat(args.since) if args.since else None
@@ -1951,7 +1951,7 @@ def cmd_stats(args) -> None:
     transcripts = None
     if not getattr(args, "no_transcripts", False):
         import usage_metrics
-        projects_dir = (Path(args.projects_dir).expanduser() if args.projects_dir
+        projects_dir = (Path(args.projects_dir).expanduser() if getattr(args, "projects_dir", None)
                         else claude_config_dir() / "projects")
         transcripts = usage_metrics.collect(projects_dir, default_paths().data)
     if getattr(args, "json", False):
