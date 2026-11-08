@@ -123,10 +123,15 @@ class TestReadGuard(unittest.TestCase):
             self.assertPass(self.run_hook(stdin))
 
     def test_unwritable_state_fails_open(self):
-        blocker = self.data / "file"
-        blocker.write_text("x", encoding="utf-8")
-        env = {k: str(blocker) for k in ("TMPDIR", "TEMP", "TMP")}  # temp dir is a file
-        self.assertPass(self.run_hook(self.call(prompt="fresh-" + self.id()), env))
+        # A regular file where the hook expects its state directory makes
+        # os.makedirs raise inside bump(); the hook must stay silent (fail open).
+        # Pointing TMPDIR/TEMP/TMP at a file would not do: tempfile.gettempdir()
+        # skips unusable candidates and falls back to the real system temp dir.
+        blocker = self.data / "vault-engine-read-guard"
+        blocker.write_text("not a directory", encoding="utf-8")
+        out = self.run_hook(self.call(prompt="fresh-" + self.id()))
+        self.assertPass(out)
+        self.assertEqual(out.stderr.strip(), "")
 
 
 if __name__ == "__main__":
