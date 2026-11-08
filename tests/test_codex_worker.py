@@ -33,6 +33,9 @@ with open(os.path.join(os.path.dirname(last), "fake-args.json"), "w") as f:
     json.dump({"args": args, "prompt": prompt}, f)
 if mode == "hang":
     time.sleep(60)
+if mode == "noevents":
+    open(last, "w").write("STATUS: SUCCESS\nBlockers:\n- none\n")
+    sys.exit(0)
 print(json.dumps({"type": "thread.started", "thread_id": "thread-123"}))
 for n in (1, 2):
     print(json.dumps({"type": "turn.completed", "usage": {
@@ -120,6 +123,26 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertEqual(e["cwd"], str(self.wt.resolve()))
         self.assertIn("ts", e)
         self.assertNotIn("session", e)
+
+    def test_empty_events_warns_and_marks_event(self):
+        r = self.run_cli("--json", mode="noevents")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("WARNING", r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertTrue(rep["metrics"]["events_missing"])
+        self.assertTrue(any("token usage unknown" in b for b in rep["blockers"]))
+        self.assertIn("tokens: UNKNOWN", (self.out / "report.md").read_text(encoding="utf-8"))
+        e = json.loads((self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()[0])
+        self.assertTrue(e["events_missing"])
+        self.assertIsNone(e["input_tokens"])
+        self.assertEqual(e["turns"], 0)
+
+    def test_normal_events_not_marked(self):
+        r = self.run_cli("--json")
+        self.assertNotIn("WARNING", r.stderr)
+        self.assertFalse(json.loads(r.stdout)["metrics"]["events_missing"])
+        e = json.loads((self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()[0])
+        self.assertNotIn("events_missing", e)
 
     def test_logging_fails_open_when_log_unwritable(self):
         (self.data / ".graph" / "usage.log").mkdir()  # a directory: opening it for append fails
