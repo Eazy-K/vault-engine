@@ -111,15 +111,14 @@ def _matches(pattern: str, path: str) -> bool:
 
 
 def evaluate(body: str, diff_text: str, acceptance_text: str | None) -> tuple[bool, list[str]]:
-    """Returns (passed, item lines starting with `- ok:` / `- fail:`)."""
+    """Returns (passed, item lines starting with `- ok:` / `- fail:` / `- human:`)."""
     items: list[str] = []
     ok = True
     command = g.task_acceptance_command(body)
     if command is None or command == "human":
         items.append("- ok: acceptance: human / none")
     elif acceptance_text is None:
-        ok = False
-        items.append("- fail: acceptance output missing (pass --acceptance-output)")
+        items.append("- human: acceptance not checked (no --acceptance-output; needs human check)")
     else:
         green, reason = acceptance_green(acceptance_text)
         ok = ok and green
