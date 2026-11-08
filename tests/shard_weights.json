@@ -12,6 +12,7 @@
  "test_core": 0.4,
  "test_delegation_warn": 3.1,
  "test_discovery": 4.5,
+ "test_eval_retrieval": 0.2,
  "test_feedback": 12.5,
  "test_git_guard": 0.7,
  "test_guard": 4.2,

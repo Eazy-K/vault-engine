@@ -9,6 +9,7 @@ Commands are written as `python tools/graph.py <command>` from the engine folder
 - Install and connect: [Setup](#setup) (`init`, `setup`, `onboard`, `doctor`, `doctor --live`), [Machine name](#machine-name) (`machine`)
 - Projects: [Project discovery](#project-discovery) (`projects`), [Project recognition](#project-recognition) (`machine --project-root`, `--project`, `--no-project`)
 - Notes: [Status note rotation](#status-note-rotation) (`rotate`)
+- Retrieval quality: [Retrieval evaluation](#retrieval-evaluation) (`eval`)
 - Several computers: [Updating another computer](#updating-another-computer) (`update --all`, `user-config --install`)
 - Feedback: [Feedback](#feedback) (`feedback status|list|send|set|add`)
 - Automation: [CI (GitHub Actions)](#ci-github-actions)
@@ -68,6 +69,13 @@ Learned links are saved per computer in `<data repo>/.graph/learned/<name>.json`
 `rotate` is idempotent: with 5 items or fewer it prints `nothing to rotate` and writes nothing. `--dry-run` prints what would move and writes nothing. It commits exactly the two notes it wrote (`chore: rotate <project> status note`) and never pushes; `--no-commit` leaves them in the working tree. Section names come from `vault.config.json`: `{"status_note": {"recent_heading": "Where we are", "journal_heading": "Journal"}}` (these are the defaults; set them when your notes use other headings, matched case-insensitively).
 
 `lint` reports an error for a status or overview note whose body is over 5,000 characters. `reinforce` prints one `WARN:` line, with the exact `rotate` command, when the project it runs in has a status note over that size or with more than 5 dated items. `rotate` does not shorten an overview note or other sections: move that content to the history note by hand.
+
+## Retrieval evaluation
+`python tools/graph.py eval --set <file.jsonl> [--no-semantic] [--k 3,5,10] [--split dev|holdout|all] [--json]` measures how well `context` finds the right notes. The set is a JSONL file, one query per line: `{"task": "...", "ts": "...", "query": "...", "relevant": ["note-id", ...], "split": "dev"|"holdout"}`. A relative `--set` path is resolved against the current directory.
+
+For each query the ranking is the list `context` builds before its token budget (default threshold and depth; notes it would omit over budget keep their place, after the loaded ones). Two deliberate differences: core notes are left out of the ranking and out of the query's relevant set (they load for every query; a query with no other relevant note is skipped and counted), and projects are not seeded from the working directory, so the result does not depend on where you run it. Nothing is logged: no `usage.log` event, task id or learned-link change. Only the embeddings cache can be refreshed, as `index` does; `--no-semantic` writes nothing.
+
+Output is one table for the chosen split (default `all`) with a `keyword` and a `semantic` column: n, recall@k for each k (the share of a query's relevant notes in the top k, averaged over queries) and MRR (1 / rank of the first relevant note, 0 if none). `--no-semantic` prints only the keyword column. When Ollama is unavailable the semantic column reads `n/a` with the reason and the command still succeeds. `--json` prints the same numbers as `{set, split, k, modes: {keyword|semantic: {available, skipped, splits: {<split>: {n, recall: {<k>: ...}, mrr}}}}}`.
 
 ## Feedback
 `tools/feedback.py` optionally sends feedback from your setup to the engine's developers (as a GitHub issue). It is off by default; you must explicitly turn it on before anything is sent.
