@@ -89,5 +89,54 @@ class TestBudgets(unittest.TestCase):
             self.assertEqual(budgets.data_dir_from_env(), self.data / "d")
 
 
+def _rec(msg_id=None, usage=None):
+    message = {"role": "assistant", "content": []}
+    if msg_id is not None:
+        message["id"] = msg_id
+    if usage is not None:
+        message["usage"] = usage
+    return {"type": "assistant", "message": message}
+
+
+class TestAgentMaxTurns(unittest.TestCase):
+    def test_margin_rounds_up(self):
+        self.assertEqual(budgets.MAX_TURNS_MARGIN, 1.5)
+        got = {n: budgets.agent_max_turns(n) for n in (20, 60, 150, 25, 33, 1)}
+        self.assertEqual(got, {20: 30, 60: 90, 150: 225, 25: 38, 33: 50, 1: 2})
+
+
+class TestTranscriptUsage(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def _usage(self, records, raw_extra=""):
+        path = self.tmp / "t.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n" + raw_extra,
+                        encoding="utf-8", newline="\n")
+        return budgets.transcript_usage(path)
+
+    def test_shared_message_id_is_one_turn(self):
+        self.assertEqual(self._usage([_rec("m1"), _rec("m1"), _rec("m1")]), (1, None))
+
+    def test_records_without_id_count_individually(self):
+        self.assertEqual(self._usage([_rec(), _rec(), _rec()])[0], 3)
+
+    def test_mixed(self):
+        records = [_rec("a"), _rec("a"), _rec("b"), _rec(), _rec(), {"type": "user"}]
+        self.assertEqual(self._usage(records)[0], 4)
+
+    def test_tokens_from_last_assistant_usage(self):
+        records = [_rec("a", {"input_tokens": 1}),
+                   _rec("b", {"input_tokens": 10, "cache_creation_input_tokens": 20,
+                              "cache_read_input_tokens": 30, "output_tokens": 99})]
+        self.assertEqual(self._usage(records), (2, 60))
+
+    def test_bad_lines_and_missing_file(self):
+        self.assertEqual(self._usage([_rec("a")], raw_extra="not json\n[1]\n"), (1, None))
+        self.assertEqual(budgets.transcript_usage(self.tmp / "nope.jsonl"), (0, None))
+        self.assertEqual(budgets.transcript_usage(None), (0, None))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -248,10 +248,10 @@ class TestMaxTurns(ModelsTestCase):
                 "maxTurns: 999\n" if l.startswith("maxTurns:") else l
                 for l in text.splitlines(keepends=True)), encoding="utf-8", newline="\n")
         self._run(apply=True)
-        self.assertEqual(self._turns("worker-low"), "20")
-        self.assertEqual(self._turns("worker-medium"), "60")
-        self.assertEqual(self._turns("worker-verify"), "25")
-        self.assertEqual(self._turns("worker-codex"), "20")
+        self.assertEqual(self._turns("worker-low"), "30")
+        self.assertEqual(self._turns("worker-medium"), "90")
+        self.assertEqual(self._turns("worker-verify"), "38")
+        self.assertEqual(self._turns("worker-codex"), "30")
 
     def test_apply_adds_missing_max_turns(self):
         self._write_agent_files()
@@ -261,7 +261,7 @@ class TestMaxTurns(ModelsTestCase):
                                 if not l.startswith("maxTurns:")), encoding="utf-8", newline="\n")
         self.assertIsNone(self._turns("worker-low"))
         self._run(apply=True)
-        self.assertEqual(self._turns("worker-low"), "20")
+        self.assertEqual(self._turns("worker-low"), "30")
         self.assertIn("You are a worker subagent.", path.read_text(encoding="utf-8"))
 
     def test_config_budget_class_overrides_max_turns(self):
@@ -270,7 +270,7 @@ class TestMaxTurns(ModelsTestCase):
             "classes": {"M": {"max_turns": 33, "max_tokens": 1000}}}}),
             encoding="utf-8", newline="\n")
         self._run(apply=True)
-        self.assertEqual(self._turns("worker-medium"), "33")
+        self.assertEqual(self._turns("worker-medium"), "50")
 
     def test_matches_false_when_max_turns_stale(self):
         self._write_agent_files()
@@ -280,7 +280,7 @@ class TestMaxTurns(ModelsTestCase):
                           WORKER_VERIFY_TEMPLATE)["effort"]))}
         self.assertTrue(models.worker_md_matches(effective, "worker-low", self.agents))
         path = self.agents / "worker-low.md"
-        path.write_text(path.read_text(encoding="utf-8").replace("maxTurns: 20", "maxTurns: 40"),
+        path.write_text(path.read_text(encoding="utf-8").replace("maxTurns: 30", "maxTurns: 40"),
                         encoding="utf-8", newline="\n")
         self.assertFalse(models.worker_md_matches(effective, "worker-low", self.agents))
         self.assertIn("OUT OF DATE", self._run())

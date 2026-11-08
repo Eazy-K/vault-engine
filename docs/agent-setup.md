@@ -532,14 +532,15 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   `subagent_stop` event (agent type, agent id, length of the final message) to
   `.graph/usage.log`. Worker subagents return their report through a `SubagentHandback`
   tool call, so the hook counts that report's length (`last_message_kind: "handback"`;
-  `last_message_source` stays payload | transcript | none). In Claude it also enforces the
+  `last_message_source` stays payload | transcript | none). In Claude it also logs the
   worker budget classes (`tools/budgets.py`): for a role listed under `budgets.roles` in
-  `vault.config.json` it counts `turns` (assistant records) and `tokens` (input + cache
-  creation + cache read of the last assistant usage) from the transcript, logs
-  `budget_class`, `turns`, `tokens` and `budget_hit` (`none` | `warn` | `block`), prints a
-  `systemMessage` at 80% of `max_turns` or `max_tokens`, and at 100% returns
-  `decision: block` asking for a short `blocked` report (never when `stop_hook_active` is
-  set, then it only logs). Config shape:
+  `vault.config.json` it counts `turns` (distinct `message.id` among the assistant records;
+  one API reply is written as several records sharing an id, a record without id counts
+  as one turn) and `tokens` (input + cache creation + cache read of the last assistant
+  usage) from the transcript, logs `budget_class`, `turns`, `tokens` and `budget_hit`
+  (`none` | `warn` | `block`), and prints only a `systemMessage` at 80% and at 100% of
+  `max_turns` or `max_tokens`. Block is logged but not enforced at SubagentStop (the worker
+  has already handed back); the mid-run gate is the PreToolUse hook `budget-guard.py`. Config shape:
   `budgets.classes` (`S`, `M`, `L`, `verify`: `max_turns`, `max_tokens`), `budgets.roles`
   (role to class) and `budgets.context` (`warn_delta`, `handoff_delta`); missing or
   invalid values fall back to built-in numbers (S 20 turns / 80k tokens,
@@ -547,7 +548,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   per-computer `queue` block in `.graph/machine.json` (API machines only) holds the dollar
   ceilings `budgets_usd` per task class that `queue-runner` reads (see `docs/commands.md`). Unknown agent types get no budget fields. `stats` summarizes the
   per-class p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
-  Otherwise it never blocks and fails open.
+  It never blocks and fails open.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
   `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
@@ -630,7 +631,7 @@ workers are enforced by `git-guard.py` instead.
 ### worker-verify (Claude Code)
 
 `tools/claude-agents/worker-verify.md` is a Sonnet (medium effort) verifier with a clean
-context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 25 (class `verify`); it never edits files,
+context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 38 (class `verify` 25 turns x 1.5); it never edits files,
 commits or runs git write commands. The orchestrator starts it with the `Agent` tool
 (`subagent_type: worker-verify`) after a writing worker reports, and gives it the task
 file path, a diff file (or the branch) and the acceptance-command output file. It answers
@@ -645,7 +646,7 @@ the task is `blocked`. Its model is configured like the other workers (`models
 ### worker-codex (Claude Code)
 
 `tools/claude-agents/worker-codex.md` is a Sonnet (low effort) relay that runs one task
-through Codex. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 20 (class `S`). The
+through Codex. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 30 (class `S` 20 turns x 1.5). The
 orchestrator opens the worktree and branch itself, then starts it with the `Agent` tool
 (`subagent_type: worker-codex`) giving the task file path, the worktree path and branch.
 It checks the branch and runs one command, `python tools/graph.py codex-worker --task <path>
@@ -665,8 +666,8 @@ not four: `python tools/graph.py models` shows it (plus whether `settings.json` 
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
-worker files' `model:`/`effort:`/`maxTurns:` frontmatter (`maxTurns` is the `max_turns` of the
-role's budget class from `budgets.classes`/`budgets.roles`, see the `subagent-log` hook), so the agent-guard hook above, the
+worker files' `model:`/`effort:`/`maxTurns:` frontmatter (`maxTurns` is 1.5 x the `max_turns` of the
+role's budget class from `budgets.classes`/`budgets.roles`, rounded up, so the budget hooks run before Claude Code stops the subagent silently at `maxTurns`; see the `subagent-log` hook), so the agent-guard hook above, the
 worker agents, and Claude Code's own model picker all agree. Each worker uses its
 configured model, and a model override on a spawn must match it. `doctor` warns if `settings.json` or the worker files drift from this
 config (skipped silently if `settings.json` doesn't exist yet).
