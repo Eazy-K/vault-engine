@@ -20,25 +20,27 @@ from pathlib import Path
 
 import graph as g
 
-DEFAULT_MODEL = "gpt-6.1-sol"   # same as tools/codex-agents/worker-medium.toml
-DEFAULT_EFFORT = "medium"
+PROFILES = ("worker-low", "worker-medium")
+DEFAULT_PROFILE = "worker-medium"
+PROFILE_DIR = Path(__file__).resolve().parent / "codex-agents"
 DEFAULT_TIMEOUT = 1800
 DEFAULT_BASE = "origin/main"
 CONFIG_TRIMS = ("ignore-user-config", "blank-instructions", "none")
 # ~/.codex/config.toml injects the vault AGENTS.md through developer_instructions on every
-# run; the trim strategy drops it. `ignore-user-config` is cheapest but also drops the
-# `[windows] sandbox` setting, which leaves the workspace-write sandbox unable to write on
-# Windows, so `blank-instructions` is the default (measured numbers in docs/agent-setup.md).
+# run. Every run passes the profile's own developer_instructions, which replaces the
+# injected text. `ignore-user-config` additionally drops the user config: cheapest, but it
+# also drops the `[windows] sandbox` setting and leaves the workspace-write sandbox unable
+# to write on Windows. `blank-instructions` (the default) and `none` add no trim flag now
+# that the profile text is always passed; both names are kept for compatibility (measured
+# numbers in docs/agent-setup.md).
 DEFAULT_CONFIG_TRIM = "blank-instructions"
 SECTIONS = ("Changed files", "Decisions", "Evidence", "Blockers")
 
 RULES = """\
 You are a worker running one task inside a git worktree. Rules:
 - Work only inside {worktree}. Never write outside it.
-- The branch is {branch}. Do not create or switch branches. Do not commit; leave your changes in the working tree, the orchestrator's wrapper commits them.
-- Never push, merge, rebase or delete branches. Do not run the vault workflow (graph.py context / reinforce, git pull/push).
-- Never write personal data (names with contact details, IDs, IBAN/card, health data) or secrets; mask them.
-- Do only the assigned task; if the scope is unclear, stop and report the question.
+- The branch is {branch}. Do not create or switch branches. {commit_rule}
+- Never push, merge, rebase or delete branches.
 - Run the acceptance command before finishing and quote its exit code and summary line.{acceptance}
 - End your final message with exactly this block (one section each, dash bullets):
 STATUS: SUCCESS|PARTIAL|FAILED
@@ -104,10 +106,50 @@ def load_task(ref: str) -> tuple[str, str]:
     return nid, graph.notes[nid].body
 
 
+NO_COMMIT = "Do not commit; leave your changes in the working tree, the orchestrator's wrapper commits them."
+WRAPPER_COMMITS = "Do not commit; the wrapper commits your changes after the run."
+
+
+def _parse_profile(text: str) -> dict:
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10: minimal parser for the keys the profiles use
+        tomllib = None
+    if tomllib:
+        try:
+            return tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(str(exc))
+    out: dict = {}
+    for m in re.finditer(r'^(model|model_reasoning_effort)\s*=\s*"([^"\n]*)"\s*$', text, re.M):
+        out[m.group(1)] = m.group(2)
+    m = re.search(r'^developer_instructions\s*=\s*"""(.*?)"""', text, re.M | re.S)
+    if m:
+        body = m.group(1)
+        out["developer_instructions"] = body[1:] if body.startswith("\n") else body
+    return out
+
+
+def load_profile(name: str) -> dict:
+    """model, effort and developer_instructions from tools/codex-agents/<name>.toml."""
+    path = PROFILE_DIR / f"{name}.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorkerError(f"cannot read profile {name}: {exc}")
+    try:
+        data = _parse_profile(text)
+    except ValueError as exc:
+        raise WorkerError(f"invalid profile {name}: {exc}")
+    return {"name": name, "model": data.get("model"), "effort": data.get("model_reasoning_effort"),
+            "instructions": data.get("developer_instructions", "")}
+
+
 def build_prompt(worktree: str, branch: str, body: str, acceptance: str | None,
-                 instructions: str = "") -> str:
+                 instructions: str = "", commit: bool = False) -> str:
     acc = f"\n  Acceptance command: {acceptance}" if acceptance and acceptance != "human" else ""
-    parts = [RULES.format(worktree=worktree, branch=branch, acceptance=acc).rstrip(),
+    parts = [RULES.format(worktree=worktree, branch=branch, acceptance=acc,
+                                commit_rule=WRAPPER_COMMITS if commit else NO_COMMIT).rstrip(),
              "## Task\n\n" + body.strip()]
     if instructions.strip():
         parts.append("## Extra instructions\n\n" + instructions.strip())
@@ -115,17 +157,15 @@ def build_prompt(worktree: str, branch: str, body: str, acceptance: str | None,
 
 
 def trim_flags(trim: str) -> list[str]:
-    if trim == "ignore-user-config":
-        return ["--ignore-user-config"]
-    if trim == "blank-instructions":
-        return ["-c", 'developer_instructions=""']
-    return []
+    return ["--ignore-user-config"] if trim == "ignore-user-config" else []
 
 
-def codex_argv(codex: str, worktree: str, last: str, trim: str, model: str, effort: str) -> list[str]:
+def codex_argv(codex: str, worktree: str, last: str, trim: str, model: str, effort: str,
+               instructions: str = "") -> list[str]:
     exe = [sys.executable, codex] if codex.lower().endswith(".py") else [shutil.which(codex) or codex]
     return [*exe, "exec", "-C", worktree, "-s", "workspace-write", "--json", "-o", last,
-            *trim_flags(trim), "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-"]
+            *trim_flags(trim), "-c", "developer_instructions=" + json.dumps(instructions),
+            "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-"]
 
 
 def parse_events(text: str) -> dict:
@@ -231,7 +271,8 @@ def render(r: dict) -> str:
     acc_line = (f"- `{acc['command']}`: exit {acc['exit']}, {acc['summary']}" if acc["ran"]
                 else f"- {acc['summary']}")
     return "\n".join([
-        f"# Codex worker report: {r['task']}", "", f"Status: {r['status']}", "",
+        f"# Codex worker report: {r['task']}", "", f"Status: {r['status']}",
+        f"Profile: {r['profile']} ({r['model']}, {r['effort']})", "",
         "## Changed files (from git)", bullets(changed), "",
         "Commits:", bullets(r["git"]["log"]), "",
         "## Codex decisions", bullets(sec["Decisions"]), "",
@@ -245,7 +286,7 @@ def render(r: dict) -> str:
         "", f"Codex thread id: {r['thread_id']}", f"Out dir: {r['out']}", ""])
 
 
-def log_codex_exec(wt: Path, events: dict, codex_rc) -> None:
+def log_codex_exec(wt: Path, events: dict, codex_rc, profile: str | None = None) -> None:
     """Append one `codex_exec` event to the vault's usage.log so Codex token totals
     survive the handback (the relay's own transcript has no Codex usage).
 
@@ -267,7 +308,7 @@ def log_codex_exec(wt: Path, events: dict, codex_rc) -> None:
                       "input_tokens": events["input"], "cached_input_tokens": events["cached"],
                       "output_tokens": events["output"],
                       "reasoning_output_tokens": events["reasoning"],
-                      "turns": events["turns"], "exit_code": codex_rc})
+                      "turns": events["turns"], "exit_code": codex_rc, "profile": profile})
         paths.usage_log.parent.mkdir(exist_ok=True)
         with paths.usage_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -288,12 +329,20 @@ def _run(args) -> dict | None:
     if args.acceptance:
         acceptance = args.acceptance
     extra = _read(args.instructions) if args.instructions else ""
-    prompt = build_prompt(str(wt), branch, body, acceptance, extra)
+    prof = load_profile(args.profile)
+    model = args.model or prof["model"]
+    effort = args.effort or prof["effort"]
+    if not model or not effort:
+        raise WorkerError(f"profile {args.profile} has no model / model_reasoning_effort; pass --model / --effort")
+    prompt = build_prompt(str(wt), branch, body, acceptance, extra, bool(args.commit))
     out = Path(args.out) if args.out else (Path(tempfile.gettempdir()) / "vault-codex-worker" /
                                            f"{task_id}-{datetime.now():%Y%m%d-%H%M%S}")
     last = out / "last.md"
-    argv = codex_argv(args.codex, str(wt), str(last), args.config_trim, args.model, args.effort)
+    argv = codex_argv(args.codex, str(wt), str(last), args.config_trim, model, effort,
+                      prof["instructions"])
     if args.dry_run:
+        print(f"Profile: {prof['name']}\nModel: {model}\nEffort: {effort}")
+        print("Developer instructions:\n" + prof["instructions"] + "\n")
         print("Command:\n" + " ".join(f'"{a}"' if " " in a else a for a in argv) + " < prompt.md\n")
         print("Prompt:\n" + prompt)
         return None
@@ -309,7 +358,7 @@ def _run(args) -> dict | None:
         sys.exit(3)
     duration = round(time.time() - start, 1)
     events = parse_events((out / "events.jsonl").read_text(encoding="utf-8", errors="replace"))
-    log_codex_exec(wt, events, None if timed_out else rc)
+    log_codex_exec(wt, events, None if timed_out else rc, args.profile)
     final = last.read_text(encoding="utf-8", errors="replace") if last.is_file() else ""
     status, sections = parse_status(final)
     if timed_out:
@@ -334,6 +383,7 @@ def _run(args) -> dict | None:
               "metrics": {"duration_s": duration, "turns": events["turns"], "input": events["input"],
                           "cached": events["cached"], "output": events["output"],
                           "reasoning": events["reasoning"]},
+              "profile": args.profile, "model": model, "effort": effort,
               "config_trim": args.config_trim, "out": str(out)}
     (out / "report.md").write_text(render(report), encoding="utf-8", newline="\n")
     return report
@@ -358,14 +408,18 @@ def register(sub) -> None:
     p.add_argument("--prompt-file", help="file with a raw prompt (smoke tests)")
     p.add_argument("--worktree", required=True, help="the linked git worktree Codex works in")
     p.add_argument("--out", help="output dir (default: <tmp>/vault-codex-worker/<task>-<time>)")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Codex model (default {DEFAULT_MODEL})")
-    p.add_argument("--effort", default=DEFAULT_EFFORT, help=f"reasoning effort (default {DEFAULT_EFFORT})")
+    p.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE,
+                   help=f"tools/codex-agents/<profile>.toml: model, effort and rules (default {DEFAULT_PROFILE})")
+    p.add_argument("--model", help="Codex model (default: the profile's model)")
+    p.add_argument("--effort", help="reasoning effort (default: the profile's model_reasoning_effort)")
     p.add_argument("--instructions", help="file with extra text appended to the prompt")
     p.add_argument("--acceptance", help="acceptance command (overrides the task file's)")
     p.add_argument("--base", default=DEFAULT_BASE, help=f"ref for the diff summary (default {DEFAULT_BASE})")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds (default 1800)")
     p.add_argument("--config-trim", choices=CONFIG_TRIMS, default=DEFAULT_CONFIG_TRIM,
-                   help="how to keep ~/.codex/config.toml instructions out of the run")
+                   help="the profile's developer_instructions always replace the injected ones; "
+                        "ignore-user-config also drops ~/.codex/config.toml (breaks the Windows "
+                        "sandbox); blank-instructions and none add no flag")
     p.add_argument("--commit", action="store_true",
                    help="after the run, commit uncommitted worktree changes (git add -A) as a WIP commit")
     p.add_argument("--commit-message", help="WIP commit message (default: wip(codex): <task id or 'prompt'>)")

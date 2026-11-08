@@ -670,9 +670,13 @@ It checks the branch and runs one command, `python tools/graph.py codex-worker -
 --worktree <path> --commit` (see `docs/commands.md`), and relays the report; it never fixes Codex's
 work. Codex runs with `-s workspace-write` (never `danger-full-access`). Smoke test on
 codex-cli 0.167.0 (Windows, trivial prompt, input tokens): `--ignore-user-config` 18040
-(but the sandbox then cannot write files), `-c developer_instructions=""` 20352 (default),
+(but the sandbox then cannot write files), `-c developer_instructions=""` 20352 (the old default, measured before the profile text was passed instead of the empty string),
 no trim 42862. Codex cannot commit in a linked worktree (its git dir is outside the writable
-root), so the wrapper's `--commit` makes the WIP commit after the run. Each run also appends one
+root), so the wrapper's `--commit` makes the WIP commit after the run. The wrapper takes model, effort and the worker rules from the Codex profile TOML
+`tools/codex-agents/<profile>.toml` (`--profile worker-low|worker-medium`, default `worker-medium`); `--model` / `--effort` override
+the profile, and the profile's `developer_instructions` are passed with `-c developer_instructions=<TOML string>` on every run
+(replacing the vault rules that `~/.codex/config.toml` would inject). The wrapper's own prompt keeps only run-specific lines
+(worktree, branch, commit rule, acceptance command, STATUS block), and the profile text says those wrapper rules win. The `usage.log` event records the `profile` name. Each run also appends one
 `codex_exec` event (token totals, turns, exit code) to `usage.log`, so Codex usage survives the handback. The verifier stays `worker-verify`.
 
 Which model each role (orchestrator, worker-low, worker-medium, worker-verify, worker-codex) uses is one config,
