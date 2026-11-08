@@ -37,6 +37,8 @@ import graph as g
 # The data layout this engine writes. Bump it only together with a migration
 # step in MIGRATIONS and an "Upgrade notes" entry in CHANGELOG.md.
 SCHEMA_VERSION = 1
+# Additive optional keys need no bump: `budgets` in vault.config.json (see
+# tools/budgets.py; absent = built-in fallbacks) and `budgets_usd` in .graph/machine.json.
 
 # MIGRATIONS[n] upgrades a data repo from schema n to n + 1, in place, and
 # returns the files it changed (committed together with vault.config.json).

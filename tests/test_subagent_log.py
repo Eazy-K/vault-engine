@@ -123,6 +123,8 @@ class TestSubagentLog(unittest.TestCase):
         self.assertEqual(event["last_message_chars"], len("Analysis complete."))
         self.assertNotIn("Analysis", json.dumps(event))  # message text is never logged
         self.assertNotIn("agent_transcript_path", event)
+        for key in ("budget_class", "turns", "tokens", "budget_hit"):  # Explore has no class
+            self.assertNotIn(key, event)
 
     def test_missing_optional_fields_are_omitted(self):
         self._run(json.dumps({"session_id": "s1"}))
@@ -227,6 +229,91 @@ class TestSubagentLog(unittest.TestCase):
             self.assertEqual(out.returncode, 0)
             self.assertEqual(out.stderr.strip(), "")
         self.assertEqual(self._events(), [])
+
+
+def USAGE_ASSISTANT(input_tokens=0, creation=0, read=0):
+    usage = {"input_tokens": input_tokens, "cache_creation_input_tokens": creation,
+             "cache_read_input_tokens": read, "output_tokens": 5}
+    return {"type": "assistant", "message": {"role": "assistant", "usage": usage,
+                                             "content": [{"type": "text", "text": "step"}]}}
+
+
+class TestSubagentBudget(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.data = self.tmp / "data"
+        self.data.mkdir()
+
+    def _transcript(self, n_turns, last_usage=(1000, 0, 0)):
+        records = [USAGE_ASSISTANT(10) for _ in range(n_turns - 1)] + [USAGE_ASSISTANT(*last_usage)]
+        records.insert(1, {"type": "user", "message": {"role": "user", "content": "q"}})
+        path = self.tmp / "agent.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n",
+                        encoding="utf-8", newline="\n")
+        return str(path)
+
+    def _run(self, agent_type="worker-medium", turns=5, last_usage=(1000, 0, 0), **extra):
+        payload = {"session_id": "s1", "agent_type": agent_type, "agent_id": "a1",
+                   "agent_transcript_path": self._transcript(turns, last_usage), **extra}
+        env = dict(os.environ, VAULT_DATA=str(self.data))
+        env.pop("VAULT_HOME", None)
+        out = subprocess.run([sys.executable, str(SCRIPT)], input=json.dumps(payload),
+                             capture_output=True, text=True, env=env)
+        self.assertEqual(out.returncode, 0)
+        log = self.data / ".graph" / "usage.log"
+        events = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+        return out.stdout.strip(), events[-1]
+
+    def test_under_threshold_logs_fields_silently(self):
+        out, event = self._run(turns=5, last_usage=(1000, 200, 300))
+        self.assertEqual(out, "")
+        self.assertEqual(event["budget_class"], "M")
+        self.assertEqual(event["turns"], 5)
+        self.assertEqual(event["tokens"], 1500)
+        self.assertEqual(event["budget_hit"], "none")
+
+    def test_warn_at_80_percent(self):
+        out, event = self._run(turns=48)  # 48/60 = 80%
+        msg = json.loads(out)
+        self.assertEqual(list(msg), ["systemMessage"])
+        self.assertIn("worker-medium used 48/60 turns", msg["systemMessage"])
+        self.assertIn("class M", msg["systemMessage"])
+        self.assertEqual(event["budget_hit"], "warn")
+
+    def test_block_over_max_turns(self):
+        out, event = self._run(turns=61)
+        decision = json.loads(out)
+        self.assertEqual(decision["decision"], "block")
+        self.assertIn("blocked", decision["reason"])
+        self.assertIn("61/60 turns", decision["reason"])
+        self.assertIn("systemMessage", decision)
+        self.assertEqual(event["budget_hit"], "block")
+
+    def test_stop_hook_active_never_blocks(self):
+        out, event = self._run(turns=61, stop_hook_active=True)
+        self.assertEqual(out, "")
+        self.assertEqual(event["budget_hit"], "block")
+
+    def test_block_over_max_tokens(self):
+        out, event = self._run(turns=3, last_usage=(100000, 100000, 60000))
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(event["tokens"], 260000)
+        self.assertEqual(event["budget_hit"], "block")
+
+    def test_config_override_from_vault_config(self):
+        (self.data / "vault.config.json").write_text(json.dumps({"budgets": {
+            "classes": {"M": {"max_turns": 3, "max_tokens": 250000}}}}),
+            encoding="utf-8", newline="\n")
+        out, event = self._run(turns=4)
+        self.assertEqual(json.loads(out)["decision"], "block")
+        self.assertEqual(event["budget_hit"], "block")
+
+    def test_unknown_agent_type_has_no_budget_fields(self):
+        out, event = self._run(agent_type="Explore", turns=500)
+        self.assertEqual(out, "")
+        for key in ("budget_class", "turns", "tokens", "budget_hit"):
+            self.assertNotIn(key, event)
 
 
 if __name__ == "__main__":

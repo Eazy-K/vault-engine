@@ -18,7 +18,16 @@ agent; it is logged with `"internal": true`. When the payload lacks agent_type, 
 subagent meta file (`agent-<id>.meta.json` next to the transcript); no transcript
 content is ever read.
 
-Never blocks: prints nothing and exits 0 on any problem.
+Budget classes (tools/budgets.py; numbers from `budgets` in vault.config.json, with
+fallbacks): for an agent_type that has a class (`budgets.roles`), the transcript is
+streamed once for `turns` (assistant records) and `tokens` (input + cache_creation +
+cache_read of the last assistant usage). The event then also carries `budget_class`,
+`turns`, `tokens` (when the transcript has usage) and `budget_hit` (none | warn >=80% |
+block >=100% of max_turns or max_tokens). On warn it prints a `systemMessage`; on block
+it prints `{"decision": "block", ...}` asking for a short `blocked` report, unless
+`stop_hook_active` is set (then it only logs). Unknown agent types get no budget fields.
+
+Exits 0 on any problem and fails open (prints nothing); it only blocks on a budget hit.
 """
 from __future__ import annotations
 
@@ -134,18 +143,105 @@ def meta_agent_type(payload: dict) -> tuple[str, bool]:
     return "", checked and not found
 
 
-def log_event(payload: dict) -> None:
-    if not payload:
-        return
+def transcript_usage(payload: dict) -> tuple[int, int | None]:
+    """(assistant turns, tokens of the last assistant record's usage or None).
+
+    Streams the whole JSONL (one record per line). tokens = input_tokens +
+    cache_creation_input_tokens + cache_read_input_tokens, like context-warn.py."""
+    turns, tokens = 0, None
     try:
-        raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
-        if not raw:
-            return
-        data_dir = os.path.expanduser(raw)
-        if not os.path.isdir(data_dir):
-            return
-        graph_dir = os.path.join(data_dir, ".graph")
-        os.makedirs(graph_dir, exist_ok=True)
+        path = payload.get("agent_transcript_path") or payload.get("transcript_path")
+        if not path or not os.path.isfile(str(path)):
+            return 0, None
+        with open(str(path), "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                    continue
+                turns += 1
+                msg = obj.get("message")
+                usage = msg.get("usage") if isinstance(msg, dict) else None
+                if isinstance(usage, dict):
+                    tokens = sum(int(usage.get(k) or 0) for k in (
+                        "input_tokens", "cache_creation_input_tokens",
+                        "cache_read_input_tokens"))
+    except Exception:
+        pass
+    return turns, tokens
+
+
+class _FallbackBudgets:
+    """Used if tools/budgets.py can't be imported; same numbers as the module."""
+    CLASSES = {"S": (20, 80000), "M": (60, 250000), "verify": (25, 100000)}
+    ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
+
+    @classmethod
+    def load_budgets(cls, data_dir):
+        return None
+
+    @classmethod
+    def limits_for_role(cls, _budgets, role):
+        name = cls.ROLES.get(role)
+        return (name, *cls.CLASSES[name]) if name else None
+
+
+def _budgets_module():
+    """tools/budgets.py (this script's parent folder), or the inline fallback."""
+    try:
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "budgets.py"
+        spec = importlib.util.spec_from_file_location("budgets", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return _FallbackBudgets
+
+
+def _data_dir():
+    raw = os.environ.get("VAULT_DATA") or os.environ.get("VAULT_HOME")
+    if not raw:
+        return None
+    path = os.path.expanduser(raw)
+    return path if os.path.isdir(path) else None
+
+
+def budget_check(payload: dict, agent_type: str, data_dir) -> dict | None:
+    """{"budget_class", "turns", "tokens"?, "budget_hit", "max_turns", "max_tokens"} for a
+    role with a budget class, else None. budget_hit: block (>=100%), warn (>=80%), none."""
+    try:
+        mod = _budgets_module()
+        limits = mod.limits_for_role(mod.load_budgets(data_dir), agent_type)
+        if not limits:
+            return None
+        name, max_turns, max_tokens = limits
+        turns, tokens = transcript_usage(payload)
+        ratio = max(turns / max_turns, (tokens or 0) / max_tokens)
+        hit = "block" if ratio >= 1.0 else "warn" if ratio >= 0.8 else "none"
+        info = {"budget_class": name, "turns": turns, "budget_hit": hit,
+                "max_turns": max_turns, "max_tokens": max_tokens}
+        if tokens is not None:
+            info["tokens"] = tokens
+        return info
+    except Exception:
+        return None
+
+
+def log_event(payload: dict) -> dict | None:
+    """Write the usage.log event; return the budget info (see budget_check) or None.
+    The budget is evaluated even without a data dir (fallback numbers)."""
+    if not payload:
+        return None
+    info = None
+    try:
+        data_dir = _data_dir()
         event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "claude",
                  "session": str(payload.get("session_id") or ""), "event": "subagent_stop"}
         for key in ("agent_type", "agent_id"):
@@ -159,13 +255,45 @@ def log_event(payload: dict) -> None:
                 event["internal"] = True
         if "stop_hook_active" in payload:
             event["stop_hook_active"] = bool(payload["stop_hook_active"])
+        if event.get("agent_type"):
+            info = budget_check(payload, event["agent_type"], data_dir)
+        if data_dir is None:
+            return info
+        graph_dir = os.path.join(data_dir, ".graph")
+        os.makedirs(graph_dir, exist_ok=True)
         (event["last_message_chars"], event["last_message_source"],
          event["last_message_kind"]) = last_message(payload)
+        if info:
+            for key in ("budget_class", "turns", "tokens", "budget_hit"):
+                if key in info:
+                    event[key] = info[key]
         with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
                   newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
         pass
+    return info
+
+
+def _budget_output(payload: dict, agent_type: str, info: dict) -> dict | None:
+    """The hook's stdout JSON for a warn/block result, or None."""
+    hit = info.get("budget_hit")
+    if hit not in ("warn", "block"):
+        return None
+    usage = (f"{info['turns']}/{info['max_turns']} turns and "
+             f"{info.get('tokens', 0)}/{info['max_tokens']} tokens")
+    if hit == "warn":
+        return {"systemMessage": f"subagent-log: {agent_type} used {usage} "
+                                 f"(class {info['budget_class']}, >=80%)"}
+    if payload.get("stop_hook_active"):
+        return None
+    msg = (f"subagent-log: budget class {info['budget_class']} exceeded "
+           f"({info['turns']}/{info['max_turns']} turns, "
+           f"{info.get('tokens', 0)}/{info['max_tokens']} tokens)")
+    return {"decision": "block",
+            "reason": msg + ". Stop working: write a short `blocked` report (status BLOCKED, "
+                            "what is done, what remains, where the WIP is) and finish.",
+            "systemMessage": msg}
 
 
 def main() -> None:
@@ -176,7 +304,15 @@ def main() -> None:
             return
     except Exception:
         return
-    log_event(payload)
+    info = log_event(payload)
+    try:
+        if info:
+            agent_type = str(payload.get("agent_type") or "") or meta_agent_type(payload)[0]
+            out = _budget_output(payload, agent_type, info)
+            if out:
+                print(json.dumps(out, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
