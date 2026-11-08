@@ -19,6 +19,10 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - At least 2 independent, non-trivial pieces of work (e.g. reviewing several tools in parallel, writing independent modules).
 - Small or tightly coupled work goes to one worker rather than several; splitting only adds token and coordination cost.
 
+## Discovery before implementation
+
+Discovery and implementation run in separate agents. When it is not yet known which files a task touches, a read-only `Explore` agent (no `model` given; the guard sets `haiku`) looks first and returns a list of file, symbol name (function/class) and line range, the ranges themselves where needed, and a do-not-touch list; never a prose summary. Line numbers drift, the symbol lets the worker find the spot again. The writing worker opens only the files on that list and does not search on its own. When the files are known up front, the discovery step is skipped. A Codex task is never dispatched without a file list.
+
 ## Flow
 1. **Plan:** a short plan (pieces, subagent, model/effort) may be shared when useful; it is not a gate: within an explicitly authorized scope reversible steps proceed without asking again; ask before destructive, irreversible or out-of-scope actions.
 2. **Task definition:** a subagent starts with zero context: give goal, scope, file paths, acceptance criteria and relevant rules from `context`.
