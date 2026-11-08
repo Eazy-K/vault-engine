@@ -1948,6 +1948,19 @@ def cmd_stats(args) -> None:
     closed = {e["task"] for e in reinforces if e.get("task")}
     done = sum(1 for c in contexts if c.get("task") in closed)
     rate = f"{done / len(contexts):.0%}" if contexts else "-"
+    transcripts = None
+    if not getattr(args, "no_transcripts", False):
+        import usage_metrics
+        projects_dir = (Path(args.projects_dir).expanduser() if args.projects_dir
+                        else claude_config_dir() / "projects")
+        transcripts = usage_metrics.collect(projects_dir, default_paths().data)
+    if getattr(args, "json", False):
+        used_json = Counter(n for e in reinforces for n in e.get("notes", []))
+        retrieved_json = Counter(n for c in contexts for n in c.get("notes", []))
+        print(json.dumps({"context_calls": len(contexts), "closed_by_reinforce": done,
+                          "retrieved": dict(retrieved_json), "used": dict(used_json),
+                          "transcripts": transcripts}, indent=2))
+        return
     print(f"context calls:       {len(contexts)}")
     print(f"closed by reinforce: {done} ({rate})")
     # Per agent: tools without hooks (e.g. Codex) must comply from instructions alone.
@@ -1995,10 +2008,20 @@ def cmd_stats(args) -> None:
     # Retrieved-but-never-used notes point at retrieval noise.
     retrieved = Counter(n for c in contexts for n in c.get("notes", []))
     used = Counter(n for e in reinforces for n in e.get("notes", []))
-    if retrieved:
-        print("\nnote                              retrieved  used")
-        for nid, count in retrieved.most_common():
-            print(f"{nid:<34}{count:>9}{used.get(nid, 0):>6}")
+    opened = (transcripts or {}).get("opened", {})
+    if retrieved or opened:
+        head = "\nnote                              retrieved  used"
+        print(head + ("  opened" if transcripts else ""))
+        ids = sorted(set(retrieved) | set(opened),
+                     key=lambda n: (-retrieved.get(n, 0), -opened.get(n, 0), n))
+        for nid in ids:
+            tail = f"{opened.get(nid, 0):>8}" if transcripts else ""
+            print(f"{nid:<34}{retrieved.get(nid, 0):>9}{used.get(nid, 0):>6}{tail}")
+        if transcripts:
+            print("opened = transcripts (sessions/subagent runs) that opened the note via "
+                  "show --body or Read after a context call")
+    if transcripts:
+        print(usage_metrics.format_sessions(transcripts))
 
 
 def apply_decay(graph: "Graph", rate: float) -> tuple[int, int]:
@@ -2346,6 +2369,9 @@ def main() -> None:
     p = sub.add_parser("stats", help="how often context calls are closed by reinforce")
     p.add_argument("--tokens", action="store_true",
                    help="read-only token usage report over local Claude Code transcripts")
+    p.add_argument("--no-transcripts", action="store_true",
+                   help="plain stats: skip the transcript scan (opened column, "
+                        "sessions-with-context table)")
     p.add_argument("--projects-dir", default=None,
                    help="transcripts root (default: <Claude config dir>/projects, i.e. "
                         "$CLAUDE_CONFIG_DIR or ~/.claude)")

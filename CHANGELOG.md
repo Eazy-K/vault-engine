@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [Unreleased]
+
+### Added
+- `stats` reads local Claude Code transcripts (`tools/usage_metrics.py`, reuses `token_stats` discovery) and adds two measurement-only sections: an `opened` column next to `retrieved` and `used` (transcripts that opened the note with `graph.py show --body <id>` or a Read under the vault data root after their first `context` call), and a per-project-slug table of main sessions, sessions with a `context` call and the ratio. Sessions with fewer than 3 assistant turns are skipped (count shown); slugs containing `claude-lab-runs` are listed but left out of the total. `stats --json` now prints the counters and these sections. `stats --no-transcripts` skips the scan (it can take about 40 s on large transcript sets). Only counts and note ids leave the module, never transcript text. No learning or hook change.
+
 ## [0.19.0] - 2026-10-21
 
 ### Added
