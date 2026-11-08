@@ -2040,6 +2040,60 @@ def queue_run_stats(events: list[dict]) -> dict:
             "duration_mean_s": mean("duration_s"), "turns_mean": mean("turns")}
 
 
+def channel_stats(events: list[dict]) -> dict:
+    """Two-channel view from usage.log. `codex`: `codex_exec` events (written by
+    codex_worker); runs with `events_missing` or a null token field are unknown, so they
+    are counted in `runs_missing_events` and left out of the token sums, turns and
+    the token fields of `by_profile`. `claude`: `subagent_stop` events by Claude agents
+    (turns, total tokens; usage.log does not hold Claude's input/cache/output split, so
+    those are null)."""
+    keys = ("input_tokens", "cached_input_tokens", "output_tokens")
+    execs = [e for e in events if e.get("event") == "codex_exec"]
+
+    def known(e):
+        return not e.get("events_missing") and all(isinstance(e.get(k), int) for k in keys)
+
+    def tally(group):
+        ok = [e for e in group if known(e)]
+        return {"runs": len(group), "runs_missing_events": len(group) - len(ok),
+                "input": sum(e["input_tokens"] for e in ok),
+                "cached": sum(e["cached_input_tokens"] for e in ok),
+                "output": sum(e["output_tokens"] for e in ok),
+                "reasoning": sum(e["reasoning_output_tokens"] for e in ok
+                                 if isinstance(e.get("reasoning_output_tokens"), int)),
+                "turns": sum(e["turns"] for e in ok if isinstance(e.get("turns"), int))}
+
+    codex = tally(execs)
+    codex["by_profile"] = {p: tally([e for e in execs if str(e.get("profile")) == p])
+                           for p in sorted({str(e.get("profile")) for e in execs})}
+    stops = [e for e in events if e.get("event") == "subagent_stop" and not e.get("internal")
+             and not e.get("probe") and e.get("agent") != "codex"]
+    claude = {"runs": len(stops), "input": None, "cached": None, "output": None,
+              "tokens": sum(e["tokens"] for e in stops if isinstance(e.get("tokens"), int)),
+              "turns": sum(e["turns"] for e in stops if isinstance(e.get("turns"), int))}
+    return {"claude": claude, "codex": codex}
+
+
+def format_channel_stats(ch: dict) -> list[str]:
+    def n(v):
+        return "-" if v is None else f"{v:,}"
+    c, x = ch["claude"], ch["codex"]
+    lines = ["channels:               claude        codex",
+             f"  runs            {n(c['runs']):>12} {n(x['runs']):>12}",
+             f"  input           {n(c['input']):>12} {n(x['input']):>12}",
+             f"  cache           {n(c['cached']):>12} {n(x['cached']):>12}",
+             f"  output          {n(c['output']):>12} {n(x['output']):>12}",
+             f"  turns           {n(c['turns']):>12} {n(x['turns']):>12}",
+             f"  claude total tokens (subagent_stop): {c['tokens']:,}"]
+    if x["runs_missing_events"]:
+        lines.append(f"  codex runs with missing events: {x['runs_missing_events']} "
+                     "(excluded from sums)")
+    for prof, t in x["by_profile"].items():
+        lines.append(f"  codex {prof}: {t['runs']} runs, in {t['input']:,}, "
+                     f"cache {t['cached']:,}, out {t['output']:,}, turns {t['turns']:,}")
+    return lines
+
+
 def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
@@ -2083,6 +2137,7 @@ def cmd_stats(args) -> None:
                           "retrieved": dict(retrieved_json), "used": dict(used_json),
                           "subagent_budgets": subagent_budget_stats(events),
                           "queue_runs": queue_run_stats(events),
+                          "channels": channel_stats(events),
                           "transcripts": transcripts}, indent=2))
         return
     print(f"context calls:       {len(contexts)}")
@@ -2134,6 +2189,7 @@ def cmd_stats(args) -> None:
             print(f"  {name}: n={s['n']}, turns p50/p90 {s['turns_p50']:g}/{s['turns_p90']:g}, "
                   f"tokens p50/p90 {s['tokens_p50']:.0f}/{s['tokens_p90']:.0f}, "
                   f"warn {s['warn']}, hit {s['hit']}")
+    print("\n".join(format_channel_stats(channel_stats(events))))
     queue = queue_run_stats(events)
     if queue:  # written by `queue-runner`
         print("queue runs:")
