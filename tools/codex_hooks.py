@@ -321,6 +321,78 @@ def statuses(hooks_path: Path | None = None, config_path: Path | None = None,
     return [hooks_status(hooks_path), model_status(config_path), workers_status(agents_dir)]
 
 
+def login_status(executable: str = "codex", home: Path | None = None) -> tuple[str, str]:
+    """("OK"|"WARN", message): `codex login status` (exit 0 = logged in); when the
+    command cannot run, fall back to the presence of <codex home>/auth.json."""
+    home = home or codex_home()
+    try:
+        out = subprocess.run([executable, "login", "status"], capture_output=True, text=True,
+                             encoding="utf-8", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        if (home / "auth.json").is_file():
+            return "OK", f"Codex login: auth file present ({home / 'auth.json'}; `codex login status` did not run)"
+        return "WARN", "Codex login status unknown (`codex login status` did not run, no auth.json); manual: run `codex login`"
+    text = ((out.stdout or "") + (out.stderr or "")).strip().splitlines()
+    detail = text[-1] if text else ""
+    if out.returncode == 0:
+        return "OK", f"Codex login: {detail or 'logged in'}"
+    return "WARN", f"Codex is not logged in ({detail or 'codex login status failed'}); manual: run `codex login`"
+
+
+def sandbox_status(config_path: Path | None = None, windows: bool | None = None) -> tuple[str, str]:
+    """Static check for the codex-worker's `-s workspace-write` run in a linked worktree.
+    Whether the sandbox can really write there is only known by running Codex, which doctor
+    never does; what is checkable: on Windows the sandbox needs a `[windows] sandbox` setting
+    (the wrapper does not pass --ignore-user-config for that reason), and any
+    `writable_roots` in config.toml are listed."""
+    config_path = config_path or (codex_home() / "config.toml")
+    windows = sys.platform == "win32" if windows is None else windows
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        text = ""
+    roots = re.search(r"^\s*writable_roots\s*=\s*\[(.*?)\]", text, re.M | re.S)
+    extra = f"; extra writable_roots: {' '.join(roots.group(1).split())}" if roots and roots.group(1).strip() else ""
+    if windows:
+        if re.search(r"^\[windows\][^\[]*^\s*sandbox\s*=", text, re.M | re.S):
+            return "INFO", (f"Codex workspace-write sandbox: [windows] sandbox is set in {config_path}{extra}; "
+                            "write access to a linked worktree is not run-tested (the wrapper commits itself "
+                            "because the worktree's git metadata is outside the writable root)")
+        return "WARN", (f"Codex config {config_path} has no [windows] sandbox setting; the workspace-write "
+                        f"sandbox may not write into a worktree on Windows; manual: set `[windows]` "
+                        f"`sandbox = \"unelevated\"`{extra}")
+    return "INFO", ("Codex workspace-write access to a linked worktree is not statically checkable "
+                    f"(no probe is run){extra}; the wrapper passes -s workspace-write and commits itself")
+
+
+def effort_status(config_path: Path | None = None) -> tuple[str, str] | None:
+    """INFO when config.toml's model_reasoning_effort differs from the default worker
+    profile's (worker-medium); None when equal or either is unreadable."""
+    config_path = config_path or (codex_home() / "config.toml")
+    wanted = _root_toml_values(AGENTS_DIR / "worker-medium.toml").get("model_reasoning_effort")
+    actual = _root_toml_values(config_path).get("model_reasoning_effort")
+    if not wanted or not actual or wanted == actual:
+        return None
+    return "INFO", (f"Codex config.toml model_reasoning_effort={actual} differs from the default "
+                    f"worker profile (worker-medium: {wanted}); workers use the profile's value")
+
+
+def cli_statuses(executable: str | None, config_path: Path | None = None,
+                 home: Path | None = None) -> list[tuple[str, str]]:
+    """Codex CLI lines for `doctor`: one INFO and nothing else when `codex` is not installed."""
+    if not executable:
+        return [("INFO", "Codex CLI not installed: Codex checks (version, login, sandbox, effort) skipped")]
+    version = codex_version(executable)
+    out = [("OK", f"Codex CLI: {version}") if version
+           else ("WARN", f"Codex CLI found at {executable} but `--version` failed; manual: reinstall Codex")]
+    out.append(login_status(executable, home))
+    out.append(sandbox_status(config_path))
+    effort = effort_status(config_path)
+    if effort:
+        out.append(effort)
+    return out
+
+
 def rules_status(rules_path: Path | None = None) -> tuple[str, str]:
     """("OK"|"WARN", message) for `doctor`: the user's Codex rules must forbid
     `gh pr merge` and prompt (or forbid) `git merge`; the strictest rule wins, so a
