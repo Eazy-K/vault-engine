@@ -672,7 +672,8 @@ work. Codex runs with `-s workspace-write` (never `danger-full-access`). Smoke t
 codex-cli 0.167.0 (Windows, trivial prompt, input tokens): `--ignore-user-config` 18040
 (but the sandbox then cannot write files), `-c developer_instructions=""` 20352 (default),
 no trim 42862. Codex cannot commit in a linked worktree (its git dir is outside the writable
-root), so the wrapper's `--commit` makes the WIP commit after the run. The verifier stays `worker-verify`.
+root), so the wrapper's `--commit` makes the WIP commit after the run. Each run also appends one
+`codex_exec` event (token totals, turns, exit code) to `usage.log`, so Codex usage survives the handback. The verifier stays `worker-verify`.
 
 Which model each role (orchestrator, worker-low, worker-medium, worker-verify, worker-codex) uses is one config,
 not four: `python tools/graph.py models` shows it (plus whether `settings.json` and

@@ -245,6 +245,36 @@ def render(r: dict) -> str:
         "", f"Codex thread id: {r['thread_id']}", f"Out dir: {r['out']}", ""])
 
 
+def log_codex_exec(wt: Path, events: dict, codex_rc) -> None:
+    """Append one `codex_exec` event to the vault's usage.log so Codex token totals
+    survive the handback (the relay's own transcript has no Codex usage).
+
+    Written directly, not via g.log_usage, so agent is "claude" (the caller) and
+    session is omitted unless the environment names one. exit_code is the codex
+    process's own return code; None when the run timed out (the wrapper killed it).
+    Does nothing if the vault data dir is unknown or missing. Fails open: any error,
+    including SystemExit from the data-dir lookup, is swallowed."""
+    try:
+        paths = g.default_paths()
+        if not paths.data.is_dir():
+            return
+        event = {"ts": datetime.now().isoformat(timespec="seconds"), "event": "codex_exec",
+                 "agent": "claude", "agent_type": "worker-codex"}
+        agent, session = g.detect_agent()
+        if agent != "unknown" and session:
+            event["session"] = session
+        event.update({"machine": g.machine_name(paths), "cwd": str(wt),
+                      "input_tokens": events["input"], "cached_input_tokens": events["cached"],
+                      "output_tokens": events["output"],
+                      "reasoning_output_tokens": events["reasoning"],
+                      "turns": events["turns"], "exit_code": codex_rc})
+        paths.usage_log.parent.mkdir(exist_ok=True)
+        with paths.usage_log.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except (Exception, SystemExit):
+        pass
+
+
 def _run(args) -> dict | None:
     if bool(args.task) == bool(args.prompt_file):
         raise WorkerError("give exactly one of --task or --prompt-file")
@@ -279,6 +309,7 @@ def _run(args) -> dict | None:
         sys.exit(3)
     duration = round(time.time() - start, 1)
     events = parse_events((out / "events.jsonl").read_text(encoding="utf-8", errors="replace"))
+    log_codex_exec(wt, events, None if timed_out else rc)
     final = last.read_text(encoding="utf-8", errors="replace") if last.is_file() else ""
     status, sections = parse_status(final)
     if timed_out:

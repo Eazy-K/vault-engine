@@ -87,14 +87,58 @@ class CodexWorkerTests(unittest.TestCase):
         self.task = root / "0099-demo.md"
         self.task.write_text(TASK, encoding="utf-8")
         self.out = root / "out"
+        self.data = root / "vault-data"
+        (self.data / ".graph").mkdir(parents=True)
 
-    def run_cli(self, *extra, mode="ok", worktree=None, task=True):
+    def run_cli(self, *extra, mode="ok", worktree=None, task=True, data="default"):
         cmd = [sys.executable, str(GRAPH_PATH), "codex-worker",
                *(["--task", str(self.task)] if task else []),
                "--worktree", str(worktree or self.wt), "--out", str(self.out),
                "--base", "main", "--codex", str(self.fake), *extra]
         env = {**os.environ, **ENV_GIT, "FAKE_MODE": mode}
+        env.pop("VAULT_HOME", None)
+        env["VAULT_DATA"] = str(self.data if data == "default" else data)  # never the real vault
+        for k in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+            env.pop(k, None)
         return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env, timeout=120)
+
+    def test_logs_codex_exec_event(self):
+        r = self.run_cli("--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = (self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        e = json.loads(lines[0])
+        self.assertEqual((e["event"], e["agent"], e["agent_type"]), ("codex_exec", "claude", "worker-codex"))
+        self.assertEqual((e["input_tokens"], e["cached_input_tokens"], e["output_tokens"],
+                          e["reasoning_output_tokens"], e["turns"], e["exit_code"]),
+                         (300, 30, 15, 6, 2, 0))
+        self.assertEqual(e["cwd"], str(self.wt.resolve()))
+        self.assertIn("ts", e)
+        self.assertNotIn("session", e)
+
+    def test_logging_fails_open_when_log_unwritable(self):
+        (self.data / ".graph" / "usage.log").mkdir()  # a directory: opening it for append fails
+        r = self.run_cli("--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual(rep["status"], "SUCCESS")
+        self.assertEqual(rep["metrics"]["input"], 300)
+        self.assertTrue((self.out / "report.md").is_file())
+
+    def test_no_vault_data_writes_nothing(self):
+        missing = Path(self._tmp.name) / "no-such-data"
+        r = self.run_cli("--json", data=missing)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(missing.exists())
+        # unknown vault path (SystemExit from the lookup) is swallowed too
+        orig = codex_worker.g.resolve_data_dir
+        codex_worker.g.resolve_data_dir = lambda: sys.exit("no data")
+        try:
+            codex_worker.log_codex_exec(self.wt, {"input": 1, "cached": 0, "output": 1,
+                                                  "reasoning": 0, "turns": 1}, 0)
+        finally:
+            codex_worker.g.resolve_data_dir = orig
+        self.assertFalse((self.data / ".graph" / "usage.log").exists())
 
     def test_prompt_has_rules_spec_and_instructions(self):
         prompt = codex_worker.build_prompt("/w", "feat/x", "Spec body.", "make test", "Be brief.")
