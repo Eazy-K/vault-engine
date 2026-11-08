@@ -63,9 +63,11 @@ class TestLegacyStdoutEncoding(unittest.TestCase):
 
     def test_claude_context_warn(self):
         transcript = self.tmp / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "assistant", "message": {"usage": {
-            "input_tokens": 900000, "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0}}}) + "\n", encoding="utf-8")
+        # First assistant call sets the session baseline; the second is far above it.
+        lines = [json.dumps({"type": "assistant", "message": {"usage": {
+            "input_tokens": n, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0}}}) for n in (10000, 900000)]
+        transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
         out = self._run("claude-hooks/context-warn.py",
                         {"session_id": "s", "transcript_path": str(transcript)})
         self.assertIn("additionalContext", out["hookSpecificOutput"])
