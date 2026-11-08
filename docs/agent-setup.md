@@ -559,6 +559,28 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   rules; `doctor` warns otherwise and `claude-hooks --fix-permissions --install` repairs
   the Claude side. The engine ships no such templates; they come from the data repo's
   `config/claude/settings.json` and `config/codex/default.rules`.
+- a `PermissionRequest` hook (`permission-request.py`; Claude only, Codex has no such
+  hook) so a background subagent, which cannot answer a prompt, gets a policy answer
+  instead of a silent auto-deny. In a git worktree (the nearest `.git` is a file, or
+  `git rev-parse` shows a different common dir) a call matching an allow rule is
+  allowed. Rules are the union of `permissions.allow` (user `settings.json`, plus
+  `.claude/settings.json` / `settings.local.json` under the cwd, the worktree root and
+  the main checkout) and the optional `permissions.worktree_allow` list in the data
+  repo's `vault.config.json` (same syntax; extends the policy without touching
+  settings). Any other request from a subagent (`agent_type` set), or any request from
+  a subagent outside a worktree, is denied with a message telling it to report a
+  blocker. A main-session request that does not qualify gets no decision, so you are
+  prompted as usual (in short: inside a worktree an unmatched subagent request is denied
+  and logged `permission_deny`, an unmatched main-session request is logged
+  `permission_prompt`). Events in `.graph/usage.log`: `permission_allow` (with `rule`),
+  `permission_deny`, `permission_prompt` (no decision), each with `tool`, `summary`
+  (first 120 chars, secrets masked), `agent_type` and `worktree`; check that it fired
+  with `grep permission_ .graph/usage.log`. Supported rules: `Tool`, `Bash(exact)`,
+  `Bash(prefix:*)`, `Bash(a * b)`, `Read/Edit/Write/Glob/Grep(glob)`,
+  `WebFetch(domain:host)`, `mcp__server[__tool]`; every `&&`/`||`/`;`/`|`/`&`/newline part of a
+  shell command must match (redirects such as `2>&1` do not split) and commands with
+  `$(`, `${`, `<(`, `>(` or backticks never match. Fails open (silent exit 0);
+  `VAULT_PERMISSION_HOOK=off` disables it.
 - a `PreToolUse` hook (`read-guard.py`, matcher `Read|Grep|Glob|Bash`; Claude only, Codex
   has no read-blocking mechanism and no counterpart) that gives the orchestrator a read
   budget per user message: the first 3 file-reading calls pass (the `Read`, `Grep` and

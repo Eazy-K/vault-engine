@@ -328,6 +328,35 @@ class TestStatus(unittest.TestCase):
         self.settings_path.write_text(json.dumps(settings), encoding="utf-8")
         self.assertEqual(claude_hooks.subagent_log_status(self.settings_path)[0], "OK")
 
+    def test_merge_adds_permission_request_hook_idempotently(self):
+        settings, changed = claude_hooks.merge({})
+        self.assertTrue(changed)
+        entries = settings["hooks"]["PermissionRequest"]
+        self.assertEqual(len(entries), 1)
+        self.assertIn("permission-request.py", entries[0]["hooks"][0]["command"])
+        settings2, changed2 = claude_hooks.merge(settings)
+        self.assertFalse(changed2)
+        self.assertEqual(len(settings2["hooks"]["PermissionRequest"]), 1)
+
+    def test_merge_permission_request_updates_stale_command(self):
+        existing = {"hooks": {"PermissionRequest": [
+            {"hooks": [{"type": "command", "command": "python /old/permission-request.py"}]}]}}
+        settings, changed = claude_hooks.merge(existing)
+        self.assertTrue(changed)
+        entries = settings["hooks"]["PermissionRequest"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["hooks"][0]["command"],
+                         claude_hooks._permission_request_command())
+
+    def test_permission_request_status_warn_then_ok(self):
+        self.assertEqual(claude_hooks.permission_request_status(self.settings_path)[0], "WARN")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            claude_hooks.cmd_claude_hooks(
+                Namespace(install=True, settings=str(self.settings_path)))
+        self.assertIn("PermissionRequest", buf.getvalue())
+        self.assertEqual(claude_hooks.permission_request_status(self.settings_path)[0], "OK")
+
 
 if __name__ == "__main__":
     unittest.main()
