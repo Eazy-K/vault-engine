@@ -45,13 +45,12 @@ import models  # noqa: E402
 WORKER_LOW_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-low.md").read_text(encoding="utf-8")
 WORKER_MEDIUM_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-medium.md").read_text(encoding="utf-8")
 WORKER_VERIFY_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-verify.md").read_text(encoding="utf-8")
-WORKER_CODEX_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-codex.md").read_text(encoding="utf-8")
 
 
 def _ns(**kwargs) -> Namespace:
     base = dict(orchestrator=None, effort=None, worker_low=None, worker_low_effort=None,
                 worker_medium=None, worker_medium_effort=None, worker_verify=None,
-                worker_verify_effort=None, worker_codex=None, worker_codex_effort=None,
+                worker_verify_effort=None,
                 this_computer=False,
                 apply=False, data=None, settings=None, agents_dir=None)
     base.update(kwargs)
@@ -79,7 +78,6 @@ class ModelsTestCase(unittest.TestCase):
     def _write_agent_files(self):
         (self.agents / "worker-low.md").write_text(WORKER_LOW_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-medium.md").write_text(WORKER_MEDIUM_TEMPLATE, encoding="utf-8")
-        (self.agents / "worker-codex.md").write_text(WORKER_CODEX_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-verify.md").write_text(WORKER_VERIFY_TEMPLATE, encoding="utf-8", newline="\n")
 
 
@@ -90,7 +88,6 @@ class TestShowDefaults(ModelsTestCase):
         self.assertIn("worker-low: model=sonnet (default)", out)
         self.assertIn("worker-medium: model=sonnet (default)", out)
         self.assertIn("worker-verify: model=sonnet (default)", out)
-        self.assertIn("worker-codex: model=sonnet (default)", out)
 
     def test_show_lists_readonly_agents_read_only(self):
         out = self._run()
@@ -100,7 +97,7 @@ class TestShowDefaults(ModelsTestCase):
         self._write_agent_files()
         self._run(apply=True)
         self.assertEqual(sorted(p.name for p in self.agents.iterdir() if p.suffix == ".md"),
-                         ["worker-codex.md", "worker-low.md", "worker-medium.md", "worker-verify.md"])
+                         ["worker-low.md", "worker-medium.md", "worker-verify.md"])
 
     def test_show_does_not_write_anything(self):
         self._run()
@@ -251,7 +248,6 @@ class TestMaxTurns(ModelsTestCase):
         self.assertEqual(self._turns("worker-low"), "30")
         self.assertEqual(self._turns("worker-medium"), "90")
         self.assertEqual(self._turns("worker-verify"), "38")
-        self.assertEqual(self._turns("worker-codex"), "30")
 
     def test_apply_adds_missing_max_turns(self):
         self._write_agent_files()

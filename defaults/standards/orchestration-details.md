@@ -49,7 +49,10 @@ Discovery and implementation run in separate agents. When it is not yet known wh
 - `agent-guard` (PR #117 matcher): a PreToolUse deny for spawns was enforced live on Codex CLI 0.160.0 (Windows, 2026-10-14); 0.159.2 did not dispatch it (openai/codex#49736); other versions are unverified. Re-run `codex-hooks --probe-deny` after Codex updates (or dismiss the doctor notice with `--ack-deny`).
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
-- "Codex'e yaptır": orchestrator worktree ve branch'i kendisi açar, `worker-codex`'i görev dosyası yolu ve worktree ile başlatır (`codex-worker` komutu, `workspace-write`); Codex worktree'de commit atamaz; `--commit` ile wrapper değişiklikleri WIP commit olarak kaydeder.
+- "Codex'e yaptır" (`codex-worker` skill; relay subagent yok): (1) orchestrator worktree ve branch'i kendisi açar. (2) Sarmalayıcıyı (aşağıdaki komut) doğrudan arka planda çalıştırır (Bash `run_in_background`). Gerçek iş yalnız görev dosyasıyla (`--task`) yapılır; `--prompt-file` sadece smoke test içindir. (3) `--profile` varsayılanı `worker-medium` (`worker-low` basit işler için; model ve effort profilden gelir). (4) Çalışma `workspace-write` kipindedir, Codex worktree'de commit atamaz; `--commit` ile wrapper değişiklikleri WIP commit olarak kaydeder. (5) Bitince rapor okunur (status, değişen dosyalar, kanıt, blocker), diff üzerinde `worker-verify` çalışır, sonra PR açılır.
+```
+python "$VAULT_ENGINE/tools/graph.py" codex-worker --task <id|path> --worktree <dir> --commit
+```
 - Doğrulayıcı yine `worker-verify` kalır; `danger-full-access` hiçbir zaman kullanılmaz.
 
 ## Models

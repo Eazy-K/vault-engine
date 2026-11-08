@@ -6,7 +6,7 @@ only fallbacks used when the key is missing or invalid:
     "budgets": {
       "context": {"warn_delta": 50000, "handoff_delta": 80000},
       "classes": {"S": {"max_turns": 20, "max_tokens": 80000}, ...},
-      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
+      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
     }
 
 Used by tools/models.py (maxTurns in worker-*.md frontmatter), by the SubagentStop
@@ -28,7 +28,7 @@ FALLBACK_CLASSES = {
     "verify": {"max_turns": 25, "max_tokens": 100000},
 }
 MAX_TURNS_MARGIN = 1.5
-FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
+FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
 
 
 def _pos_int(value) -> bool:

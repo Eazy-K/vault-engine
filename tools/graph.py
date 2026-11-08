@@ -1754,7 +1754,8 @@ def cmd_query(args, content: bool) -> None:
                         result = models.status(paths.data, settings, claude_dir / "agents")
                         stale = result is not None and result[0] != "OK"
                     if not stale and onboarding is not None:
-                        stale = bool(onboarding.stale_claude_agents(claude_dir / "agents"))
+                        stale = bool(onboarding.stale_claude_agents(claude_dir / "agents")
+                                     or getattr(onboarding, "stale_claude_skills", lambda d: [])(claude_dir))
                     if stale:
                         stale_agents = True
                         break

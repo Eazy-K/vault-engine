@@ -16,8 +16,8 @@ from pathlib import Path
 # here is unknown to `rank`.
 MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
-ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify", "worker-codex")
-WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify", "worker-codex")
+ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify")
+WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
 
 # Read-only built-in Claude Code agents the guard lets through, role -> the
 # agent name Claude Code uses (matched case-insensitively). They have no
@@ -33,7 +33,6 @@ DEFAULT_MODELS = {
     "worker-low": {"model": "sonnet", "effort": "low"},
     "worker-medium": {"model": "sonnet", "effort": "medium"},
     "worker-verify": {"model": "sonnet", "effort": "medium"},
-    "worker-codex": {"model": "sonnet", "effort": "low"},
     # model None = inherit from the caller. Effort is not injected for read-only built-in agents;
     # Explore runs at the effort Claude Code gives it (medium, live-checked 2026-11-08).
     "explore": {"model": "haiku", "effort": None},

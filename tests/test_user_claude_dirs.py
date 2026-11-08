@@ -118,7 +118,6 @@ class TestHooksAndModels(ConfigDirCase):
         base = dict(orchestrator="sonnet", effort=None, worker_low="haiku",
                     worker_low_effort=None, worker_medium="haiku", worker_medium_effort=None,
                     worker_verify=None, worker_verify_effort=None,
-                    worker_codex=None, worker_codex_effort=None,
                     this_computer=False, apply=True, data=str(self.data), settings=None,
                     agents_dir=None)
         base.update(kw)
@@ -184,6 +183,29 @@ class TestAgentsAndUserLevel(ConfigDirCase):
             onboarding._setup_agents()
         self.assertTrue(any((home_claude / "agents").glob("*.md")))
         self.assertTrue(any((self.cfg / "agents").glob("*.md")))
+
+    def test_setup_installs_skill_into_config_dir(self):
+        with redirect_stdout(io.StringIO()):
+            onboarding._setup_agents()
+        skill = self.cfg / "skills" / "codex-worker" / "SKILL.md"
+        self.assertTrue(skill.exists())
+        self.assertIn("name: codex-worker", skill.read_text(encoding="utf-8"))
+        self.assertEqual(onboarding.stale_claude_skills(self.cfg), [])
+        skill.write_text("old", encoding="utf-8")
+        self.assertEqual(onboarding.stale_claude_skills(self.cfg), ["codex-worker"])
+        with redirect_stdout(io.StringIO()):
+            onboarding._setup_agents()
+        self.assertEqual(onboarding.stale_claude_skills(self.cfg), [])
+
+    def test_setup_removes_obsolete_relay_agent(self):
+        name = onboarding.OBSOLETE_CLAUDE_AGENTS[0]
+        old = self.cfg / "agents" / name
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("my own edited version", encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            onboarding._setup_agents()
+        self.assertFalse(old.exists())
+        self.assertTrue((self.cfg / "agents" / (name + ".bak")).exists())
 
     def test_user_level_claude_md_in_config_dir(self):
         with redirect_stdout(io.StringIO()):
@@ -353,6 +375,14 @@ class TestDoctor(ConfigDirCase):
         self.assertIn(f"Claude config dir: {home_claude} (default)", out)
         self.assertIn(f"claude-agents out of date in {self.cfg / 'agents'}", out)
         self.assertIn(f"claude-agents out of date in {home_claude / 'agents'}", out)
+
+    def test_skill_check_reports_missing_then_ok(self):
+        out = self._doctor()
+        self.assertRegex(out, r"WARN.*claude-skills missing or out of date in .*codex-worker.*update --all")
+        with redirect_stdout(io.StringIO()):
+            onboarding._setup_agents()
+        out = self._doctor()
+        self.assertIn(f"claude-skills up to date in {self.cfg / 'skills'}", out)
 
     def test_missing_registered_dir_gets_one_info_line(self):
         gone = self.tmp / "gone"
