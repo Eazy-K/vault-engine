@@ -188,7 +188,7 @@ class TestProbeMarkingAndSideEffects(LiveBase):
         buf = StringIO()
         with redirect_stdout(buf):
             graph.cmd_stats(Namespace(tokens=False, retrieval=False, json=False,
-                                      since=None, until=None))
+                                      since=None, until=None, no_transcripts=True))
         self.assertIn("context calls:       1", buf.getvalue())
 
     def test_no_commit_no_weight_change_no_decay(self):
