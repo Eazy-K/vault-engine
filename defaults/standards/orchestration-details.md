@@ -45,6 +45,9 @@ Delegating keeps the orchestrator's context clean and is cheaper on multi-turn w
 - `agent-guard` (PR #117 matcher): a PreToolUse deny for spawns was enforced live on Codex CLI 0.160.0 (Windows, 2026-10-14); 0.159.2 did not dispatch it (openai/codex#49736); other versions are unverified. Re-run `codex-hooks --probe-deny` after Codex updates (or dismiss the doctor notice with `--ack-deny`).
 - A read-only orchestrator does not work: workers inherit the parent's sandbox (the worker profile's `sandbox_mode` is ignored; tested on 0.159.2), and it would block the orchestrator's own commits.
 
+- "Codex'e yaptır": orchestrator worktree ve branch'i kendisi açar, `worker-codex`'i görev dosyası yolu ve worktree ile başlatır (`graph.py codex-worker`, `workspace-write`); Codex worktree'de commit atamayabilir, değişiklikleri orchestrator commit'ler.
+- Doğrulayıcı yine `worker-verify` kalır; `danger-full-access` hiçbir zaman kullanılmaz.
+
 ## Models
 `python "$VAULT_ENGINE/tools/graph.py" models` shows the effective role-to-model config and whether the tool settings match; `--orchestrator`, `--effort`, `--worker-low`, `--worker-low-effort`, `--worker-medium`, `--worker-medium-effort`, `--worker-verify`, `--worker-verify-effort` change it (`--this-computer` for one machine), `--apply` writes it out. This command manages Claude worker models only; Codex worker model/effort live in `tools/codex-agents/worker-*.toml` (installed copies in the `agents` folder of the Codex home; customized copies are kept and reported by doctor).
 

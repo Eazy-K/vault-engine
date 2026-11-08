@@ -16,6 +16,7 @@ Steps:
 - Check the worktree: `git -C <worktree> branch --show-current` must equal the assigned branch and must not be `main` or `master`. If not, stop and report.
 - Run exactly one command, with literal paths and no shell variables: `python "<engine>/tools/graph.py" codex-worker --task <task file> --worktree <worktree>` (add `--acceptance "<cmd>"` only if the orchestrator gave an override). It can take many minutes; wait for it.
 - Relay the printed report (status, changed files from git, Codex's decisions / evidence / blockers, acceptance exit code and summary line, metrics, thread id, out dir). Keep it short; no raw logs.
+- Codex's sandbox usually cannot commit in a linked worktree (the git dir is outside its writable root); uncommitted changes are expected and listed under changed files. Do not commit them yourself; the orchestrator does.
 - If Codex's STATUS is PARTIAL or FAILED, or the acceptance failed, relay that as-is and stop.
 
 Rules:
