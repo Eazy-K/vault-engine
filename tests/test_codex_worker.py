@@ -113,7 +113,7 @@ class CodexWorkerTests(unittest.TestCase):
         lines = (self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1)
         e = json.loads(lines[0])
-        self.assertEqual((e["event"], e["agent"], e["agent_type"]), ("codex_exec", "claude", "worker-codex"))
+        self.assertEqual((e["event"], e["agent"], e["agent_type"]), ("codex_exec", "claude", "codex-worker"))
         self.assertEqual((e["input_tokens"], e["cached_input_tokens"], e["output_tokens"],
                           e["reasoning_output_tokens"], e["turns"], e["exit_code"]),
                          (300, 30, 15, 6, 2, 0))

@@ -487,7 +487,7 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool, policy-based on the shared `models` config
-  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` / `worker-codex` (a model override
+  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` (a model override
   must equal the configured one, `sonnet` by default) and the read-only built-in
   agents `Explore`, `Plan` and `claude-code-guide` (matched case-insensitively; they
   cannot edit files). `Explore` runs on `haiku`: when the call names no model the hook
@@ -660,31 +660,33 @@ the worker's evidence is real). For the mechanical part it can run
 the task is `blocked`. Its model is configured like the other workers (`models
 --worker-verify <model>` / `--worker-verify-effort <level>`).
 
-### worker-codex (Claude Code)
+### codex-worker skill (Claude Code)
 
-`tools/claude-agents/worker-codex.md` is a Sonnet (low effort) relay that runs one task
-through Codex. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 30 (class `S` 20 turns x 1.5). The
-orchestrator opens the worktree and branch itself, then starts it with the `Agent` tool
-(`subagent_type: worker-codex`) giving the task file path, the worktree path and branch.
-It checks the branch and runs one command, `python tools/graph.py codex-worker --task <path>
---worktree <path> --commit` (see `docs/commands.md`), and relays the report; it never fixes Codex's
-work. Codex runs with `-s workspace-write` (never `danger-full-access`). Smoke test on
+`tools/claude-skills/codex-worker/SKILL.md` is a Claude Code skill (loaded on `/codex-worker <task>` or "have Codex do it")
+that tells the orchestrator how to run one task through Codex. There is no relay subagent: the orchestrator opens the
+worktree and branch itself and runs `python tools/graph.py codex-worker --task <path> --worktree <path> --commit`
+(see `docs/commands.md`) directly in the background (Bash `run_in_background`), reads the report, then runs
+`worker-verify` on the diff. The full procedure is in the `orchestration-details` standard note. `update --all` (or `setup`)
+copies the skill to `~/.claude/skills/codex-worker/` (or under `$CLAUDE_CONFIG_DIR`) and removes the obsolete relay agent file
+from `agents/`; `doctor` reports a missing or outdated skill. Codex runs with `-s workspace-write` (never
+`danger-full-access`). Smoke test on
 codex-cli 0.167.0 (Windows, trivial prompt, input tokens): `--ignore-user-config` 18040
 (but the sandbox then cannot write files), `-c developer_instructions=""` 20352 (the old default, measured before the profile text was passed instead of the empty string),
-no trim 42862. Codex cannot commit in a linked worktree (its git dir is outside the writable
+no trim 42862. Codex cannot commit in a linked worktree (its repository metadata folder is outside the writable
 root), so the wrapper's `--commit` makes the WIP commit after the run. The wrapper takes model, effort and the worker rules from the Codex profile TOML
 `tools/codex-agents/<profile>.toml` (`--profile worker-low|worker-medium`, default `worker-medium`); `--model` / `--effort` override
 the profile, and the profile's `developer_instructions` are passed with `-c developer_instructions=<TOML string>` on every run
 (replacing the vault rules that `~/.codex/config.toml` would inject). The wrapper's own prompt keeps only run-specific lines
-(worktree, branch, commit rule, acceptance command, STATUS block), and the profile text says those wrapper rules win. The `usage.log` event records the `profile` name. Each run also appends one
-`codex_exec` event (token totals, turns, exit code) to `usage.log`, so Codex usage survives the handback. The verifier stays `worker-verify`.
+(worktree, branch, commit rule, acceptance command, STATUS block), and the profile text says those wrapper rules win. Each run
+appends one `codex_exec` event (token totals, turns, exit code, `profile`, `agent_type: codex-worker`) to `usage.log`, so Codex usage
+survives the handback. The verifier stays `worker-verify`.
 
-Which model each role (orchestrator, worker-low, worker-medium, worker-verify, worker-codex) uses is one config,
+Which model each role (orchestrator, worker-low, worker-medium, worker-verify) uses is one config,
 not four: `python tools/graph.py models` shows it (plus whether `settings.json` and
 `~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
 <level>`, `--worker-low <model>` / `--worker-low-effort <level>`, `--worker-medium
 <model>` / `--worker-medium-effort <level>`, `--worker-verify <model>` /
-`--worker-verify-effort <level>`, `--worker-codex <model>` / `--worker-codex-effort <level>` change it, shared across every computer
+`--worker-verify-effort <level>` change it, shared across every computer
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the

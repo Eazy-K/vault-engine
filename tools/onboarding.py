@@ -600,16 +600,72 @@ def stale_claude_agents(dest_dir: Path | None = None) -> list[str]:
     return stale
 
 
+OBSOLETE_CLAUDE_AGENTS = ("worker-" "codex.md",)  # shipped earlier, no longer in tools/claude-agents/
+
+
+def _skill_sources() -> list[Path]:
+    src_dir = g.ENGINE / "tools" / "claude-skills"
+    return sorted(src_dir.glob("*/SKILL.md")) if src_dir.is_dir() else []
+
+
+def _lf_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
+def stale_claude_skills(claude_dir: Path | None = None) -> list[str]:
+    """Names of tools/claude-skills/<name>/ skills whose SKILL.md differs from (or is
+    missing in) <claude_dir>/skills/<name>/ (default: the Claude config dir), sorted."""
+    claude_dir = claude_dir or g.claude_config_dir()
+    stale = []
+    for src in _skill_sources():
+        dest = claude_dir / "skills" / src.parent.name / "SKILL.md"
+        if not dest.exists() or _lf_bytes(dest) != _lf_bytes(src):
+            stale.append(src.parent.name)
+    return stale
+
+
+def _setup_skills_in(claude_dir: Path) -> None:
+    """Copy tools/claude-skills/<name>/SKILL.md to <claude_dir>/skills/<name>/ (the
+    engine owns these skill names; the file is overwritten when it differs)."""
+    stale = stale_claude_skills(claude_dir)
+    for src in _skill_sources():
+        dest = claude_dir / "skills" / src.parent.name / "SKILL.md"
+        if src.parent.name not in stale:
+            print(f"  unchanged: {dest}")
+            continue
+        existed = dest.exists()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(_lf_bytes(src))
+        print(f"  {'updated' if existed else 'copied'}: {dest}")
+
+
+def _remove_obsolete_agents_in(dest_dir: Path) -> None:
+    """Delete agent files the engine used to ship and no longer does. A file that
+    is not a shipped version (edited) is kept as a .bak copy instead of lost."""
+    for name in OBSOLETE_CLAUDE_AGENTS:
+        dest = dest_dir / name
+        if not dest.is_file():
+            continue
+        if _blob_id(dest.read_bytes()) in _shipped_blob_ids(f"tools/claude-agents/{name}"):
+            dest.unlink()
+            print(f"  removed (no longer shipped): {dest}")
+        else:
+            backup = _backup_path(dest)
+            dest.rename(backup)
+            print(f"  removed (no longer shipped; your edited version kept as {backup})")
+
+
 def _setup_agents(interactive: bool = False) -> None:
     """Copy the engine's subagent files into agents/ of every registered Claude
     config dir (~/.claude, $CLAUDE_CONFIG_DIR, see claude_dirs.py). A file there that
     is neither the engine's current version nor an earlier one is the user's own
     (or edited): it is only replaced after a yes in a terminal, with a backup."""
     src_dir = g.ENGINE / "tools" / "claude-agents"
-    if not src_dir.is_dir():
-        return
     for claude_dir in claude_dirs.targets(prompt=interactive):
-        _setup_agents_in(src_dir, claude_dir / "agents", interactive)
+        if src_dir.is_dir():
+            _setup_agents_in(src_dir, claude_dir / "agents", interactive)
+            _remove_obsolete_agents_in(claude_dir / "agents")
+        _setup_skills_in(claude_dir)
 
 
 def _setup_agents_in(src_dir: Path, dest_dir: Path, interactive: bool) -> None:
@@ -1209,6 +1265,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                           f"{', '.join(stale)}; run {_graph_cmd('update --all')}")
         else:
             check("OK", f"claude-agents up to date in {claude_dir / 'agents'}")
+        if _skill_sources():
+            stale_skills = stale_claude_skills(claude_dir)
+            if stale_skills:
+                check("WARN", f"claude-skills missing or out of date in {claude_dir / 'skills'}: "
+                              f"{', '.join(stale_skills)}; run {_graph_cmd('update --all')}")
+            else:
+                check("OK", f"claude-skills up to date in {claude_dir / 'skills'}")
+        obsolete = [n for n in OBSOLETE_CLAUDE_AGENTS if (claude_dir / "agents" / n).exists()]
+        if obsolete:
+            check("WARN", f"obsolete claude-agents in {claude_dir / 'agents'}: "
+                          f"{', '.join(obsolete)}; run {_graph_cmd('update --all')}")
         if claude_hooks is not None:
             check(*claude_hooks.status(settings))
             check(*claude_hooks.context_warn_status(settings))

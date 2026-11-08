@@ -73,7 +73,6 @@ class TestBudgets(unittest.TestCase):
         b = budgets.load_budgets(None)
         self.assertEqual(budgets.limits_for_role(b, "worker-low"), ("S", 20, 80000))
         self.assertEqual(budgets.limits_for_role(b, "worker-verify"), ("verify", 25, 100000))
-        self.assertEqual(budgets.limits_for_role(b, "worker-codex"), ("S", 20, 80000))
         self.assertEqual(budgets.class_for_role(b, "worker-medium"), "M")
         self.assertIsNone(budgets.limits_for_role(b, "Explore"))
         self.assertIsNone(budgets.class_for_role(b, "Explore"))

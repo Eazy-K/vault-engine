@@ -1,6 +1,6 @@
 """`codex-worker`: run one task through Codex (`codex exec`) inside an assigned git worktree.
 
-Used by the worker-codex agent. Builds a prompt (fixed worker rules + the task body +
+Run directly by the orchestrator (codex-worker skill). Builds a prompt (fixed worker rules + the task body +
 extra instructions), runs `codex exec -s workspace-write --json` with the prompt on
 stdin, then reports from git and from the JSONL events (not from Codex's own claims):
 changed files, token usage, acceptance result. Pure stdlib; never uses
@@ -303,7 +303,7 @@ def log_codex_exec(wt: Path, events: dict, codex_rc, profile: str | None = None)
         if not paths.data.is_dir():
             return
         event = {"ts": datetime.now().isoformat(timespec="seconds"), "event": "codex_exec",
-                 "agent": "claude", "agent_type": "worker-codex"}
+                 "agent": "claude", "agent_type": "codex-worker"}
         agent, session = g.detect_agent()
         if agent != "unknown" and session:
             event["session"] = session
@@ -406,7 +406,7 @@ def cmd_codex_worker(args) -> None:
 
 def register(sub) -> None:
     p = sub.add_parser("codex-worker", help="run one task through Codex (codex exec) inside a git "
-                                            "worktree and report from git (used by worker-codex)")
+                                            "worktree and report from git (codex-worker skill)")
     p.add_argument("--task", help="task note id or path to a task file")
     p.add_argument("--prompt-file", help="file with a raw prompt (smoke tests)")
     p.add_argument("--worktree", required=True, help="the linked git worktree Codex works in")

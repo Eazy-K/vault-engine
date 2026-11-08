@@ -497,13 +497,20 @@ def _claude_agents_step(engine: Path, data: Path, args) -> None:
     --agents does. Skipped when the engine ships no agent files, this computer
     has no ~/.claude (or $CLAUDE_CONFIG_DIR) folder, or the onboarding module is unavailable."""
     src_dir = engine / "tools" / "claude-agents"
-    if not src_dir.is_dir() or not _claude_in_use(data):
+    skills_dir = engine / "tools" / "claude-skills"
+    if not (src_dir.is_dir() or skills_dir.is_dir()) or not _claude_in_use(data):
         return
     onboarding = sys.modules.get("onboarding")
     if onboarding is None:
         return
-    stale = sorted({name for d in claude_dirs.registered(data) if d.is_dir()
-                    for name in onboarding.stale_claude_agents(d / "agents")})
+    dirs = [d for d in claude_dirs.registered(data) if d.is_dir()]
+    stale = sorted({name for d in dirs for name in onboarding.stale_claude_agents(d / "agents")}
+                   if src_dir.is_dir() else set())
+    skills = getattr(onboarding, "stale_claude_skills", None)
+    if skills is not None and skills_dir.is_dir():
+        stale += sorted({f"skill {name}" for d in dirs for name in skills(d)})
+    obsolete = getattr(onboarding, "OBSOLETE_CLAUDE_AGENTS", ())
+    stale += sorted({n for d in dirs for n in obsolete if (d / "agents" / n).exists()})
     if not stale:
         return
     print(f"\nClaude Code subagent files are missing or out of date: {', '.join(stale)}")
