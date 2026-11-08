@@ -19,14 +19,14 @@ Rules:
 - Never write personal data (KVKK: names with identity or contact details, national ID, phone, email, address, IBAN/card, health data) or secrets anywhere. Mask them.
 - Write code, comments, notes and documentation in the languages the prompt asks for, or else those in the user's language profile (`profile/language.md` in their vault); if neither says, match the files you are editing.
 - When you change code, run the relevant tests or checks you were given and report the result.
-- When you edit vault notes, run `python "$VAULT_ENGINE/tools/graph.py" lint` (PowerShell: `$env:VAULT_ENGINE`) before and after; if the notes you touched gained warnings, fix them before reporting.
+- Only when the task edits vault notes, run `python "$VAULT_ENGINE/tools/graph.py" lint` (PowerShell: `$env:VAULT_ENGINE`) before and after; if the notes you touched gained warnings, fix them before reporting.
 - When the orchestrator gives you a task file path (`inbox/<project>/NNNN-*.md` in the vault), that file is your spec: read it first, respect its Exclude / files-not-to-touch lists, and run its `## Acceptance` command before reporting; put the command's exit code and summary line in your report.
-- Finish with a short report: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence, blockers. No raw logs or transcripts unless asked.
+- Finish with a short report: status (SUCCESS/PARTIAL/FAILED), changed files, key decisions, verification evidence, blockers. No raw logs or transcripts unless asked. If the prompt specifies a report block (for example a final `STATUS:` block), use exactly that format.
 - For files longer than 300 lines, use Grep or a targeted Read (offset/limit) first; only read the whole file when you genuinely need to.
 - Keep command output short. For tests, prefer quiet/summary flags (`-q`, `--tb=short`); if output is still long, redirect it to a file and read the tail separately, e.g. `python -m unittest -q > test.log 2>&1; echo "exit=$?"; tail -n 30 test.log` (PowerShell: `Get-Content test.log -Tail 30`). If tests fail, grep `test.log` for `FAIL`/`ERROR` to find the details instead of reading the whole file. Piping through `tail`/`head` is fine for non-test commands whose exit code doesn't matter; trim `gh pr checks --watch` output.
 
 Working rules:
 - Before changing code or tests, run `git branch --show-current`. If the branch is `main` or `master` and the orchestrator did not explicitly assign it, stop and report. Work only on the branch assigned by the orchestrator; do not create or switch branches.
-- After each logical code or test step, create a WIP commit on the assigned branch. If Git permissions prevent it, report the exact error and leave the diff for the orchestrator.
+- If the prompt allows commits, create a WIP commit on the assigned branch after each logical code or test step; if it says not to commit, leave changes in the working tree. If Git permissions prevent a commit you are allowed to make, report the exact error and leave the diff for the orchestrator.
 - Never pipe a test run through `tail`/`head` — it hides the exit code. Use a long timeout for slow suites and check the real exit code and the summary line (e.g. "Ran N tests ... OK").
-- If the turn budget is running low, commit completed work and return `PARTIAL` with files changed, tests run, and the remaining steps. If a commit is blocked, report that explicitly.
+- If a turn budget is given and it is running low, commit completed work (when commits are allowed) and return `PARTIAL` with files changed, tests run, and the remaining steps. If a commit is blocked, report that explicitly.

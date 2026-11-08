@@ -6,8 +6,13 @@ import os
 import subprocess
 import sys
 import tempfile
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    tomllib = None
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_core import GRAPH_PATH, graph  # noqa: E402
@@ -210,16 +215,100 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertIn("python -c", r.stdout)
         self.assertFalse(self.out.exists())
 
+    def _di(self, argv_text):
+        """The developer_instructions -c value from a fake-args.json argv, parsed back as TOML."""
+        val = next(a for a in argv_text if a.startswith("developer_instructions="))
+        if tomllib is None:  # Python 3.10: a JSON string is a valid TOML basic string
+            return json.loads(val.split("=", 1)[1])
+        return tomllib.loads(val)["developer_instructions"]
+
     def test_config_trim_flags(self):
         default = self.run_cli("--dry-run").stdout  # default: blank-instructions
-        self.assertIn('developer_instructions=""', default)
+        self.assertNotIn('developer_instructions=""', default)
+        self.assertIn("developer_instructions=", default)
         self.assertNotIn("--ignore-user-config", default)
         ignore = self.run_cli("--dry-run", "--config-trim", "ignore-user-config").stdout
         self.assertIn("--ignore-user-config", ignore)
-        self.assertNotIn("developer_instructions", ignore)
+        self.assertIn("developer_instructions=", ignore)
         none = self.run_cli("--dry-run", "--config-trim", "none").stdout
-        self.assertNotIn("developer_instructions", none)
+        self.assertIn("developer_instructions=", none)
         self.assertNotIn("--ignore-user-config", none)
+
+    def test_load_profile_both_files(self):
+        for name, effort in (("worker-low", "low"), ("worker-medium", "medium")):
+            p = codex_worker.load_profile(name)
+            self.assertEqual((p["name"], p["effort"]), (name, effort))
+            self.assertTrue(p["model"])
+            self.assertIn("You are a worker subagent", p["instructions"])
+            data = codex_worker._parse_profile((codex_worker.PROFILE_DIR / f"{name}.toml").read_text(encoding="utf-8"))
+            self.assertEqual(p["instructions"], data["developer_instructions"])
+            self.assertEqual(p["model"], data["model"])
+
+    @unittest.skipIf(tomllib is None, "needs tomllib (Python 3.11+)")
+    def test_fallback_parser_matches_tomllib(self):
+        for name in codex_worker.PROFILES:
+            text = (codex_worker.PROFILE_DIR / f"{name}.toml").read_text(encoding="utf-8")
+            real = tomllib.loads(text)
+            with mock.patch.dict(sys.modules, {"tomllib": None}):
+                fb = codex_worker._parse_profile(text)
+            for k in ("model", "model_reasoning_effort", "developer_instructions"):
+                self.assertEqual(fb[k], real[k], k)
+
+    def test_default_profile_is_medium(self):
+        out = self.run_cli("--dry-run").stdout
+        self.assertIn("Profile: worker-medium", out)
+        self.assertIn("Effort: medium", out)
+
+    def test_low_profile_dry_run_shows_model_effort_rules(self):
+        low = codex_worker.load_profile("worker-low")
+        out = self.run_cli("--dry-run", "--profile", "worker-low").stdout
+        self.assertIn("Profile: worker-low", out)
+        self.assertIn(f"Model: {low['model']}", out)
+        self.assertIn("Effort: low", out)
+        self.assertIn("Developer instructions:", out)
+        self.assertIn("Never invent facts.", out)
+
+    def test_flags_override_profile(self):
+        out = self.run_cli("--dry-run", "--model", "m-x", "--effort", "high").stdout
+        self.assertIn("Model: m-x", out)
+        self.assertIn("Effort: high", out)
+
+    def test_missing_profile_exits_2(self):
+        with mock.patch.object(codex_worker, "PROFILE_DIR", Path(self._tmp.name) / "nope"):
+            with self.assertRaises(codex_worker.WorkerError):
+                codex_worker.load_profile("worker-low")
+        r = self.run_cli("--profile", "worker-high")  # not a known profile: argparse error
+        self.assertEqual(r.returncode, 2)
+
+    def test_argv_carries_profile_instructions(self):
+        for trim in codex_worker.CONFIG_TRIMS:
+            r = self.run_cli("--config-trim", trim, "--profile", "worker-low")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            args = json.loads((self.out / "fake-args.json").read_text(encoding="utf-8"))["args"]
+            self.assertTrue(all("\n" not in a for a in args))
+            self.assertEqual(self._di(args), codex_worker.load_profile("worker-low")["instructions"])
+
+    def test_instructions_encoding_round_trips(self):
+        nasty = 'line1\nsay "hi" \\ backç\ttab\n'
+        argv = codex_worker.codex_argv("codex", "/w", "/l", "none", "m", "low", nasty)
+        self.assertEqual(self._di(argv), nasty)
+
+    def test_prompt_drops_rules_duplicated_by_profile(self):
+        prompt = codex_worker.build_prompt("/w", "feat/x", "Spec.", None)
+        self.assertNotIn("personal data", prompt)
+        self.assertNotIn("vault workflow", prompt)
+        self.assertIn("STATUS: SUCCESS|PARTIAL|FAILED", prompt)
+        self.assertIn("wrapper commits your changes", codex_worker.build_prompt("/w", "b", "S", None, commit=True))
+
+    def test_report_and_usage_log_have_profile(self):
+        rep = json.loads(self.run_cli("--json", "--profile", "worker-low").stdout)
+        self.assertEqual(rep["profile"], "worker-low")
+        self.assertIn("Profile: worker-medium", self.run_cli().stdout)
+        e = json.loads((self.data / ".graph" / "usage.log").read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(e["profile"], "worker-low")
+        for k in ("budget", "class", "max_turns"):
+            self.assertNotIn(k, e)
+            self.assertNotIn(k, rep)
 
     def test_run_passes_flags_and_prompt_to_codex(self):
         r = self.run_cli("--model", "m-x", "--effort", "high", "--config-trim", "ignore-user-config")
