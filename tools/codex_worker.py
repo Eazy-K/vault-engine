@@ -149,8 +149,11 @@ def build_prompt(worktree: str, branch: str, body: str, acceptance: str | None,
                  instructions: str = "", commit: bool = False) -> str:
     acc = f"\n  Acceptance command: {acceptance}" if acceptance and acceptance != "human" else ""
     parts = [RULES.format(worktree=worktree, branch=branch, acceptance=acc,
-                                commit_rule=WRAPPER_COMMITS if commit else NO_COMMIT).rstrip(),
-             "## Task\n\n" + body.strip()]
+                                commit_rule=WRAPPER_COMMITS if commit else NO_COMMIT).rstrip()]
+    files = g.task_files_section(body)
+    if files:
+        parts.append("## Files to work on\n\n" + files.strip())
+    parts.append("## Task\n\n" + body.strip())
     if instructions.strip():
         parts.append("## Extra instructions\n\n" + instructions.strip())
     return "\n\n".join(parts) + "\n"

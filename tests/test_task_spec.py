@@ -93,6 +93,28 @@ class TestTaskSpec(unittest.TestCase):
             "## Acceptance criteria\n```bash\nwrong\n```\n"
             "## Acceptance\n```bash\nright\n```\n"), "right")
 
+    def test_files_section_helper(self):
+        self.assertEqual(graph.task_files_section(
+            "## Scope\nx\n## Files\n- a.py: f, 1-5\n## Acceptance\n"), "- a.py: f, 1-5")
+        self.assertEqual(graph.task_files_section("## Dosyalar\n- b.py\n"), "- b.py")
+        self.assertIsNone(graph.task_files_section("## Goal\nx\n"))
+        self.assertIsNone(graph.task_files_section("## Files\n<!-- hint -->\n-\n"))
+
+    def test_template_has_files_section_before_acceptance(self):
+        text = (Path(__file__).resolve().parent.parent / "templates/inbox/_template.md"
+                ).read_text(encoding="utf-8")
+        self.assertLess(text.index("## Scope"), text.index("\n## Files"))
+        self.assertLess(text.index("\n## Files"), text.index("\n## Acceptance\n"))
+        self.assertIsNone(graph.task_files_section(text))
+
+    def test_files_section_do_not_touch_label(self):
+        f = graph.task_files_section
+        self.assertIsNone(f("## Files\n- Do not touch:\n  -\n"))
+        self.assertIsNone(f("## Files\n-\nDO NOT TOUCH:\n"))
+        self.assertEqual(f("## Files\n- Do not touch: x.py\n"), "- Do not touch: x.py")
+        self.assertEqual(f("## Files\n- a.py\n- Do not touch:\n  - x.py\n"),
+                         "- a.py\n- Do not touch:\n  - x.py")
+
 
 if __name__ == "__main__":
     unittest.main()

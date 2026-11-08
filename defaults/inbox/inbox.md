@@ -14,6 +14,7 @@ A task written in one session or on one device (e.g. a phone) gets done by an ag
 - File: `inbox/<project>/NNNN-<short-name>.md`. The number increases within the project.
 - Template: `inbox/_template.md`. The `type: task`, `project`, and `status` frontmatter fields are required.
 - Besides Goal and Scope (Include / Exclude / Files not to touch), the template has `## Acceptance` (one command whose exit code decides pass or fail; `human` for non-code work), `## Human gate`, `## Budget`, `## Delivery` and `## Open questions`.
+- `## Files` (optional, between Scope and Acceptance) is where Explore's file list goes: one bullet per file with path, symbol(s) and line range, plus a "Do not touch" sub-list. Worker prompts (`codex-worker`) carry it as a separate block before the task body.
 - Frontmatter `budget:` is `S`, `M` or `L`; the engine maps the class to turn and token caps.
 - No personal data in a task (see [[data-policy]]).
 

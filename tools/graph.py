@@ -1163,6 +1163,38 @@ def task_acceptance_command(body: str) -> str | None:
     return None
 
 
+def task_files_section(body: str) -> str | None:
+    """Text under `## Files` (or `## Dosyalar`), without HTML comments and bare `-` lines.
+
+    Returns None when there is no such heading or nothing left after cleaning.
+    """
+    lines: list[str] = []
+    in_section = in_fence = False
+    for line in body.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        elif re.match(r"^##\s", line) and not in_fence:
+            in_section = bool(re.match(r"^##\s+(Files|Dosyalar)\s*$", line, re.I))
+            continue
+        if in_section:
+            lines.append(line)
+    text = re.sub(r"<!--.*?-->", "", "\n".join(lines), flags=re.S)
+    kept = [ln.rstrip() for ln in text.splitlines() if ln.strip() not in ("", "-", "*")]
+    label = re.compile(r"^\s*(?:[-*]\s+)?do not touch\s*:\s*$", re.I)
+
+    def indent(ln: str) -> int:
+        return len(ln) - len(ln.lstrip())
+
+    out = []
+    for i, ln in enumerate(kept):
+        if label.match(ln):
+            nxt = kept[i + 1] if i + 1 < len(kept) else None
+            if nxt is None or indent(nxt) <= indent(ln):
+                continue
+        out.append(ln)
+    return "\n".join(out) if out else None
+
+
 # --- project detection --------------------------------------------------------
 
 def project_roots(paths: Paths) -> list[Path]:
