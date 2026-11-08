@@ -34,8 +34,9 @@ DEFAULT_MODELS = {
     "worker-medium": {"model": "sonnet", "effort": "medium"},
     "worker-verify": {"model": "sonnet", "effort": "medium"},
     "worker-codex": {"model": "sonnet", "effort": "low"},
-    # model None = inherit from the caller (the guard injects nothing).
-    "explore": {"model": "haiku", "effort": "low"},
+    # model None = inherit from the caller. Effort is not injected for read-only built-in agents;
+    # Explore runs at the effort Claude Code gives it (medium, live-checked 2026-11-08).
+    "explore": {"model": "haiku", "effort": None},
     "plan": {"model": None, "effort": None},
     "claude-code-guide": {"model": None, "effort": None},
 }
