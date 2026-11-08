@@ -1,0 +1,320 @@
+"""`codex-worker`: run one task through Codex (`codex exec`) inside an assigned git worktree.
+
+Used by the worker-codex agent. Builds a prompt (fixed worker rules + the task body +
+extra instructions), runs `codex exec -s workspace-write --json` with the prompt on
+stdin, then reports from git and from the JSONL events (not from Codex's own claims):
+changed files, token usage, acceptance result. Pure stdlib; never uses
+`danger-full-access`."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+
+import graph as g
+
+DEFAULT_MODEL = "gpt-6.1-sol"   # same as tools/codex-agents/worker-medium.toml
+DEFAULT_EFFORT = "medium"
+DEFAULT_TIMEOUT = 1800
+DEFAULT_BASE = "origin/main"
+CONFIG_TRIMS = ("ignore-user-config", "blank-instructions", "none")
+# ~/.codex/config.toml injects the vault AGENTS.md through developer_instructions on every
+# run (~60k input tokens); the trim strategy drops it. See the smoke-test numbers in the docs.
+DEFAULT_CONFIG_TRIM = "ignore-user-config"
+SECTIONS = ("Changed files", "Decisions", "Evidence", "Blockers")
+
+RULES = """\
+You are a worker running one task inside a git worktree. Rules:
+- Work only inside {worktree}. Never write outside it.
+- The branch is {branch}. Do not create or switch branches. WIP commits on it are allowed.
+- Never push, merge, rebase or delete branches. Do not run the vault workflow (graph.py context / reinforce, git pull/push).
+- Never write personal data (names with contact details, IDs, IBAN/card, health data) or secrets; mask them.
+- Do only the assigned task; if the scope is unclear, stop and report the question.
+- Run the acceptance command before finishing and quote its exit code and summary line.{acceptance}
+- End your final message with exactly this block (one section each, dash bullets):
+STATUS: SUCCESS|PARTIAL|FAILED
+Changed files:
+Decisions:
+Evidence:
+Blockers:
+"""
+
+
+class WorkerError(Exception):
+    """Argument / worktree problem (exit code 2)."""
+
+
+def _git(wt: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(wt), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+
+
+def _real(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def check_worktree(wt: Path, allow_main: bool) -> str:
+    """Return the current branch; raise WorkerError unless `wt` is a linked worktree on a non-main branch."""
+    if not wt.is_dir():
+        raise WorkerError(f"worktree not found: {wt}")
+    if _git(wt, "rev-parse", "--show-toplevel").returncode != 0:
+        raise WorkerError(f"not a git repository: {wt}")
+    git_dir = _git(wt, "rev-parse", "--absolute-git-dir").stdout.strip()
+    common = _git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    linked = (wt / ".git").is_file() or (bool(common) and _real(git_dir) != _real(common))
+    if not linked:
+        raise WorkerError(f"{wt} is a main checkout, not a linked git worktree (refusing)")
+    branch = _git(wt, "branch", "--show-current").stdout.strip()
+    if not branch:
+        raise WorkerError("detached HEAD in the worktree")
+    if branch in ("main", "master") and not allow_main:
+        raise WorkerError(f"worktree is on {branch}; pass --allow-main to override")
+    return branch
+
+
+def _read(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise WorkerError(f"cannot read {path}: {exc}")
+
+
+def load_task(ref: str) -> tuple[str, str]:
+    """(task id, task body) from a task file path or a vault note id."""
+    path = Path(ref)
+    if path.is_file():
+        _, body = g.parse_frontmatter(_read(ref))
+        return path.stem, body
+    try:
+        graph = g.Graph()
+    except SystemExit as exc:
+        raise WorkerError(f"cannot open the vault graph: {exc}")
+    nid, error = graph.resolve(ref)
+    if error:
+        raise WorkerError(f"[[{ref}]] {error}")
+    return nid, graph.notes[nid].body
+
+
+def build_prompt(worktree: str, branch: str, body: str, acceptance: str | None,
+                 instructions: str = "") -> str:
+    acc = f"\n  Acceptance command: {acceptance}" if acceptance and acceptance != "human" else ""
+    parts = [RULES.format(worktree=worktree, branch=branch, acceptance=acc).rstrip(),
+             "## Task\n\n" + body.strip()]
+    if instructions.strip():
+        parts.append("## Extra instructions\n\n" + instructions.strip())
+    return "\n\n".join(parts) + "\n"
+
+
+def trim_flags(trim: str) -> list[str]:
+    if trim == "ignore-user-config":
+        return ["--ignore-user-config"]
+    if trim == "blank-instructions":
+        return ["-c", 'developer_instructions=""']
+    return []
+
+
+def codex_argv(codex: str, worktree: str, last: str, trim: str, model: str, effort: str) -> list[str]:
+    exe = [sys.executable, codex] if codex.lower().endswith(".py") else [shutil.which(codex) or codex]
+    return [*exe, "exec", "-C", worktree, "-s", "workspace-write", "--json", "-o", last,
+            *trim_flags(trim), "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-"]
+
+
+def parse_events(text: str) -> dict:
+    """thread id, turn count and summed token usage from codex JSONL events."""
+    out = {"thread_id": None, "turns": 0, "input": 0, "cached": 0, "output": 0, "reasoning": 0}
+    for line in text.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "thread.started" and out["thread_id"] is None:
+            out["thread_id"] = ev.get("thread_id")
+        elif ev.get("type") == "turn.completed":
+            out["turns"] += 1
+            usage = ev.get("usage") or {}
+            for key, field in (("input", "input_tokens"), ("cached", "cached_input_tokens"),
+                               ("output", "output_tokens"), ("reasoning", "reasoning_output_tokens")):
+                val = usage.get(field)
+                if isinstance(val, int):
+                    out[key] += val
+    return out
+
+
+def parse_status(text: str) -> tuple[str | None, dict[str, list[str]]]:
+    """The last STATUS block of Codex's final message: (status or None, sections)."""
+    matches = list(re.finditer(r"^\W*STATUS:\s*(SUCCESS|PARTIAL|FAILED)\b", text, re.M | re.I))
+    sections: dict[str, list[str]] = {s: [] for s in SECTIONS}
+    if not matches:
+        return None, sections
+    m = matches[-1]
+    current = None
+    for line in text[m.end():].splitlines():
+        head = re.match(r"^\W*(Changed files|Decisions|Evidence|Blockers)\s*:\s*(.*)$", line, re.I)
+        if head:
+            current = next(s for s in SECTIONS if s.lower() == head.group(1).lower())
+            rest = head.group(2).strip()
+            if rest:
+                sections[current].append(rest.lstrip("-* ").strip())
+        elif current and line.strip():
+            sections[current].append(line.strip().lstrip("-* ").strip())
+    return m.group(1).upper(), sections
+
+
+def run_acceptance(command: str | None, wt: Path) -> dict:
+    if not command or command == "human":
+        return {"command": command, "ran": False, "exit": None, "summary": "none (human or no command)"}
+    proc = subprocess.run(command, shell=True, cwd=str(wt), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    lines = [ln.strip() for ln in (proc.stdout + "\n" + proc.stderr).splitlines() if ln.strip()]
+    return {"command": command, "ran": True, "exit": proc.returncode, "summary": lines[-1] if lines else ""}
+
+
+def git_info(wt: Path, base: str) -> dict:
+    def lines(cp):
+        return [ln for ln in cp.stdout.splitlines() if ln.strip()]
+    return {"status": lines(_git(wt, "status", "--short")),
+            "log": lines(_git(wt, "log", "--oneline", f"{base}..HEAD")),
+            "diff_stat": lines(_git(wt, "diff", "--stat", f"{base}...HEAD")),
+            "files": lines(_git(wt, "diff", "--name-only", f"{base}...HEAD"))}
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    proc.kill()
+
+
+def run_codex(argv: list[str], prompt: str, out: Path, timeout: int) -> tuple[int | None, bool]:
+    """Run codex; returns (exit code, timed_out). Raises FileNotFoundError if codex is missing."""
+    with open(out / "events.jsonl", "wb") as so, open(out / "stderr.txt", "wb") as se:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=so, stderr=se)
+        try:
+            proc.communicate(prompt.encode("utf-8"), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            proc.communicate()
+            return None, True
+    return proc.returncode, False
+
+
+def render(r: dict) -> str:
+    acc, m, sec = r["acceptance"], r["metrics"], r["codex"]
+
+    def bullets(items):
+        return "\n".join(f"- {i}" for i in items) if items else "- none"
+    changed = r["git"]["files"] or r["git"]["status"]
+    acc_line = (f"- `{acc['command']}`: exit {acc['exit']}, {acc['summary']}" if acc["ran"]
+                else f"- {acc['summary']}")
+    return "\n".join([
+        f"# Codex worker report: {r['task']}", "", f"Status: {r['status']}", "",
+        "## Changed files (from git)", bullets(changed), "",
+        "Commits:", bullets(r["git"]["log"]), "",
+        "## Codex decisions", bullets(sec["Decisions"]), "",
+        "## Codex evidence", bullets(sec["Evidence"]), "",
+        "## Codex blockers", bullets(r["blockers"]), "",
+        "## Acceptance", acc_line, "",
+        "## Metrics",
+        f"- duration: {m['duration_s']} s, turns: {m['turns']}",
+        f"- tokens: in {m['input']}, cached {m['cached']}, out {m['output']}, reasoning {m['reasoning']}",
+        "", f"Codex thread id: {r['thread_id']}", f"Out dir: {r['out']}", ""])
+
+
+def _run(args) -> dict | None:
+    if bool(args.task) == bool(args.prompt_file):
+        raise WorkerError("give exactly one of --task or --prompt-file")
+    wt = Path(args.worktree).expanduser().resolve()
+    branch = check_worktree(wt, args.allow_main)
+    if args.task:
+        task_id, body = load_task(args.task)
+        acceptance = g.task_acceptance_command(body)
+    else:
+        task_id, body, acceptance = Path(args.prompt_file).stem, _read(args.prompt_file), None
+    if args.acceptance:
+        acceptance = args.acceptance
+    extra = _read(args.instructions) if args.instructions else ""
+    prompt = build_prompt(str(wt), branch, body, acceptance, extra)
+    out = Path(args.out) if args.out else (Path(tempfile.gettempdir()) / "vault-codex-worker" /
+                                           f"{task_id}-{datetime.now():%Y%m%d-%H%M%S}")
+    last = out / "last.md"
+    argv = codex_argv(args.codex, str(wt), str(last), args.config_trim, args.model, args.effort)
+    if args.dry_run:
+        print("Command:\n" + " ".join(f'"{a}"' if " " in a else a for a in argv) + " < prompt.md\n")
+        print("Prompt:\n" + prompt)
+        return None
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "prompt.md").write_text(prompt, encoding="utf-8", newline="\n")
+    start = time.time()
+    blockers: list[str] = []
+    exit_code = 0
+    try:
+        rc, timed_out = run_codex(argv, prompt, out, args.timeout)
+    except FileNotFoundError:
+        print(f"codex-worker: codex executable not found: {args.codex}", file=sys.stderr)
+        sys.exit(3)
+    duration = round(time.time() - start, 1)
+    events = parse_events((out / "events.jsonl").read_text(encoding="utf-8", errors="replace"))
+    final = last.read_text(encoding="utf-8", errors="replace") if last.is_file() else ""
+    status, sections = parse_status(final)
+    if timed_out:
+        status, exit_code = "FAILED", 3
+        blockers.append("timeout")
+    elif status is None:
+        status = "PARTIAL"
+        blockers.append("no STATUS block")
+    if rc not in (0, None):
+        blockers.append(f"codex exited with code {rc}")
+    blockers.extend(b for b in sections["Blockers"] if b.lower() != "none")
+    report = {"task": task_id, "status": status, "exit": exit_code, "worktree": str(wt),
+              "branch": branch, "git": git_info(wt, args.base), "codex": sections,
+              "blockers": blockers, "acceptance": run_acceptance(acceptance, wt),
+              "thread_id": events["thread_id"],
+              "metrics": {"duration_s": duration, "turns": events["turns"], "input": events["input"],
+                          "cached": events["cached"], "output": events["output"],
+                          "reasoning": events["reasoning"]},
+              "config_trim": args.config_trim, "out": str(out)}
+    (out / "report.md").write_text(render(report), encoding="utf-8", newline="\n")
+    return report
+
+
+def cmd_codex_worker(args) -> None:
+    try:
+        report = _run(args)
+    except WorkerError as exc:
+        print(f"codex-worker: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if report is None:
+        return
+    print(json.dumps(report, indent=2) if args.json else render(report))
+    sys.exit(report["exit"])
+
+
+def register(sub) -> None:
+    p = sub.add_parser("codex-worker", help="run one task through Codex (codex exec) inside a git "
+                                            "worktree and report from git (used by worker-codex)")
+    p.add_argument("--task", help="task note id or path to a task file")
+    p.add_argument("--prompt-file", help="file with a raw prompt (smoke tests)")
+    p.add_argument("--worktree", required=True, help="the linked git worktree Codex works in")
+    p.add_argument("--out", help="output dir (default: <tmp>/vault-codex-worker/<task>-<time>)")
+    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Codex model (default {DEFAULT_MODEL})")
+    p.add_argument("--effort", default=DEFAULT_EFFORT, help=f"reasoning effort (default {DEFAULT_EFFORT})")
+    p.add_argument("--instructions", help="file with extra text appended to the prompt")
+    p.add_argument("--acceptance", help="acceptance command (overrides the task file's)")
+    p.add_argument("--base", default=DEFAULT_BASE, help=f"ref for the diff summary (default {DEFAULT_BASE})")
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds (default 1800)")
+    p.add_argument("--config-trim", choices=CONFIG_TRIMS, default=DEFAULT_CONFIG_TRIM,
+                   help="how to keep ~/.codex/config.toml instructions out of the run")
+    p.add_argument("--allow-main", action="store_true", help="allow a worktree on main/master")
+    p.add_argument("--dry-run", action="store_true", help="print the command and prompt, run nothing")
+    p.add_argument("--json", action="store_true", help="machine-readable report")
+    p.add_argument("--codex", default=os.environ.get("VAULT_CODEX_BIN", "codex"),
+                   help="codex executable (a .py file runs with the current Python; env VAULT_CODEX_BIN)")
+    p.set_defaults(func=cmd_codex_worker)
