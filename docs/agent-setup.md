@@ -543,9 +543,9 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   `budgets.classes` (`S`, `M`, `verify`: `max_turns`, `max_tokens`), `budgets.roles`
   (role to class), `budgets.context` (`warn_delta`, `handoff_delta`) and
   `budgets.task_total_tokens`; missing or invalid values fall back to built-in numbers (S 20
-  turns / 80k tokens, M 60 / 250k, verify 25 / 100k, task total 600k). An optional
-  per-computer `budgets_usd` in `.graph/machine.json` (API machines only) is documented but
-  not read yet. Unknown agent types get no budget fields. `stats` summarizes the
+  turns / 80k tokens, M 60 / 250k, verify 25 / 100k, task total 600k). The
+  per-computer `queue` block in `.graph/machine.json` (API machines only) holds the dollar
+  ceilings `budgets_usd` per task class that `queue-runner` reads (see `docs/commands.md`). Unknown agent types get no budget fields. `stats` summarizes the
   per-class p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
   Otherwise it never blocks and fails open.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies

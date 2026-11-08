@@ -224,7 +224,7 @@ TASK_STATUSES = ("open", "ready", "in-progress", "review", "blocked", "done")
 TASK_BUDGETS = ("S", "M", "L")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config", "verify_task",
-              "codex_worker")  # optional modules in tools/
+              "codex_worker", "queue_runner")  # optional modules in tools/
 
 
 # --- state-file integrity -------------------------------------------------------
@@ -1987,6 +1987,26 @@ def subagent_budget_stats(events: list[dict]) -> dict:
     return result
 
 
+def queue_run_stats(events: list[dict]) -> dict:
+    """From `queue_run` events (written by `queue-runner`): {runs, outcomes: {outcome: n},
+    ran, usd_total, usd_mean, duration_mean_s, turns_mean}. `ran` counts runs that reached
+    the claude step (outcome pr, or blocked with a task); the means are over those only."""
+    runs = [e for e in events if e.get("event") == "queue_run"]
+    if not runs:
+        return {}
+    outcomes = Counter(str(e.get("outcome") or "unknown") for e in runs)
+    ran = [e for e in runs if e.get("outcome") in ("pr", "blocked") and e.get("task")]
+
+    def mean(key):
+        vals = [float(e[key]) for e in ran if isinstance(e.get(key), (int, float))]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    total = sum(float(e["usd"]) for e in ran if isinstance(e.get("usd"), (int, float)))
+    return {"runs": len(runs), "outcomes": dict(sorted(outcomes.items())), "ran": len(ran),
+            "usd_total": total, "usd_mean": total / len(ran) if ran else 0.0,
+            "duration_mean_s": mean("duration_s"), "turns_mean": mean("turns")}
+
+
 def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
@@ -2029,6 +2049,7 @@ def cmd_stats(args) -> None:
         print(json.dumps({"context_calls": len(contexts), "closed_by_reinforce": done,
                           "retrieved": dict(retrieved_json), "used": dict(used_json),
                           "subagent_budgets": subagent_budget_stats(events),
+                          "queue_runs": queue_run_stats(events),
                           "transcripts": transcripts}, indent=2))
         return
     print(f"context calls:       {len(contexts)}")
@@ -2080,6 +2101,15 @@ def cmd_stats(args) -> None:
             print(f"  {name}: n={s['n']}, turns p50/p90 {s['turns_p50']:g}/{s['turns_p90']:g}, "
                   f"tokens p50/p90 {s['tokens_p50']:.0f}/{s['tokens_p90']:.0f}, "
                   f"warn {s['warn']}, hit {s['hit']}")
+    queue = queue_run_stats(events)
+    if queue:  # written by `queue-runner`
+        print("queue runs:")
+        print("  " + ", ".join(f"{k} {v}" for k, v in queue["outcomes"].items())
+              + f" ({queue['runs']} runs)")
+        if queue["ran"]:
+            print(f"  per task that ran ({queue['ran']}): ${queue['usd_mean']:.2f} mean, "
+                  f"${queue['usd_total']:.2f} total, {queue['duration_mean_s']:.0f}s mean, "
+                  f"{queue['turns_mean']:.0f} turns mean")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.
