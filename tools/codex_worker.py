@@ -285,7 +285,8 @@ def render(r: dict) -> str:
         *([f"WIP commit: {r['wip_commit']}", ""] if r.get("wip_commit") else []),
         "## Metrics",
         f"- duration: {m['duration_s']} s, turns: {m['turns']}",
-        f"- tokens: in {m['input']}, cached {m['cached']}, out {m['output']}, reasoning {m['reasoning']}",
+        (f"- tokens: UNKNOWN (events stream empty or without turn.completed)" if m.get("events_missing")
+         else f"- tokens: in {m['input']}, cached {m['cached']}, out {m['output']}, reasoning {m['reasoning']}"),
         "", f"Codex thread id: {r['thread_id']}", f"Out dir: {r['out']}", ""])
 
 
@@ -307,11 +308,15 @@ def log_codex_exec(wt: Path, events: dict, codex_rc, profile: str | None = None)
         agent, session = g.detect_agent()
         if agent != "unknown" and session:
             event["session"] = session
+        missing = events["turns"] == 0  # no turn.completed: zeros would be indistinguishable from real
+        tok = (lambda v: None if missing else v)
         event.update({"machine": g.machine_name(paths), "cwd": str(wt),
-                      "input_tokens": events["input"], "cached_input_tokens": events["cached"],
-                      "output_tokens": events["output"],
-                      "reasoning_output_tokens": events["reasoning"],
+                      "input_tokens": tok(events["input"]), "cached_input_tokens": tok(events["cached"]),
+                      "output_tokens": tok(events["output"]),
+                      "reasoning_output_tokens": tok(events["reasoning"]),
                       "turns": events["turns"], "exit_code": codex_rc, "profile": profile})
+        if missing:
+            event["events_missing"] = True
         paths.usage_log.parent.mkdir(exist_ok=True)
         with paths.usage_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -362,6 +367,12 @@ def _run(args) -> dict | None:
     duration = round(time.time() - start, 1)
     events = parse_events((out / "events.jsonl").read_text(encoding="utf-8", errors="replace"))
     log_codex_exec(wt, events, None if timed_out else rc, args.profile)
+    events_missing = events["turns"] == 0
+    if events_missing:
+        warn = (f"no turn.completed in {out / 'events.jsonl'}: token usage unknown (not zero); "
+                "Codex may have redirected its JSONL stdout elsewhere")
+        print(f"codex-worker: WARNING: {warn}", file=sys.stderr)
+        blockers.append(warn)
     final = last.read_text(encoding="utf-8", errors="replace") if last.is_file() else ""
     status, sections = parse_status(final)
     if timed_out:
@@ -385,7 +396,8 @@ def _run(args) -> dict | None:
               "thread_id": events["thread_id"],
               "metrics": {"duration_s": duration, "turns": events["turns"], "input": events["input"],
                           "cached": events["cached"], "output": events["output"],
-                          "reasoning": events["reasoning"]},
+                          "reasoning": events["reasoning"],
+                          "events_missing": events_missing},
               "profile": args.profile, "model": model, "effort": effort,
               "config_trim": args.config_trim, "out": str(out)}
     (out / "report.md").write_text(render(report), encoding="utf-8", newline="\n")
