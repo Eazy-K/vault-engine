@@ -85,6 +85,13 @@ class TestTaskSpec(unittest.TestCase):
         self.assertIsNone(graph.task_acceptance_command("## Acceptance\nno block\n"))
         self.assertIsNone(graph.task_acceptance_command("## Acceptance\n```bash\n\n```\n"))
         self.assertIsNone(graph.task_acceptance_command("## Other\n```bash\nls\n```\n"))
+        self.assertIsNone(graph.task_acceptance_command(
+            "## Acceptance criteria\n```bash\nls\n```\n"))
+        self.assertEqual(graph.task_acceptance_command(
+            "## Kabul\n```bash\npytest -q\n```\n"), "pytest -q")
+        self.assertEqual(graph.task_acceptance_command(
+            "## Acceptance criteria\n```bash\nwrong\n```\n"
+            "## Acceptance\n```bash\nright\n```\n"), "right")
 
 
 if __name__ == "__main__":

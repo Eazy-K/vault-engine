@@ -1147,7 +1147,7 @@ def task_acceptance_command(body: str) -> str | None:
     in_section = in_fence = False
     for line in body.splitlines():
         if re.match(r"^##\s", line) and not in_fence:
-            in_section = bool(re.match(r"^##\s+(Acceptance|Kabul)\b", line, re.I))
+            in_section = bool(re.match(r"^##\s+(Acceptance|Kabul)\s*$", line, re.I))
             continue
         if not in_section:
             continue
