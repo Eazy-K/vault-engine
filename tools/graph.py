@@ -223,7 +223,7 @@ MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task n
 TASK_STATUSES = ("open", "ready", "in-progress", "review", "blocked", "done")
 TASK_BUDGETS = ("S", "M", "L")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
-              "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config")  # optional modules in tools/
+              "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config", "verify_task")  # optional modules in tools/
 
 
 # --- state-file integrity -------------------------------------------------------
@@ -1943,6 +1943,49 @@ def format_retrieval_stats(r: dict) -> str:
     ])
 
 
+def subagent_budget_stats(events: list[dict]) -> dict:
+    """Per budget class, from `subagent_stop` events that carry `budget_class`:
+    {class: {n, turns_p50, turns_p90, tokens_p50, tokens_p90, warn, hit}}.
+    n and the percentiles are per event; warn/hit are per worker (highest level wins)."""
+    by_class: dict[str, list[dict]] = {}
+    for e in events:
+        if e.get("event") == "subagent_stop" and e.get("budget_class"):
+            by_class.setdefault(str(e["budget_class"]), []).append(e)
+    result = {}
+    if not by_class:
+        return result
+    import token_stats
+    for name in sorted(by_class):
+        mine = by_class[name]
+        turns = [int(e["turns"]) for e in mine if isinstance(e.get("turns"), int)]
+        tokens = [int(e["tokens"]) for e in mine if isinstance(e.get("tokens"), int)]
+        # warn/hit count workers, not events: a worker resumed after a block logs a
+        # second stop. Identity: agent_id, else session+agent_type, else the event itself.
+        levels: dict = {}
+        for i, e in enumerate(mine):
+            if e.get("agent_id"):
+                key = ("id", str(e["agent_id"]))
+            elif e.get("session") and e.get("agent_type"):
+                key = ("sa", str(e["session"]), str(e["agent_type"]))
+            else:
+                key = ("ev", i)
+            rank = {"block": 2, "warn": 1}.get(e.get("budget_hit"), 0)
+            if rank > {"block": 2, "warn": 1}.get(levels.get(key), 0):
+                levels[key] = e["budget_hit"]
+            else:
+                levels.setdefault(key, None)
+        result[name] = {
+            "n": len(mine),
+            "turns_p50": token_stats.percentile(turns, 0.5),
+            "turns_p90": token_stats.percentile(turns, 0.9),
+            "tokens_p50": token_stats.percentile(tokens, 0.5),
+            "tokens_p90": token_stats.percentile(tokens, 0.9),
+            "warn": sum(1 for lvl in levels.values() if lvl == "warn"),
+            "hit": sum(1 for lvl in levels.values() if lvl == "block"),
+        }
+    return result
+
+
 def cmd_stats(args) -> None:
     if getattr(args, "tokens", False):
         import token_stats
@@ -1984,6 +2027,7 @@ def cmd_stats(args) -> None:
         retrieved_json = Counter(n for c in contexts for n in c.get("notes", []))
         print(json.dumps({"context_calls": len(contexts), "closed_by_reinforce": done,
                           "retrieved": dict(retrieved_json), "used": dict(used_json),
+                          "subagent_budgets": subagent_budget_stats(events),
                           "transcripts": transcripts}, indent=2))
         return
     print(f"context calls:       {len(contexts)}")
@@ -2028,6 +2072,13 @@ def cmd_stats(args) -> None:
             mine = [e for e in prompts if str(e.get("engine_version")) == version]
             print(f"  engine {version}: {len(mine)} measured, mean inline calls "
                   f"{_mean_calls(mine):.1f}")
+    budgets_by_class = subagent_budget_stats(events)
+    if budgets_by_class:  # written by the subagent-log hook; absent in older logs
+        print("subagent budgets:")
+        for name, s in budgets_by_class.items():
+            print(f"  {name}: n={s['n']}, turns p50/p90 {s['turns_p50']:g}/{s['turns_p90']:g}, "
+                  f"tokens p50/p90 {s['tokens_p50']:.0f}/{s['tokens_p90']:.0f}, "
+                  f"warn {s['warn']}, hit {s['hit']}")
     print(f"reinforce w/o task:  {sum(1 for e in reinforces if not e.get('task'))}")
     print(f"no useful notes:     {sum(1 for e in reinforces if not e.get('notes'))}")
     # Retrieved-but-never-used notes point at retrieval noise.

@@ -117,6 +117,7 @@ class TestHooksAndModels(ConfigDirCase):
     def _models_ns(self, **kw):
         base = dict(orchestrator="sonnet", effort=None, worker_low="haiku",
                     worker_low_effort=None, worker_medium="haiku", worker_medium_effort=None,
+                    worker_verify=None, worker_verify_effort=None,
                     this_computer=False, apply=True, data=str(self.data), settings=None,
                     agents_dir=None)
         base.update(kw)

@@ -487,7 +487,7 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool, policy-based on the shared `models` config
-  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` (a model override
+  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` (a model override
   must equal the configured one, `sonnet` by default) and the read-only built-in
   agents `Explore`, `Plan` and `claude-code-guide` (matched case-insensitively; they
   cannot edit files). `Explore` runs on `haiku`: when the call names no model the hook
@@ -532,7 +532,22 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   `subagent_stop` event (agent type, agent id, length of the final message) to
   `.graph/usage.log`. Worker subagents return their report through a `SubagentHandback`
   tool call, so the hook counts that report's length (`last_message_kind: "handback"`;
-  `last_message_source` stays payload | transcript | none). It never blocks.
+  `last_message_source` stays payload | transcript | none). In Claude it also enforces the
+  worker budget classes (`tools/budgets.py`): for a role listed under `budgets.roles` in
+  `vault.config.json` it counts `turns` (assistant records) and `tokens` (input + cache
+  creation + cache read of the last assistant usage) from the transcript, logs
+  `budget_class`, `turns`, `tokens` and `budget_hit` (`none` | `warn` | `block`), prints a
+  `systemMessage` at 80% of `max_turns` or `max_tokens`, and at 100% returns
+  `decision: block` asking for a short `blocked` report (never when `stop_hook_active` is
+  set, then it only logs). Config shape:
+  `budgets.classes` (`S`, `M`, `verify`: `max_turns`, `max_tokens`), `budgets.roles`
+  (role to class), `budgets.context` (`warn_delta`, `handoff_delta`) and
+  `budgets.task_total_tokens`; missing or invalid values fall back to built-in numbers (S 20
+  turns / 80k tokens, M 60 / 250k, verify 25 / 100k, task total 600k). An optional
+  per-computer `budgets_usd` in `.graph/machine.json` (API machines only) is documented but
+  not read yet. Unknown agent types get no budget fields. `stats` summarizes the
+  per-class p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
+  Otherwise it never blocks and fails open.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
   `--force-with-lease`, `+refspec`) and `git commit`/`git push` with `--no-verify` or
@@ -612,15 +627,32 @@ Note: a `disallowedTools` entry with a specifier (e.g. `Bash(git push *)`) remov
 tool from a subagent, so `worker-low` / `worker-medium` do not use it; the push/merge bans for
 workers are enforced by `git-guard.py` instead.
 
-Which model each role (orchestrator, worker-low, worker-medium) uses is one config,
-not three: `python tools/graph.py models` shows it (plus whether `settings.json` and
+### worker-verify (Claude Code)
+
+`tools/claude-agents/worker-verify.md` is a Sonnet (medium effort) verifier with a clean
+context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 25 (class `verify`); it never edits files,
+commits or runs git write commands. The orchestrator starts it with the `Agent` tool
+(`subagent_type: worker-verify`) after a writing worker reports, and gives it the task
+file path, a diff file (or the branch) and the acceptance-command output file. It answers
+`PASS` or `FAIL` on the first line, then one `- ok:` / `- fail:` bullet per checklist item
+(acceptance green, no excluded file touched, scope complete, tests cover the change,
+the worker's evidence is real). For the mechanical part it can run
+`python tools/graph.py verify --task <id|path> --diff <file> --acceptance-output <file>`
+(see `docs/commands.md`). A `FAIL` list goes to a new writing worker; after two rounds
+the task is `blocked`. Its model is configured like the other workers (`models
+--worker-verify <model>` / `--worker-verify-effort <level>`).
+
+Which model each role (orchestrator, worker-low, worker-medium, worker-verify) uses is one config,
+not four: `python tools/graph.py models` shows it (plus whether `settings.json` and
 `~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
 <level>`, `--worker-low <model>` / `--worker-low-effort <level>`, `--worker-medium
-<model>` / `--worker-medium-effort <level>` change it, shared across every computer
+<model>` / `--worker-medium-effort <level>`, `--worker-verify <model>` /
+`--worker-verify-effort <level>` change it, shared across every computer
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
-worker files' `model:`/`effort:` frontmatter, so the agent-guard hook above, the
+worker files' `model:`/`effort:`/`maxTurns:` frontmatter (`maxTurns` is the `max_turns` of the
+role's budget class from `budgets.classes`/`budgets.roles`, see the `subagent-log` hook), so the agent-guard hook above, the
 worker agents, and Claude Code's own model picker all agree. Each worker uses its
 configured model, and a model override on a spawn must match it. `doctor` warns if `settings.json` or the worker files drift from this
 config (skipped silently if `settings.json` doesn't exist yet).

@@ -16,8 +16,8 @@ from pathlib import Path
 # here is unknown to `rank`.
 MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
-ROLES = ("orchestrator", "worker-low", "worker-medium")
-WORKER_ROLES = ("worker-low", "worker-medium")
+ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify")
+WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
 
 # Read-only built-in Claude Code agents the guard lets through, role -> the
 # agent name Claude Code uses (matched case-insensitively). They have no
@@ -32,6 +32,7 @@ DEFAULT_MODELS = {
     "orchestrator": {"model": "opus", "effort": "medium"},
     "worker-low": {"model": "sonnet", "effort": "low"},
     "worker-medium": {"model": "sonnet", "effort": "medium"},
+    "worker-verify": {"model": "sonnet", "effort": "medium"},
     # model None = inherit from the caller (the guard injects nothing).
     "explore": {"model": "haiku", "effort": "low"},
     "plan": {"model": None, "effort": None},

@@ -5,7 +5,7 @@ model: sonnet
 effort: low
 omitClaudeMd: true
 tools: Read, Grep, Glob, Bash, Edit, Write
-maxTurns: 40
+maxTurns: 20
 ---
 
 You are a worker subagent. An orchestrator gave you one well-scoped subtask, and its prompt contains everything you need.
