@@ -38,12 +38,13 @@ class TestRanking(unittest.TestCase):
         eff = {"worker-low": {"model": "haiku", "effort": "low"}}
         self.assertEqual(mc.configured_model("worker-low", eff), "haiku")
 
-    def test_three_worker_roles_with_defaults(self):
-        self.assertEqual(mc.WORKER_ROLES, ("worker-low", "worker-medium", "worker-verify"))
+    def test_four_worker_roles_with_defaults(self):
+        self.assertEqual(mc.WORKER_ROLES, ("worker-low", "worker-medium", "worker-verify", "worker-codex"))
         for role in mc.WORKER_ROLES:
             self.assertIn(role, mc.ROLES)
             self.assertIn(role, mc.DEFAULT_MODELS)
         self.assertEqual(mc.DEFAULT_MODELS["worker-verify"], {"model": "sonnet", "effort": "medium"})
+        self.assertEqual(mc.DEFAULT_MODELS["worker-codex"], {"model": "sonnet", "effort": "low"})
 
     def test_readonly_roles_defaults_tolerate_none(self):
         self.assertEqual(mc.READONLY_AGENT_ROLES, ("explore", "plan", "claude-code-guide"))

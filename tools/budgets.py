@@ -6,7 +6,7 @@ only fallbacks used when the key is missing or invalid:
     "budgets": {
       "context": {"warn_delta": 50000, "handoff_delta": 80000},
       "classes": {"S": {"max_turns": 20, "max_tokens": 80000}, ...},
-      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"},
+      "roles": {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"},
       "task_total_tokens": 600000
     }
 
@@ -25,7 +25,7 @@ FALLBACK_CLASSES = {
     "M": {"max_turns": 60, "max_tokens": 250000},
     "verify": {"max_turns": 25, "max_tokens": 100000},
 }
-FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
+FALLBACK_ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify", "worker-codex": "S"}
 FALLBACK_TASK_TOTAL = 600000
 
 

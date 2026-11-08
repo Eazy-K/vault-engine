@@ -223,7 +223,8 @@ MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task n
 TASK_STATUSES = ("open", "ready", "in-progress", "review", "blocked", "done")
 TASK_BUDGETS = ("S", "M", "L")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
-              "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config", "verify_task")  # optional modules in tools/
+              "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config", "verify_task",
+              "codex_worker")  # optional modules in tools/
 
 
 # --- state-file integrity -------------------------------------------------------
