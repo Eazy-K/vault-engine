@@ -20,7 +20,8 @@ from pathlib import Path
 from token_stats import discover_transcripts
 
 MIN_TURNS = 3  # sessions with fewer assistant turns are trivial and skipped in (b)
-LAB_MARKER = "claude-lab-runs"
+LAB_MARKERS = ("claude-lab-runs", "lab-orch")
+LAB_LABEL = " or ".join(LAB_MARKERS)
 
 _CONTEXT_RE = re.compile(r"""graph\.py["']?\s+(?:--\S+\s+)*context\b""")
 _SHOW_RE = re.compile(r"""graph\.py["']?\s+show\s+--body\s+([^|;&<>\n]+)""")
@@ -129,7 +130,7 @@ def collect(projects_dir: Path, vault_root: Path) -> dict:
         row["sessions"] += 1
         row["with_context"] += 1 if res["context_calls"] else 0
     rows = [{"slug": slug, "sessions": r["sessions"], "with_context": r["with_context"],
-             "ratio": r["with_context"] / r["sessions"], "lab": LAB_MARKER in slug}
+             "ratio": r["with_context"] / r["sessions"], "lab": any(m in slug for m in LAB_MARKERS)}
             for slug, r in sorted(slugs.items())]
     real = [r for r in rows if not r["lab"]]
     sessions = sum(r["sessions"] for r in real)
@@ -147,7 +148,7 @@ def collect(projects_dir: Path, vault_root: Path) -> dict:
 def format_sessions(result: dict) -> str:
     out = [f"\nsessions with a context call (main sessions with >= {result['min_turns']} "
            f"assistant turns; {result['skipped_trivial']} trivial skipped; lab slugs "
-           f"'{LAB_MARKER}' listed but excluded from total)",
+           f"{LAB_LABEL} listed but excluded from total)",
            "slug                                                    sessions  with-context  ratio"]
     for r in sorted(result["slugs"], key=lambda r: -r["sessions"]):
         tag = " (lab)" if r["lab"] else ""

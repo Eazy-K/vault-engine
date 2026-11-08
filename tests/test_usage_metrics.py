@@ -76,10 +76,12 @@ class UsageMetricsTest(unittest.TestCase):
         self.write("proj", "b", [turn("1"), turn("2"), turn("3")])
         self.write("proj", "trivial", [turn("1", ctx), turn("2")])  # 2 turns: skipped
         self.write("x-claude-lab-runs-1", "l", [turn("1"), turn("2"), turn("3")])
+        self.write("x-lab-orch-2", "o", [turn("1"), turn("2"), turn("3")])
         res = usage_metrics.collect(self.projects, self.vault)
         rows = {r["slug"]: r for r in res["slugs"]}
         self.assertEqual((rows["proj"]["sessions"], rows["proj"]["with_context"]), (2, 1))
         self.assertTrue(rows["x-claude-lab-runs-1"]["lab"])
+        self.assertTrue(rows["x-lab-orch-2"]["lab"])
         self.assertEqual(res["skipped_trivial"], 1)
         self.assertEqual(res["total"], {"sessions": 2, "with_context": 1, "ratio": 0.5})
         text = usage_metrics.format_sessions(res)
