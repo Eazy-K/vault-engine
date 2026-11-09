@@ -213,6 +213,17 @@ class PickTests(QueueBase):
         picked = qr.pick_task(self.paths, cfg)
         self.assertEqual(picked["id"], "inbox/vault-engine/0002-old")
 
+    def test_multiline_acceptance_is_not_eligible(self):
+        self.task("0001-multi", acceptance="cd /x\npython -c pass")
+        self.task("0002-single")
+        cfg = qr.load_queue_config(self.paths)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            picked = qr.pick_task(self.paths, cfg)
+        self.assertTrue(picked["id"].endswith("0002-single"))
+        self.assertIn("0001-multi", err.getvalue())
+        self.assertIn("more than one line", err.getvalue())
+
     def test_same_created_orders_by_id(self):
         self.task("0009-b")
         self.task("0008-a")

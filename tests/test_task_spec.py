@@ -94,6 +94,28 @@ class TestTaskSpec(unittest.TestCase):
             "## Acceptance criteria\n```bash\nwrong\n```\n"
             "## Acceptance\n```bash\nright\n```\n"), "right")
 
+    def test_multiline_acceptance_detected(self):
+        multi = "## Acceptance\n```bash\ncd /x\npython -m unittest\n```\n"
+        self.assertEqual(graph.task_acceptance_lines(multi), ["cd /x", "python -m unittest"])
+        self.assertTrue(graph.task_acceptance_multiline(multi))
+        self.assertFalse(graph.task_acceptance_multiline(ACCEPT))
+        self.assertFalse(graph.task_acceptance_multiline(HUMAN))
+        self.assertFalse(graph.task_acceptance_multiline("## Acceptance\nno block\n"))
+        self.assertEqual(graph.task_acceptance_command(ACCEPT), "python -I -m unittest -q")
+
+    def test_ready_multiline_acceptance_is_error(self):
+        self.task("t1", "ready", "## Acceptance\n```bash\ncd /x\npython -m unittest\n```\n")
+        out, code = self.lint()
+        self.assertIn("join the commands with && on one line", out)
+        self.assertNotEqual(code, 0)
+
+    def test_non_ready_multiline_acceptance_is_fine(self):
+        for status in ("open", "review", "done"):
+            self.task("t1", status, "## Acceptance\n```bash\ncd /x\npython -m unittest\n```\n")
+            out, code = self.lint()
+            self.assertNotIn("one line", out)
+            self.assertEqual(code, 0)
+
     def test_files_section_helper(self):
         self.assertEqual(graph.task_files_section(
             "## Scope\nx\n## Files\n- a.py: f, 1-5\n## Acceptance\n"), "- a.py: f, 1-5")

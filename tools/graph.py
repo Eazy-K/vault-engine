@@ -1139,12 +1139,9 @@ def is_done_task(note: Note) -> bool:
     return note.meta.get("type") == "task" and note.meta.get("status") == "done"
 
 
-def task_acceptance_command(body: str) -> str | None:
-    """First non-blank line of the fenced block under `## Acceptance` (or `## Kabul`).
-
-    Returns None when there is no such heading or no non-blank line in a fenced
-    block. A block holding the bare word `human` returns "human".
-    """
+def task_acceptance_lines(body: str) -> list[str]:
+    """All non-blank lines of the fenced block under `## Acceptance` (or `## Kabul`)."""
+    out: list[str] = []
     in_section = in_fence = False
     for line in body.splitlines():
         if re.match(r"^##\s", line) and not in_fence:
@@ -1154,13 +1151,37 @@ def task_acceptance_command(body: str) -> str | None:
             continue
         if line.strip().startswith("```"):
             if in_fence:
+                if out:
+                    break
                 in_fence = False
             else:
                 in_fence = True
             continue
         if in_fence and line.strip():
-            return "human" if line.strip().lower() == "human" else line.strip()
-    return None
+            out.append(line.strip())
+    return out
+
+
+MULTILINE_ACCEPTANCE_HINT = "join the commands with && on one line"
+
+
+def task_acceptance_command(body: str) -> str | None:
+    """First non-blank line of the fenced block under `## Acceptance` (or `## Kabul`).
+
+    Returns None when there is no such heading or no non-blank line in a fenced
+    block. A block holding the bare word `human` returns "human". Callers that run
+    the command must first refuse blocks where `task_acceptance_lines` has more
+    than one line (see `task_acceptance_multiline`).
+    """
+    lines = task_acceptance_lines(body)
+    if not lines:
+        return None
+    return "human" if lines[0].lower() == "human" else lines[0]
+
+
+def task_acceptance_multiline(body: str) -> bool:
+    """True when the acceptance block has more than one non-blank line."""
+    return len(task_acceptance_lines(body)) > 1
 
 
 def task_files_section(body: str) -> str | None:
@@ -2564,6 +2585,9 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
         if note.meta.get("status") == "ready":
             if task_acceptance_command(note.body) is None:
                 errors.append(f"{nid}: ready task needs an acceptance command (## Acceptance block)")
+            elif task_acceptance_multiline(note.body):
+                errors.append(f"{nid}: ready task acceptance block must be one line; "
+                              f"{MULTILINE_ACCEPTANCE_HINT}")
     # Core notes ride along with every context call, so their size is a fixed cost.
     for nid, note in graph.notes.items():
         lines = [line for line in note.body.splitlines() if line.strip()]

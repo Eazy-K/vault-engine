@@ -28,7 +28,7 @@ What needs to be done, and why?
 - [ ]
 
 ## Acceptance
-The command below decides pass or fail; a task cannot be `ready` without it. Non-code tasks write `human` in the block.
+The one-line command below decides pass or fail (several commands: join with `&&`); a task cannot be `ready` without it. Non-code tasks write `human` in the block.
 ```bash
 python -I -m unittest discover -s tests -q
 ```
