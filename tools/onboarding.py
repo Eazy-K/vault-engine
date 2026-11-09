@@ -1372,6 +1372,18 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             check("WARN", f"Ollama reachable at {g.OLLAMA_URL} but {g.EMBED_MODEL} is not pulled; "
                           f"keyword-only fallback; manual: {g.pull_hint()}")
 
+    if data is not None:
+        # Chunks Ollama refused even after splitting (see refresh_embeddings): the note
+        # stays findable by keyword, but part of it has no vector.
+        cached = g.load_state_json(g.Paths(g.ENGINE, data).embed_cache)
+        cached_notes = cached.get("notes") if isinstance(cached, dict) else None
+        for nid, entry in sorted((cached_notes or {}).items()):
+            skipped = entry.get("skipped") if isinstance(entry, dict) else None
+            if isinstance(skipped, list) and skipped:
+                check("WARN", f"{nid}: {len(skipped)} chunk(s) could not be embedded, "
+                              "the note is found by keyword; manual: edit the note's text "
+                              "and run index, or leave it")
+
     discovery = sys.modules.get("discovery")
     if data is not None and discovery is not None:
         # Cache only: doctor should stay fast, `projects --refresh` rescans.

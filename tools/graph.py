@@ -845,6 +845,85 @@ def chunks(note: Note) -> list[str]:
     return out or [note.title]
 
 
+# Smallest piece a refused chunk is split into: the text after its context prefix.
+# A chunk is already one line; a line longer than this is still split on whitespace.
+EMBED_SPLIT_FLOOR = 50
+
+
+def _split_chunk(text: str) -> tuple[str, str] | None:
+    """Two halves of a chunk, cut at whitespace nearest the middle (a line break first),
+    or None at the floor. Nothing is dropped: the halves' bodies join back to the
+    original body, and the second half repeats the context prefix (text up to the
+    first ": ") so it still says what it is about."""
+    cut = text.find(": ")
+    prefix = text[:cut + 2] if cut >= 0 else ""
+    body = text[len(prefix):]
+    if len(body) <= EMBED_SPLIT_FLOOR:
+        return None
+    mid = len(body) // 2
+    spots = [m.start() for m in re.finditer(r"\n", body)] or \
+            [m.start() for m in re.finditer(r"\s", body)]
+    spots = [i for i in spots if 0 < i < len(body)]
+    i = min(spots, key=lambda k: abs(k - mid)) if spots else mid
+    return prefix + body[:i], prefix + body[i:]
+
+
+def _sanitize_embed_text(text: str) -> str:
+    """Drop control characters (keeping tab and line breaks) and characters that are not
+    valid Unicode text (lone surrogates, noncharacters, U+FFFE/U+FFFF). Nothing else."""
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if 0xD800 <= cp <= 0xDFFF or cp & 0xFFFE == 0xFFFE or 0xFDD0 <= cp <= 0xFDEF:
+            continue
+        if cp < 0x20 and ch not in "\t\n\r" or 0x7F <= cp <= 0x9F:
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _embed_isolated(texts: list[str], known_bad: bool = False) -> list[tuple[list[list[float]], bool]]:
+    """Embed `texts` after a batch request got HTTP 400. Per text: (vectors, lost).
+    A refused batch is bisected; a refused single text is split in two and each half
+    retried the same way (recursively, never truncated); at the floor it is retried
+    once with sanitised text. Only then is it given up: lost=True for that piece.
+    Errors other than HTTP 400 propagate, so the caller falls back as before."""
+    if not texts:
+        return []
+    if not known_bad:  # the caller may already have seen this exact request refused
+        try:
+            return [([v], False) for v in _embed(texts)]
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400:
+                raise
+    if len(texts) > 1:
+        mid = len(texts) // 2
+        return _embed_isolated(texts[:mid]) + _embed_isolated(texts[mid:])
+    text = texts[0]
+    halves = _split_chunk(text)
+    if halves:
+        parts = [h for h in halves if h.split(": ", 1)[-1].strip()]
+        results = _embed_isolated(parts)
+        return [([v for vs, _ in results for v in vs], any(lost for _, lost in results))]
+    clean = _sanitize_embed_text(text)
+    if clean != text and clean.strip():
+        try:
+            return [(_embed([clean]), False)]
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400:
+                raise
+    return [([], True)]
+
+
+def _note_skipped(graph: "Graph", nid: str, index: int) -> None:
+    """Record a chunk Ollama refused even at the floor: a stderr warning with the note id
+    and chunk number only (never its text) and a `embed_skipped` usage.log event."""
+    print(f"warning: chunk {index} of note {nid} could not be embedded (HTTP 400); "
+          "the note stays findable by keyword", file=sys.stderr)
+    log_usage(graph.paths, {"event": "embed_skipped", "note": nid, "chunk": index,
+                            "reason": "ollama error, HTTP 400"})
+
+
 def quarantine_embeddings(embed_cache: Path, problem: str) -> Path | None:
     """Move a corrupt embeddings cache aside (embeddings.json.corrupt-<timestamp>) so
     the next successful embed call rebuilds it; keyword retrieval covers the gap."""
@@ -874,25 +953,49 @@ def refresh_embeddings(graph: Graph, query: str | None = None) -> tuple[dict, li
     elif loaded.get("model") == EMBED_MODEL:
         cache = loaded
     notes = cache["notes"]
-    stale, texts = [], []
+    stale, texts = [], []  # texts: every non-blank chunk of the stale notes, in order
     for nid, note in graph.notes.items():
         parts = chunks(note)
         digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
         if notes.get(nid, {}).get("hash") != digest:
-            stale.append((nid, digest, len(parts)))
-            texts.extend(parts)
+            stale.append((nid, digest, parts))
+            texts.extend(p for p in parts if p.strip())  # a blank chunk is never sent
     removed = [nid for nid in notes if nid not in graph.notes]
-    vectors = _embed(texts + ([query] if query else [])) if texts or query else []
+    per_text, qvec = None, None  # per_text[i]: ([vectors], lost) for texts[i]
+    if texts or query:
+        try:
+            vectors = _embed(texts + ([query] if query else []))
+            per_text = [([v], False) for v in vectors[:len(texts)]]
+            qvec = vectors[len(texts)] if query else None
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400:
+                raise
+            # One bad input fails the whole request: embed the query alone (the semantic
+            # path must survive), then bisect the chunks to isolate what Ollama refuses.
+            qvec = _embed([query])[0] if query else None
+            # The combined request (texts + query) was refused; texts alone may be fine.
+            per_text = _embed_isolated(texts) if query else _embed_isolated(texts, known_bad=True)
     pos = 0
-    for nid, digest, count in stale:
-        notes[nid] = {"hash": digest, "vectors": vectors[pos:pos + count]}
-        pos += count
+    for nid, digest, parts in stale:
+        entry_vectors, skipped = [], []
+        for i, part in enumerate(parts):
+            if not part.strip():
+                continue
+            found, lost = per_text[pos]
+            pos += 1
+            entry_vectors.extend(found)
+            if lost:
+                skipped.append(i)
+                _note_skipped(graph, nid, i)
+        notes[nid] = {"hash": digest, "vectors": entry_vectors}
+        if skipped:
+            notes[nid]["skipped"] = skipped
     for nid in removed:
         del notes[nid]
     if stale or removed:
         embed_cache.parent.mkdir(exist_ok=True)
         atomic_write_text(embed_cache, json.dumps(cache))
-    return cache, (vectors[-1] if query else None)
+    return cache, qvec
 
 
 # How the last seed() call retrieved: read by `context` for its header line and log.
@@ -927,8 +1030,10 @@ def semantic_scores(graph: Graph, text: str) -> dict[str, float] | None:
         print(f"warning: semantic search unavailable ({message}); keyword match only",
               file=sys.stderr)
         return None
-    cosines = {nid: max(sum(a * b for a, b in zip(qvec, v))
-                        for v in cache["notes"][nid]["vectors"])
+    # A note whose chunks were all refused has no vector: it scores lowest here and
+    # stays findable by keyword.
+    cosines = {nid: max((sum(a * b for a, b in zip(qvec, v))
+                         for v in cache["notes"][nid]["vectors"]), default=-1.0)
                for nid in graph.notes}
     best = max(cosines.values(), default=0.0)
     if best < SEMANTIC_FLOOR:
@@ -2016,6 +2121,10 @@ def retrieval_stats(events: list[dict], since: str | None = None,
     keyword = [c for c in modes if c["retrieval"] != "semantic"]
     deliberate = sum(1 for c in keyword if c.get("fallback_reason") in DELIBERATE_FALLBACKS)
     unspecified = sum(1 for c in keyword if not c.get("fallback_reason"))
+    by_reason: dict[str, int] = {}
+    for c in keyword:
+        label = str(c.get("fallback_reason") or "unspecified")
+        by_reason[label] = by_reason.get(label, 0) + 1
 
     shares = [sc[3] for c in all_ctx if c.get("scores")
               for nid in c.get("notes") or [] if isinstance(sc := c["scores"].get(nid), list)
@@ -2036,7 +2145,8 @@ def retrieval_stats(events: list[dict], since: str | None = None,
                  "closed_n": len(shown_closed)},
         "keyword_fallback": {"n": len(modes), "count": len(keyword), "rate": ratio(len(keyword), len(modes)),
                              "deliberate": deliberate, "unspecified": unspecified,
-                             "failure": len(keyword) - deliberate - unspecified},
+                             "failure": len(keyword) - deliberate - unspecified,
+                             "by_reason": dict(sorted(by_reason.items(), key=lambda kv: (-kv[1], kv[0])))},
         "learning": {"n": scored, "notes": len(shares),
                      "mean_learned_share": ratio(sum(shares), len(shares))},
         "closure": {"contexts": len(all_ctx), "closed": closed, "rate": ratio(closed, len(all_ctx)),
@@ -2061,6 +2171,8 @@ def format_retrieval_stats(r: dict) -> str:
         f"later reinforced {pct(s['later_reinforced'])} (n={s['closed_n']})",
         f"keyword fallback:   {k['count']}/{k['n']} ({pct(k['rate'])}), deliberate {k['deliberate']}, "
         f"failure {k['failure']}, unspecified {k['unspecified']}",
+        "  by reason:        " + (", ".join(f"{name} {n}" for name, n in k["by_reason"].items())
+                                  or "-"),
         f"learned share:      mean {pct(lrn['mean_learned_share'])} of {lrn['notes']} loaded notes "
         f"({lrn['n']} contexts with scores)",
         f"closure:            {cl['closed']}/{cl['contexts']} contexts reinforced ({pct(cl['rate'])}), "

@@ -729,6 +729,12 @@ config (skipped silently if `settings.json` doesn't exist yet).
 - **Ollama not running / unreachable**: not a problem. `doctor` will warn, but the
   engine falls back to keyword-only search; tell the user it's optional and they can
   start Ollama (or install it) anytime later.
+- **`doctor` warns "N chunk(s) could not be embedded"**: Ollama refused part of that
+  note (HTTP 400) even after the chunk was split down to about 50 characters and retried
+  once with control characters removed. The note is still found by keyword and no text was
+  cut; only the refused piece has no vector. The note id and chunk number are in
+  `.graph/usage.log` (`embed_skipped` events), never the text. Usually the text holds odd
+  characters; fix them in the note and run `index`.
 - **`git pull` says you are not on a branch**: stable installs are checked out at a
   release tag (detached HEAD) on purpose; use `update` instead of `git pull` (on 0.1.0
   or 0.2.0, see "Updating from 0.1.0 or 0.2.0").
