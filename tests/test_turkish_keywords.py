@@ -75,6 +75,41 @@ class TestNormalization(unittest.TestCase):
         )
 
 
+class TestSuffixMatching(unittest.TestCase):
+    def m(self, a: str, b: str) -> bool:
+        return graph._matches(graph.normalize_token(a), graph.normalize_token(b))
+
+    def test_turkish_inflection_matches(self):
+        for a, b in [("notlar", "not"), ("kitabı", "kitap"), ("metni", "metin"),
+                     ("durumu", "durum"), ("testler", "test"), ("kitaplarımız", "kitap"),
+                     ("şifreyi", "şifre"), ("sistemde", "sistem")]:
+            with self.subTest(a=a, b=b):
+                self.assertTrue(self.m(a, b))
+                self.assertTrue(self.m(b, a))
+
+    def test_prefix_false_positives_are_gone(self):
+        for a, b in [("kara", "karar"), ("test", "testere"), ("codex", "code"),
+                     ("veri", "verify"), ("agentic", "agent"), ("worker", "work")]:
+            with self.subTest(a=a, b=b):
+                self.assertFalse(self.m(a, b))
+
+    def test_english_plurals_match(self):
+        for a, b in [("hook", "hooks"), ("agent", "agents"), ("test", "tests"),
+                     ("code", "codes"), ("class", "classes"), ("status", "statuses"),
+                     ("box", "boxes")]:
+            with self.subTest(a=a, b=b):
+                self.assertTrue(self.m(a, b))
+
+    def test_guarded_words_are_not_stripped(self):
+        for w in ("status", "class", "analysis", "codex"):
+            self.assertEqual(graph.stem_token(graph.normalize_token(w)), w)
+        self.assertNotEqual(graph.stem_token("status"), graph.stem_token("statu"))
+
+    def test_short_words_untouched(self):
+        for w in ("not", "kara", "test", "logs", "code"):
+            self.assertEqual(graph.stem_token(w), w)
+
+
 class TestEndToEnd(_Vault):
     def test_ascii_query_finds_turkish_keyword(self):
         self.note("kasa", "Gizli anahtarlar burada.", keywords="şifre")
@@ -84,6 +119,11 @@ class TestEndToEnd(_Vault):
     def test_turkish_query_finds_ascii_keyword(self):
         self.note("kasa", "Gizli anahtarlar burada.", keywords="sifre")
         self.assertEqual(self.found("ŞİFRE"), ["kasa"])
+
+    def test_inflected_query_finds_note(self):
+        self.note("defter", "Gunluk kayitlar.", keywords="notlar")
+        self.note("other", "Unrelated text.", keywords="deploy")
+        self.assertEqual(self.found("notlarimiz"), ["defter"])
 
 
 if __name__ == "__main__":
