@@ -356,11 +356,13 @@ available, want me to check what changed?"). If they agree:
    `main` it stops and prints the exact fix command. Never update the engine by hand
    (`git pull`/`merge`/`checkout`, ad-hoc branches).
 3. If the update shows a diff for `AGENTS.md` (or `doctor` warns that it is behind the
-   template), explain in plain language what changed and ask before running
-   `update --apply-agents`, which replaces the file with the template (it works even when
-   the engine is already up to date). If the user's `AGENTS.md` is translated or edited,
-   offer to carry the changes into their version instead, keeping the template's last
-   line (`vault-engine AGENTS.md template: N`) so later updates know it is current.
+   template), explain in plain language what changed. `update --all` replaces a stale or
+   missing file with the template and commits it in the data repo; an `AGENTS.md` the user
+   translated or edited is kept (the update says so), and only `update --apply-agents`
+   replaces it (it works even when the engine is already up to date). If the user's
+   `AGENTS.md` is translated or edited, offer to carry the changes into their version
+   instead, keeping the template's last line (`vault-engine AGENTS.md template: N`) so
+   later updates know it is current.
    `update` commits each file it writes in the data repo (the CI pin in
    `.github/workflows/vault.yml`, `AGENTS.md`), like `migrate`; it never pushes. If the
    data repo has a backup, push it afterward (`git -C "<projects folder>/vault" push`).
@@ -426,9 +428,8 @@ after step 2.
    `<projects folder>/vault/.github/workflows/vault.yml` still says `vault-engine@main`,
    change that to `vault-engine@<new tag>` by hand.
 7. Apply the rest of the Upgrade notes you read in step 3. If `doctor` says `AGENTS.md`
-   is behind the template, run `python "<projects folder>/vault-engine/tools/graph.py" update`
-   to see the diff and, after the user agrees, `update --apply-agents` (see "Updating"
-   above, step 3). Commit what changed in the data repo, and push it if it has a backup
+   is behind the template, run `python "<projects folder>/vault-engine/tools/graph.py" update --all`
+   after the user agrees (see "Updating" above, step 3). Commit what changed in the data repo, and push it if it has a backup
    (`git -C "<projects folder>/vault" push`).
 8. Do the same on every other computer that uses this data repo. Engines before 0.3.0
    don't know the vault's data schema, so they never refuse to write to a vault that a
@@ -444,13 +445,14 @@ after step 2.
    computer already pushed `main`): pull it first, `git pull --rebase origin main`, then
    push, or just follow the exact command `doctor` prints there, which includes the pull
    when it can tell `main` already exists on the remote.
-9. On another computer, after `update --all` and `git pull` in the data repo and a clean
-   `doctor`, run `python "<projects folder>/vault-engine/tools/graph.py" user-config` to
-   compare the Codex/Claude user-level config with the vault's `config/` templates and,
-   after the user agrees, `user-config --install`. It backs up every file it changes and
-   never removes the user's own entries; a second run changes nothing. `doctor` and
-   `context` warn when it is needed. The full sequence is in docs/commands.md, "Updating another
-   computer". Supported files under `<data>/config/` (each is
+9. On another computer, `git pull` in the data repo, then `update --all`: it also merges
+   the Codex/Claude user-level config from the vault's `config/` templates into the
+   `~/.codex` and `~/.claude` that exist (it never creates them), backing up every file it
+   changes and never removing the user's own entries; a second run changes nothing. No
+   separate `user-config --install` is needed (that command stays available for the
+   settings alone, and `user-config` alone compares without writing). `doctor` and
+   `context` warn when it is needed and name `update --all`. The full sequence is in
+   docs/commands.md, "Updating another computer". Supported files under `<data>/config/` (each is
    optional; the engine ships a default only for `codex/developer-instructions.md`):
 
    ```text
