@@ -26,12 +26,14 @@ import statistics
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
 
@@ -442,8 +444,20 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
+def normalize_token(text: str) -> str:
+    """Fold a word to one comparable form: İSTANBUL/istanbul, IŞIK/ışık/isik, şifre/sifre."""
+    text = text.replace("İ", "i").replace("I", "i").replace("ı", "i")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return text.casefold()
+
+
 def tokenize(text: str) -> list[str]:
-    return [t.casefold() for t in TOKEN.findall(text)]
+    return [normalize_token(t) for t in TOKEN.findall(text)]
+
+
+# Query words are normalized before the stopword filter, so the set uses the same form.
+STOPWORDS = {normalize_token(w) for w in STOPWORDS}
 
 
 @dataclass
@@ -728,11 +742,52 @@ def report_commit(repo: Path, files: list[str], outcome: tuple[str, str],
 
 # --- retrieval ---------------------------------------------------------------
 
+# Light suffix stripper. The idea (NFKD folding, gated suffix table, softening and vowel-drop
+# undo) is adapted from Avenox Beyin (template/.claude/scripts/beyin_v3.py, MIT); no code copied.
+# Works on normalized (ASCII) tokens. Each entry is (suffix, minimum stem length kept).
+_TR_SUFFIXES = sorted(
+    [
+        ("imiz", 3), ("umuz", 3), ("leri", 3), ("lari", 3), ("nin", 3), ("nun", 3),
+        ("lar", 3), ("ler", 3), ("dan", 3), ("den", 3), ("tan", 3), ("ten", 3),
+        ("yi", 4), ("yu", 4), ("ya", 4), ("ye", 4), ("da", 4), ("de", 4),
+        ("ta", 4), ("te", 4), ("si", 4), ("su", 4),
+        ("i", 4), ("u", 4), ("a", 4), ("e", 4),
+    ],
+    key=lambda x: -len(x[0]),
+)
+_SOFTENED = {"b": "p", "d": "t", "g": "k"}  # kitab(i) -> kitap; c is already folded from ç
+_VOWEL_DROP = {  # metn(i) -> metin
+    "metn": "metin", "sehr": "sehir", "fikr": "fikir", "ism": "isim",
+    "omr": "omur", "akl": "akil", "burn": "burun", "ogl": "ogul",
+}
+
+
+@lru_cache(maxsize=65536)
+def stem_token(w: str) -> str:
+    """Strip plural/case/possessive endings from a normalized token (words under 5 letters stay)."""
+    turkish = False
+    while len(w) >= 5:
+        if w.endswith("s") and not w.endswith(("ss", "us", "is")):
+            # guarded English plural: status/class stay, boxes -> box, cases -> case
+            if w.endswith("es") and w[:-2].endswith(("ss", "x", "z", "ch", "sh", "us")):
+                w = w[:-2]
+            else:
+                w = w[:-1]
+            continue
+        for suf, keep in _TR_SUFFIXES:
+            if w.endswith(suf) and len(w) - len(suf) >= keep:
+                w = w[: -len(suf)]
+                turkish = True
+                break
+        else:
+            break
+    if turkish:
+        w = _VOWEL_DROP.get(w) or (w[:-1] + _SOFTENED[w[-1]] if w[-1] in _SOFTENED else w)
+    return w
+
+
 def _matches(q: str, t: str) -> bool:
-    # Cheap stemming: a shared prefix of 4+ chars covers most Turkish suffixes.
-    if q == t:
-        return True
-    return min(len(q), len(t)) >= 4 and (t.startswith(q) or q.startswith(t))
+    return q == t or stem_token(q) == stem_token(t)
 
 
 def score(note: Note, query_tokens: list[str], body_weight: float = 1.0) -> float:
