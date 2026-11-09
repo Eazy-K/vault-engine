@@ -44,11 +44,14 @@ class QueueError(Exception):
     """Refusal or setup problem."""
 
 
-def _run(argv: list[str], cwd: Path | str | None = None, timeout: int | None = None,
+def _run(argv: list[str] | str, cwd: Path | str | None = None, timeout: int | None = None,
          shell: bool = False) -> subprocess.CompletedProcess:
-    """The one place that starts processes (tests replace it)."""
+    """The one place that starts processes (tests replace it). Children get no stdin
+    (`claude -p` otherwise waits 3 s for piped input). With `shell=True`, `argv` is the
+    command string itself."""
     return subprocess.run(argv, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout, shell=shell)
+                          encoding="utf-8", errors="replace", timeout=timeout, shell=shell,
+                          stdin=subprocess.DEVNULL)
 
 
 def _git(repo: Path, *args: str, timeout: int | None = 300) -> subprocess.CompletedProcess:
@@ -267,6 +270,11 @@ def parse_claude_result(stdout: str) -> dict:
     tokens = sum(int(usage[k]) for k in ("input_tokens", "output_tokens",
                  "cache_creation_input_tokens", "cache_read_input_tokens")
                  if isinstance(usage.get(k), (int, float)))
+    if not tokens and isinstance(data.get("modelUsage"), dict):
+        # a budget-hit run reports zeros in `usage`; the per-model block still has the counts
+        tokens = sum(int(m[k]) for m in data["modelUsage"].values() if isinstance(m, dict)
+                     for k in ("inputTokens", "outputTokens", "cacheCreationInputTokens",
+                               "cacheReadInputTokens") if isinstance(m.get(k), (int, float)))
     out.update(parsed=True, result=str(data.get("result") or ""),
                subtype=str(data.get("subtype") or ""), is_error=bool(data.get("is_error")),
                usd=num("total_cost_usd", float), turns=num("num_turns", int), tokens=tokens,
@@ -285,7 +293,7 @@ def run_claude(argv: list[str], wt: Path, timeout: int):
 def run_acceptance(command: str, wt: Path) -> dict:
     """Run the task's acceptance command (a shell string) in the worktree."""
     try:
-        cp = _run([command], cwd=wt, timeout=ACCEPTANCE_TIMEOUT, shell=True)
+        cp = _run(command, cwd=wt, timeout=ACCEPTANCE_TIMEOUT, shell=True)
         text, code = (cp.stdout or "") + (cp.stderr or ""), cp.returncode
     except subprocess.TimeoutExpired:
         text, code = "acceptance command timed out", 124
