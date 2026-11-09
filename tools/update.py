@@ -239,10 +239,10 @@ def context_hint(paths: "g.Paths") -> str | None:
         if latest_v is None or current_v is None or latest_v <= current_v:
             return None
         latest_str = ".".join(str(n) for n in latest_v)
-        graph_py = g.ENGINE / "tools" / "graph.py"
         return (f"<!-- vault-engine {latest_str} is available (this computer has "
                 f"{g.__version__}): ask the user once whether to run "
-                f"`python \"{graph_py}\" update` -->")
+                f"`{update_all_command(g.ENGINE)}` (updates the engine, user config and "
+                f"AGENTS.md in one go) -->")
     except Exception:
         return None
 
@@ -377,8 +377,9 @@ def _post_update(engine: Path, data: Path, args, *, moved: bool, migrate: bool =
                  rollback: str = "") -> bool:
     """The shared tail of `update`, identical for the stable and the dev channel.
     Order: migrate and setup (only when the engine moved), AGENTS.md, Claude
-    subagent files, Codex workers, Claude hooks, models, Codex hooks, doctor.
-    Returns False if migrate/setup/doctor failed (the caller exits 1)."""
+    subagent files, Codex workers, Claude hooks, models, Codex hooks, user
+    config, doctor. Returns False if migrate/setup/doctor or the user-config
+    step failed (the caller exits 1; doctor still runs after a user-config failure)."""
     if moved and migrate and (engine / "tools" / "schema.py").exists():
         print("running: migrate --yes")
         result = run_step(engine, data, ["migrate", "--yes"])
@@ -400,13 +401,16 @@ def _post_update(engine: Path, data: Path, args, *, moved: bool, migrate: bool =
     _claude_hooks_step(engine, data, args)
     _models_step(engine, data, args)
     _codex_hooks_step(engine, data, args)
+    config_ok = _user_config_step(engine, data, args)
     print("running: doctor")
     result = run_step(engine, data, ["doctor"])
     _print_step_output(result)
     if result.returncode != 0:
         print(f"update: doctor reported problems ({rollback})")
         return False
-    return True
+    if not config_ok:
+        print("update: the user-config step failed (see manual: above)")
+    return config_ok
 
 
 def _claude_in_use(data: Path) -> bool:
@@ -588,6 +592,61 @@ def _codex_hooks_step(engine: Path, data: Path, args) -> None:
     _print_step_output(result)
 
 
+def _user_config_step(engine: Path, data: Path, args) -> bool:
+    """Applies the user-config templates (what `user-config --install` does: same
+    planning, same `.bak-` backups) to the Codex/Claude config that exists on
+    this computer; a missing ~/.codex or ~/.claude is never created. ~/.codex and
+    ~/.claude belong to the user, so only --all writes; an interactive yes also
+    does for plain `update`; --yes alone or a non-interactive run prints the
+    command and skips. Returns False when the step failed (the caller still
+    runs doctor, then exits 1); a skip is not a failure."""
+    command = update_all_command(engine)
+    user_config = sys.modules.get("user_config")
+    if user_config is None:
+        if getattr(args, "all", False):
+            print("user config: not applied, the user_config module is unavailable; "
+                  f"manual: update the engine checkout, then run {command}")
+            return False
+        return True
+    try:
+        items = user_config.evaluate(g.Paths(engine, data), only_existing_homes=True)
+    except Exception as exc:
+        print(f"user config: could not be checked ({exc}); manual: fix the error above, "
+              f"then run {command}")
+        return False
+    errors = [i for i in items if i.status == "error"]
+    drift = [i for i in items if i.status == "drift"]
+    ok = True
+    for item in errors:
+        print(f"user config: {item.name}: {item.message}")
+    if errors:
+        print("user config: manual: fix the problem(s) above (for example install Python 3.11+ "
+              f"for config.toml), then run {command}")
+        ok = False
+    if not drift:
+        return ok
+    print("\nUser-level Codex/Claude config differs from the vault templates:")
+    for item in drift:
+        print(f"  {item.name}: {item.target}" + (f" ({item.message})" if item.message else ""))
+    install = bool(getattr(args, "all", False))
+    if not install and not args.yes and g.stdin_is_interactive():
+        try:
+            answer = input("Apply them (each changed file is backed up first)? [y/N]: ").strip().lower()
+        except EOFError:
+            answer = ""
+        install = answer.startswith("y")
+    if not install:
+        print(f"apply them later with: {command}")
+        return ok
+    try:
+        for item, saved in user_config.install(drift):
+            print(f"updated {item.name}: {item.target}" + (f" (backup: {saved})" if saved else ""))
+    except Exception as exc:
+        print(f"user config: writing failed ({exc}); manual: fix the error, then run {command}")
+        return False
+    return ok
+
+
 # --- update command: CI pin ---------------------------------------------------
 
 CI_WORKFLOW = ".github/workflows/vault.yml"
@@ -749,20 +808,28 @@ def _handle_agents_md(engine: Path, data: Path, args) -> None:
     """Compares the vault's AGENTS.md with the engine's template (whatever the
     engine moved from). Without --apply-agents a diff is shown only when the file
     is behind the template, so a translated file that keeps the marker line stays
-    quiet; --apply-agents replaces any file that differs, after showing the diff."""
+    quiet; --apply-agents replaces any file that differs, after showing the diff.
+    --all replaces a `stale` or `missing` file the same way; an edited
+    (`customized`) or `newer` one is kept and the reason printed."""
     state, message = agents_md_status(engine, data)
+    apply = bool(getattr(args, "apply_agents", False))
+    everything = bool(getattr(args, "all", False))
     if state in ("current", "unknown"):
-        if args.apply_agents:
+        if apply:
             print(message if state == "unknown" else "AGENTS.md already matches the template")
         return
     if state == "newer":
-        print(message + ("; not replaced" if args.apply_agents else ""))
+        print(message + ("; not replaced" if apply or everything else ""))
         return
-    if state == "customized" and not args.apply_agents:
+    if state == "customized" and not apply:
+        if everything:
+            print(f"{message}; kept as is because it is your edited or translated copy "
+                  "(the vault history has the earlier text). "
+                  "update --apply-agents replaces it with the template")
         return
     print(f"\n{message}. Diff from it to the template:\n")
     print(_agents_diff(engine, data))
-    if args.apply_agents:
+    if apply or (everything and state in ("stale", "missing")):
         _write_agents(engine, data)
         return
     if not args.yes and g.stdin_is_interactive():
@@ -990,9 +1057,10 @@ def register(sub) -> None:
                    help="install the Codex hooks (codex-hooks --install) without asking if "
                         "they are missing; --yes alone only prints the command")
     p.add_argument("--all", action="store_true",
-                   help="consent to every user-level write without prompts: Claude agents, "
-                        "Claude and Codex hooks, models, Codex workers (implies --yes; "
-                        "AGENTS.md still needs --apply-agents)")
+                   help="bring everything on this computer up to date without prompts: Claude agents, "
+                        "Claude and Codex hooks, models, Codex workers, user config "
+                        "(user-config --install, existing ~/.claude and ~/.codex only) and a "
+                        "stale or missing vault AGENTS.md (an edited one is kept; implies --yes)")
     p.add_argument("--models", action="store_true",
                    help="sync Claude Code's model settings (models --apply) without asking "
                         "if they are out of date; --yes alone only prints the command")

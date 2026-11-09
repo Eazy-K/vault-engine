@@ -1229,8 +1229,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             if agents_state in ("current", "customized"):
                 check("OK", agents_msg)
             elif agents_state == "stale":
-                check("WARN", f"{agents_msg}: run {_graph_cmd('update')} to see the diff; "
-                              f"{_graph_cmd('update --apply-agents')} replaces the file")
+                check("WARN", f"{agents_msg}: run {_graph_cmd('update --all')} "
+                              "(shows the diff and replaces the file)")
             elif agents_state == "newer":
                 check("INFO", agents_msg)
 
