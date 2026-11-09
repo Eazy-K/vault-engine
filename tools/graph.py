@@ -2016,6 +2016,10 @@ def retrieval_stats(events: list[dict], since: str | None = None,
     keyword = [c for c in modes if c["retrieval"] != "semantic"]
     deliberate = sum(1 for c in keyword if c.get("fallback_reason") in DELIBERATE_FALLBACKS)
     unspecified = sum(1 for c in keyword if not c.get("fallback_reason"))
+    by_reason: dict[str, int] = {}
+    for c in keyword:
+        label = str(c.get("fallback_reason") or "unspecified")
+        by_reason[label] = by_reason.get(label, 0) + 1
 
     shares = [sc[3] for c in all_ctx if c.get("scores")
               for nid in c.get("notes") or [] if isinstance(sc := c["scores"].get(nid), list)
@@ -2036,7 +2040,8 @@ def retrieval_stats(events: list[dict], since: str | None = None,
                  "closed_n": len(shown_closed)},
         "keyword_fallback": {"n": len(modes), "count": len(keyword), "rate": ratio(len(keyword), len(modes)),
                              "deliberate": deliberate, "unspecified": unspecified,
-                             "failure": len(keyword) - deliberate - unspecified},
+                             "failure": len(keyword) - deliberate - unspecified,
+                             "by_reason": dict(sorted(by_reason.items(), key=lambda kv: (-kv[1], kv[0])))},
         "learning": {"n": scored, "notes": len(shares),
                      "mean_learned_share": ratio(sum(shares), len(shares))},
         "closure": {"contexts": len(all_ctx), "closed": closed, "rate": ratio(closed, len(all_ctx)),
@@ -2061,6 +2066,8 @@ def format_retrieval_stats(r: dict) -> str:
         f"later reinforced {pct(s['later_reinforced'])} (n={s['closed_n']})",
         f"keyword fallback:   {k['count']}/{k['n']} ({pct(k['rate'])}), deliberate {k['deliberate']}, "
         f"failure {k['failure']}, unspecified {k['unspecified']}",
+        "  by reason:        " + (", ".join(f"{name} {n}" for name, n in k["by_reason"].items())
+                                  or "-"),
         f"learned share:      mean {pct(lrn['mean_learned_share'])} of {lrn['notes']} loaded notes "
         f"({lrn['n']} contexts with scores)",
         f"closure:            {cl['closed']}/{cl['contexts']} contexts reinforced ({pct(cl['rate'])}), "
