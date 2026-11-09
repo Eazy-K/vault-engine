@@ -1370,7 +1370,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         models = g.ollama_models()
     except (urllib.error.URLError, OSError, ValueError) as exc:
         check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback; "
-                          "manual: start Ollama (the engine cannot)")
+                          "manual: start Ollama (autostart only covers a local URL with ollama on PATH)")
     else:
         if g.has_embed_model(models):
             check("OK", f"Ollama reachable at {g.OLLAMA_URL}, {g.EMBED_MODEL} pulled")

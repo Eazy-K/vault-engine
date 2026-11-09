@@ -726,7 +726,7 @@ config (skipped silently if `settings.json` doesn't exist yet).
   unrestricted access to run commands on the machine — and only change it if the user
   agrees; otherwise offer to run the commands yourself if you're not Codex, or ask the
   user to run them manually.
-- **Ollama not running / unreachable**: not a problem. `doctor` will warn, but the
+- **Ollama not running / unreachable**: not a problem. If `ollama` is on PATH and the URL is local, the engine starts `ollama serve` itself on the next `context` (detached, one stderr line, waits up to 15 s); `VAULT_OLLAMA_AUTOSTART=0` turns that off, and `doctor` reports the setting. Otherwise: `doctor` will warn, but the
   engine falls back to keyword-only search; tell the user it's optional and they can
   start Ollama (or install it) anytime later.
 - **`doctor` warns "N chunk(s) could not be embedded"**: Ollama refused part of that
