@@ -115,7 +115,11 @@ def evaluate(body: str, diff_text: str, acceptance_text: str | None) -> tuple[bo
     items: list[str] = []
     ok = True
     command = g.task_acceptance_command(body)
-    if command is None or command == "human":
+    if g.task_acceptance_multiline(body):
+        ok = False
+        items.append("- fail: acceptance block has more than one line; "
+                     f"{g.MULTILINE_ACCEPTANCE_HINT}")
+    elif command is None or command == "human":
         items.append("- ok: acceptance: human / none")
     elif acceptance_text is None:
         items.append("- human: acceptance not checked (no --acceptance-output; needs human check)")

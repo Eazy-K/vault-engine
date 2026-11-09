@@ -124,6 +124,12 @@ class TestReviewFixes(unittest.TestCase):
         self.assertFalse(verify_task.acceptance_green("not OK\n")[0])
         self.assertTrue(verify_task.acceptance_green("Ran 1 test\nOK (skipped=1)\n")[0])
 
+    def test_verify_fails_on_multiline_acceptance(self):
+        ok, items = verify_task.evaluate(
+            "## Acceptance\n```bash\ncd /x\npython -m unittest\n```\n", "", "Ran 1 test\nOK\n")
+        self.assertFalse(ok)
+        self.assertIn("more than one line", "\n".join(items))
+
     def test_ran_zero_tests_is_not_green(self):
         green, reason = verify_task.acceptance_green("Ran 0 tests in 0.0s\n\nOK\n")
         self.assertFalse(green)

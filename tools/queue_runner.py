@@ -104,6 +104,10 @@ def pick_task(paths: g.Paths, config: dict) -> dict | None:
         project = str(meta.get("project"))
         if project not in config["projects"]:
             continue
+        if g.task_acceptance_multiline(note.body):
+            print(f"skipped {nid}: acceptance block has more than one line; "
+                  f"{g.MULTILINE_ACCEPTANCE_HINT}", file=sys.stderr)
+            continue  # never run just the first line of a multi-line block
         acceptance = g.task_acceptance_command(note.body)
         if not acceptance or acceptance == "human":
             continue

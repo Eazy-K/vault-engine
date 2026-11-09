@@ -331,6 +331,9 @@ def _run(args) -> dict | None:
     branch = check_worktree(wt, args.allow_main)
     if args.task:
         task_id, body = load_task(args.task)
+        if g.task_acceptance_multiline(body) and not args.acceptance:
+            raise WorkerError(f"task {task_id}: acceptance block has more than one line; "
+                              f"{g.MULTILINE_ACCEPTANCE_HINT}")
         acceptance = g.task_acceptance_command(body)
     else:
         task_id, body, acceptance = Path(args.prompt_file).stem, _read(args.prompt_file), None

@@ -233,6 +233,12 @@ class CodexWorkerTests(unittest.TestCase):
         self.assertIn("--allow-main", r.stderr)
         self.assertEqual(self.run_cli("--allow-main").returncode, 0)
 
+    def test_refuses_multiline_acceptance(self):
+        self.task.write_text(TASK.replace("python -c", "cd /x\npython -c", 1), encoding="utf-8")
+        r = self.run_cli()
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("more than one line", r.stderr)
+
     def test_requires_task_or_prompt_file(self):
         r = self.run_cli(task=False)
         self.assertEqual(r.returncode, 2)
