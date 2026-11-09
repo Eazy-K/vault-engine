@@ -1360,11 +1360,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                               f"{setup_cmd} (writes {claude_md} if it doesn't "
                               "exist yet, or add the routing line to it by hand)")
 
+    if g.autostart_enabled():
+        found = "found" if _which("ollama") else "not found on PATH, so it cannot be started"
+        check("INFO", f"Ollama autostart on (VAULT_OLLAMA_AUTOSTART=0 disables): `ollama` {found}; "
+                      f"starts only for a local URL, waits up to {g.OLLAMA_START_TIMEOUT:g}s")
+    else:
+        check("INFO", "Ollama autostart off (VAULT_OLLAMA_AUTOSTART=0); start Ollama yourself")
     try:
         models = g.ollama_models()
     except (urllib.error.URLError, OSError, ValueError) as exc:
         check("WARN", f"Ollama unreachable at {g.OLLAMA_URL} ({exc}); keyword-only fallback; "
-                          "manual: start Ollama (the engine cannot)")
+                          "manual: start Ollama (autostart only covers a local URL with ollama on PATH)")
     else:
         if g.has_embed_model(models):
             check("OK", f"Ollama reachable at {g.OLLAMA_URL}, {g.EMBED_MODEL} pulled")

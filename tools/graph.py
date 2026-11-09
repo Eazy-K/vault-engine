@@ -20,11 +20,14 @@ import math
 import os
 import re
 import secrets
+import shutil
 import socket
 import statistics
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from dataclasses import dataclass, field
@@ -175,6 +178,10 @@ def default_paths() -> Paths:
 
 
 OLLAMA_URL = os.environ.get("VAULT_OLLAMA_URL", "http://127.0.0.1:11434")
+try:
+    OLLAMA_START_TIMEOUT = float(os.environ.get("VAULT_OLLAMA_START_TIMEOUT", "15"))
+except ValueError:
+    OLLAMA_START_TIMEOUT = 15.0  # seconds to wait for a freshly started Ollama to answer
 EMBED_MODEL = os.environ.get("VAULT_EMBED_MODEL", "bge-m3")
 KEEP_ALIVE = "30m"
 EMBED_TIMEOUT = 120  # first call may load the model from disk
@@ -782,16 +789,75 @@ def embed_error(exc: Exception) -> str:
     return str(exc)
 
 
+def _ollama_is_local() -> bool:
+    host = (urllib.parse.urlparse(OLLAMA_URL).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost")
+
+
+def autostart_enabled() -> bool:
+    """On by default; VAULT_OLLAMA_AUTOSTART=0 turns it off. Read per call (not at
+    import) so a test run can switch it off after the modules are loaded."""
+    return os.environ.get("VAULT_OLLAMA_AUTOSTART", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def start_ollama() -> bool:
+    """Start `ollama serve` detached and wait up to OLLAMA_START_TIMEOUT for it to
+    answer. Does nothing (False) when autostart is off, `ollama` is not on PATH or
+    OLLAMA_URL is not local. The process outlives this one; it is never stopped."""
+    if not autostart_enabled() or not _ollama_is_local():
+        return False
+    exe = shutil.which("ollama")
+    if not exe:
+        return False
+    kwargs: dict = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
+                                   | subprocess.CREATE_NEW_PROCESS_GROUP
+                                   | subprocess.CREATE_NO_WINDOW)
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([exe, "serve"], **kwargs)
+    except OSError:
+        return False
+    print(f"vault: Ollama was not running; started `ollama serve` "
+          f"(waiting up to {OLLAMA_START_TIMEOUT:g}s; disable: VAULT_OLLAMA_AUTOSTART=0)",
+          file=sys.stderr)
+    deadline = time.monotonic() + OLLAMA_START_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        try:
+            ollama_models(timeout=1)
+            return True
+        except urllib.error.HTTPError:
+            return True  # it answers, just not with a models list
+        except (OSError, ValueError):
+            pass
+    return False
+
+
 def _probe_ollama() -> None:
     """Fail in seconds when nothing answers at OLLAMA_URL, or when EMBED_MODEL was
     never pulled, instead of spending EMBED_TIMEOUT (sized for loading the model)
     on a dead server, a hung /api/embed, or a model that was never going to load."""
     try:
-        names = ollama_models(timeout=PROBE_TIMEOUT)
+        try:
+            names = ollama_models(timeout=PROBE_TIMEOUT)
+        except urllib.error.HTTPError:
+            return  # it answered, just not with a models list; /api/embed tells what is missing
+        except ValueError:
+            return  # unexpected /api/tags shape; let /api/embed speak for itself
+        except OSError:
+            # Nothing answered (refused or timed out): try starting it once, then re-ask.
+            if not start_ollama():
+                raise
+            names = ollama_models(timeout=PROBE_TIMEOUT)
     except urllib.error.HTTPError:
-        return  # it answered, just not with a models list; /api/embed tells what is missing
+        return
     except ValueError:
-        return  # unexpected /api/tags shape; let /api/embed speak for itself
+        return
     if not has_embed_model(names):
         raise ValueError(f"Ollama has no {EMBED_MODEL} model; {pull_hint()}")
 
