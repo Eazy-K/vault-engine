@@ -123,7 +123,7 @@ class TestSubagentLog(unittest.TestCase):
         self.assertEqual(event["last_message_chars"], len("Analysis complete."))
         self.assertNotIn("Analysis", json.dumps(event))  # message text is never logged
         self.assertNotIn("agent_transcript_path", event)
-        for key in ("budget_class", "turns", "tokens", "budget_hit"):  # Explore has no class
+        for key in ("max_turns", "turns", "tokens", "budget_hit"):  # Explore has no cap
             self.assertNotIn(key, event)
 
     def test_missing_optional_fields_are_omitted(self):
@@ -270,7 +270,8 @@ class TestSubagentBudget(unittest.TestCase):
     def test_under_threshold_logs_fields_silently(self):
         out, event = self._run(turns=5, last_usage=(1000, 200, 300))
         self.assertEqual(out, "")
-        self.assertEqual(event["budget_class"], "M")
+        self.assertEqual(event["max_turns"], 60)
+        self.assertNotIn("budget_class", event)
         self.assertEqual(event["turns"], 5)
         self.assertEqual(event["tokens"], 1500)
         self.assertEqual(event["budget_hit"], "none")
@@ -279,15 +280,15 @@ class TestSubagentBudget(unittest.TestCase):
         out, event = self._run(turns=48)  # 48/60 = 80%
         msg = json.loads(out)
         self.assertEqual(list(msg), ["systemMessage"])
-        self.assertIn("worker-medium used 48/60 turns", msg["systemMessage"])
-        self.assertIn("class M", msg["systemMessage"])
+        self.assertIn("worker-medium turn cap 60 is at >=80% (turns 48)",
+                      msg["systemMessage"])
         self.assertEqual(event["budget_hit"], "warn")
 
     def test_block_over_max_turns(self):
         out, event = self._run(turns=61)
         msg = json.loads(out)
         self.assertEqual(list(msg), ["systemMessage"])  # no decision: block any more
-        self.assertIn("61/60 turns", msg["systemMessage"])
+        self.assertIn("worker-medium turn cap 60 exceeded (turns 61)", msg["systemMessage"])
         self.assertIn("budget-guard", msg["systemMessage"])
         self.assertEqual(event["budget_hit"], "block")
 
@@ -297,15 +298,15 @@ class TestSubagentBudget(unittest.TestCase):
         self.assertEqual(event["budget_hit"], "block")
         self.assertTrue(event["stop_hook_active"])
 
-    def test_block_over_max_tokens(self):
+    def test_token_overrun_alone_neither_warns_nor_blocks(self):
         out, event = self._run(turns=3, last_usage=(100000, 100000, 60000))
-        self.assertEqual(list(json.loads(out)), ["systemMessage"])
-        self.assertEqual(event["tokens"], 260000)
-        self.assertEqual(event["budget_hit"], "block")
+        self.assertEqual(out, "")
+        self.assertEqual(event["tokens"], 260000)  # still measured
+        self.assertEqual(event["budget_hit"], "none")
 
     def test_config_override_from_vault_config(self):
         (self.data / "vault.config.json").write_text(json.dumps({"budgets": {
-            "classes": {"M": {"max_turns": 3, "max_tokens": 250000}}}}),
+            "roles": {"worker-medium": 3}}}),
             encoding="utf-8", newline="\n")
         out, event = self._run(turns=4)
         self.assertEqual(list(json.loads(out)), ["systemMessage"])
@@ -341,7 +342,7 @@ class TestSubagentBudget(unittest.TestCase):
     def test_unknown_agent_type_has_no_budget_fields(self):
         out, event = self._run(agent_type="Explore", turns=500)
         self.assertEqual(out, "")
-        for key in ("budget_class", "turns", "tokens", "budget_hit"):
+        for key in ("max_turns", "turns", "tokens", "budget_hit"):
             self.assertNotIn(key, event)
 
 

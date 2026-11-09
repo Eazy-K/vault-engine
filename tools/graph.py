@@ -221,7 +221,6 @@ MAX_ENTRY_CHARS = 5000  # project status/overview notes load outside the budget 
 MAX_STATUS_ITEMS = 5  # dated items under the status note's recent section; `rotate` moves the rest
 MAX_SENTENCE_WORDS = 30  # `lint` warns above this (one warning per note; task notes skipped)
 TASK_STATUSES = ("open", "ready", "in-progress", "review", "blocked", "done")
-TASK_BUDGETS = ("S", "M", "L")
 EXTENSIONS = ("onboarding", "discovery", "feedback", "move", "rotate", "eval_retrieval", "schema", "update",
               "claude_dirs", "claude_hooks", "codex_hooks", "models", "user_config", "verify_task",
               "codex_worker", "queue_runner")  # optional modules in tools/
@@ -1978,13 +1977,14 @@ def format_retrieval_stats(r: dict) -> str:
 
 
 def subagent_budget_stats(events: list[dict]) -> dict:
-    """Per budget class, from `subagent_stop` events that carry `budget_class`:
-    {class: {n, turns_p50, turns_p90, tokens_p50, tokens_p90, warn, hit}}.
+    """Per role (`agent_type`), from `subagent_stop` events that carry budget fields
+    (`turns`, or the older `budget_class`): {role: {n, turns_p50, turns_p90, tokens_p50, tokens_p90, warn, hit}}.
     n and the percentiles are per event; warn/hit are per worker (highest level wins)."""
     by_class: dict[str, list[dict]] = {}
     for e in events:
-        if e.get("event") == "subagent_stop" and e.get("budget_class"):
-            by_class.setdefault(str(e["budget_class"]), []).append(e)
+        if (e.get("event") == "subagent_stop" and e.get("agent_type")
+                and (isinstance(e.get("turns"), int) or e.get("budget_class"))):
+            by_class.setdefault(str(e["agent_type"]), []).append(e)
     result = {}
     if not by_class:
         return result
@@ -2182,10 +2182,10 @@ def cmd_stats(args) -> None:
             mine = [e for e in prompts if str(e.get("engine_version")) == version]
             print(f"  engine {version}: {len(mine)} measured, mean inline calls "
                   f"{_mean_calls(mine):.1f}")
-    budgets_by_class = subagent_budget_stats(events)
-    if budgets_by_class:  # written by the subagent-log hook; absent in older logs
+    budgets_by_role = subagent_budget_stats(events)
+    if budgets_by_role:  # written by the subagent-log hook; absent in older logs
         print("subagent budgets:")
-        for name, s in budgets_by_class.items():
+        for name, s in budgets_by_role.items():
             print(f"  {name}: n={s['n']}, turns p50/p90 {s['turns_p50']:g}/{s['turns_p90']:g}, "
                   f"tokens p50/p90 {s['tokens_p50']:.0f}/{s['tokens_p90']:.0f}, "
                   f"warn {s['warn']}, hit {s['hit']}")
@@ -2490,14 +2490,9 @@ def cmd_lint(_args, paths: Paths | None = None) -> None:
             errors.append(f"{nid}: task status must be one of {', '.join(TASK_STATUSES)}")
         if not note.meta.get("project"):
             errors.append(f"{nid}: task has no project")
-        budget = note.meta.get("budget")
-        if budget is not None and str(budget) not in TASK_BUDGETS:
-            warnings.append(f"{nid}: budget must be one of {'|'.join(TASK_BUDGETS)}")
         if note.meta.get("status") == "ready":
             if task_acceptance_command(note.body) is None:
                 errors.append(f"{nid}: ready task needs an acceptance command (## Acceptance block)")
-            if str(budget) not in TASK_BUDGETS:
-                errors.append(f"{nid}: ready task needs budget: S|M|L")
     # Core notes ride along with every context call, so their size is a fixed cost.
     for nid, note in graph.notes.items():
         lines = [line for line in note.body.splitlines() if line.strip()]

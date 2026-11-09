@@ -42,17 +42,17 @@ class TestTaskSpec(unittest.TestCase):
         self.assertIn("ready task needs an acceptance command", out)
         self.assertNotEqual(code, 0)
 
-    def test_ready_with_acceptance_and_budget_passes(self):
+    def test_ready_with_acceptance_passes(self):
         self.task("t1", "ready", ACCEPT, budget="S")
         out, code = self.lint()
         self.assertNotIn("ready task needs", out)
         self.assertEqual(code, 0)
 
-    def test_ready_without_budget_is_error(self):
+    def test_ready_without_budget_is_fine(self):
         self.task("t1", "ready", ACCEPT)
         out, code = self.lint()
-        self.assertIn("ready task needs budget: S|M|L", out)
-        self.assertNotEqual(code, 0)
+        self.assertNotIn("budget", out)
+        self.assertEqual(code, 0)
 
     def test_open_without_acceptance_is_fine(self):
         self.task("t1", "open", "No block here.")
@@ -60,11 +60,12 @@ class TestTaskSpec(unittest.TestCase):
         self.assertNotIn("ready task needs", out)
         self.assertEqual(code, 0)
 
-    def test_bad_budget_warns_on_any_status(self):
-        self.task("t1", "open", budget="XL")
-        out, code = self.lint()
-        self.assertIn("budget must be one of", out)
-        self.assertEqual(code, 0)
+    def test_old_budget_field_is_ignored_silently(self):
+        for value in ("XL", "S"):
+            self.task("t1", "ready", ACCEPT, budget=value)
+            out, code = self.lint()
+            self.assertNotIn("budget", out)
+            self.assertEqual(code, 0)
 
     def test_tasks_status_ready_filters(self):
         self.task("t-ready", "ready", ACCEPT, budget="S")

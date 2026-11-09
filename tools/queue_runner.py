@@ -26,7 +26,7 @@ import graph as g  # noqa: E402
 
 DEFAULT_TIMEOUT = 5400  # seconds for the claude run
 DEFAULT_TIME = "02:00"
-DEFAULT_MAX_TURNS = {"S": 40, "M": 80, "L": 150}
+DEFAULT_MAX_TURNS = 80
 BUDGET_SUBTYPES = ("error_max_budget_usd", "error_max_turns")
 TAIL_LINES = 15
 ACCEPTANCE_TIMEOUT = 1800
@@ -60,9 +60,8 @@ def _git(repo: Path, *args: str, timeout: int | None = 300) -> subprocess.Comple
 def load_queue_config(paths: g.Paths) -> dict:
     """The validated `queue` block of .graph/machine.json; QueueError when the queue may not run.
 
-    Shape: {"queue": {"enabled": true, "projects": ["a", "b"],
-    "budgets_usd": {"S": 2, "M": 5, "L": 10}, "max_turns": {"S": 40, "M": 80, "L": 150}}}
-    `max_turns` is optional (built-in fallbacks); the dollar ceilings are not."""
+    Shape: {"queue": {"enabled": true, "projects": ["a", "b"], "budgets_usd": 5,
+    "max_turns": 80}}. `max_turns` is optional (built-in default); the dollar ceiling is not."""
     raw = g.load_state_json(paths.data / ".graph" / "machine.json")
     block = raw.get("queue") if isinstance(raw, dict) else None
     if not isinstance(block, dict) or block.get("enabled") is not True:
@@ -72,45 +71,44 @@ def load_queue_config(paths: g.Paths) -> dict:
     if (not isinstance(projects, list) or not projects
             or not all(isinstance(p, str) and p for p in projects)):
         raise QueueError("queue.projects must be a non-empty list of project names")
-    budgets = block.get("budgets_usd")
-    if not isinstance(budgets, dict) or not budgets:
-        raise QueueError("queue.budgets_usd (dollar ceiling per budget class) is missing; "
-                         "the queue never runs without one")
-    clean: dict[str, float] = {}
-    for cls, value in budgets.items():
-        if (cls not in g.TASK_BUDGETS or isinstance(value, bool)
-                or not isinstance(value, (int, float)) or value <= 0):
-            raise QueueError(f"queue.budgets_usd.{cls} must be a positive number "
-                             f"for a class in {'|'.join(g.TASK_BUDGETS)}")
-        clean[cls] = float(value)
-    turns = dict(DEFAULT_MAX_TURNS)
-    raw_turns = block.get("max_turns")
-    if isinstance(raw_turns, dict):
-        for cls, value in raw_turns.items():
-            if (cls in g.TASK_BUDGETS and isinstance(value, int)
-                    and not isinstance(value, bool) and value > 0):
-                turns[cls] = value
-    return {"projects": list(projects), "budgets_usd": clean, "max_turns": turns}
+    shape = ('{"queue": {"enabled": true, "projects": [...], "budgets_usd": 5, '
+             '"max_turns": 80}}')
+    budget = block.get("budgets_usd")
+    if budget is None:
+        raise QueueError("queue.budgets_usd (one dollar ceiling per task) is missing; "
+                         f"the queue never runs without one. Shape: {shape}")
+    if isinstance(budget, dict):
+        raise QueueError("queue.budgets_usd is a per-class object (old shape); budget classes "
+                         f"are gone. Use one number, e.g. {shape}")
+    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0:
+        raise QueueError(f"queue.budgets_usd must be a positive number, e.g. {shape}")
+    turns = block.get("max_turns", DEFAULT_MAX_TURNS)
+    if isinstance(turns, dict):
+        raise QueueError("queue.max_turns is a per-class object (old shape); budget classes "
+                         f"are gone. Use one number, e.g. {shape}")
+    if isinstance(turns, bool) or not isinstance(turns, int) or turns <= 0:
+        raise QueueError(f"queue.max_turns must be a positive integer, e.g. {shape}")
+    return {"projects": list(projects), "budgets_usd": float(budget), "max_turns": turns}
 
 
 # --- pick --------------------------------------------------------------------
 
 def pick_task(paths: g.Paths, config: dict) -> dict | None:
     """Oldest `ready` task (by created, then id) of an allowed project that has a runnable
-    acceptance command and a budget class that has a dollar ceiling."""
+    acceptance command."""
     candidates = []
     for nid, note in g.load_notes(paths.data, paths.defaults_dir).items():
         meta = note.meta
         if meta.get("type") != "task" or meta.get("status") != "ready":
             continue
-        project, budget = str(meta.get("project")), str(meta.get("budget"))
-        if project not in config["projects"] or budget not in config["budgets_usd"]:
+        project = str(meta.get("project"))
+        if project not in config["projects"]:
             continue
         acceptance = g.task_acceptance_command(note.body)
         if not acceptance or acceptance == "human":
             continue
         candidates.append((str(meta.get("created") or ""), nid, {
-            "id": nid, "path": note.path, "project": project, "budget": budget,
+            "id": nid, "path": note.path, "project": project,
             "acceptance": acceptance}))
     if not candidates:
         return None
@@ -335,10 +333,9 @@ def execute(args, paths: g.Paths | None = None) -> dict:
             return {**base, "outcome": "empty"}
         return _finish(paths, {**base, "outcome": "empty"}, started)
     number, slug = task_names(task)
-    cls = task["budget"]
-    max_turns, budget = config["max_turns"][cls], config["budgets_usd"][cls]
+    max_turns, budget = config["max_turns"], config["budgets_usd"]
     claude = args.claude or shutil.which("claude") or "claude"
-    event = {**base, "task": task["id"], "project": task["project"], "budget_class": cls}
+    event = {**base, "task": task["id"], "project": task["project"]}
     repo = project_repo(paths, task["project"])
     wt_path = repo / ".claude" / "worktrees" / f"queue-{number}"
     branch = f"feat/queue-{slug}"
@@ -346,7 +343,7 @@ def execute(args, paths: g.Paths | None = None) -> dict:
                            worktree=wt_path, branch=branch)
     argv = claude_argv(claude, prompt, max_turns, budget)
     if args.dry_run:
-        print(f"task:     {task['id']} (project {task['project']}, class {cls})")
+        print(f"task:     {task['id']} (project {task['project']})")
         print(f"repo:     {repo}")
         print(f"worktree: {wt_path} on {branch} from origin/main")
         print(f"accept:   {task['acceptance']}")

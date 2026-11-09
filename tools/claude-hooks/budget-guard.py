@@ -3,19 +3,19 @@
 
 Payload fields used (https://code.claude.com/docs/en/hooks): `agent_id` (set only for
 tool calls made inside a subagent; empty in the main session, where the hook does
-nothing), `agent_type` (the role, e.g. worker-low; only roles with a budget class in
-tools/budgets.py / `budgets` of vault.config.json are gated), `tool_name`
+nothing), `agent_type` (the role, e.g. worker-low; only roles with a turn cap in
+tools/budgets.py / `budgets.roles` of vault.config.json are gated), `tool_name`
 (`SubagentHandback`, the report tool, is never denied), `session_id`, `transcript_path`
 and optionally `agent_transcript_path`. The subagent transcript is the
 `agent_transcript_path`, else `transcript_path` when it already lies under a `subagents`
 folder, else `<transcript_path without extension>/subagents/agent-<agent_id>.jsonl`.
 
 Rule: turns, tokens = budgets.transcript_usage(path) (turns = distinct `message.id` of
-assistant records); ratio = max(turns / max_turns, tokens / max_tokens).
+assistant records); ratio = turns / turn cap. Tokens are only measured (logged).
 - ratio >= 1.0: deny the tool call (`permissionDecision: deny`) with a reason telling the
   worker to stop and hand back a short BLOCKED report via SubagentHandback. The deny
   repeats on every call; a `budget_block` event (ts, agent, session, agent_type,
-  agent_id, budget_class, turns, tokens, tool_name) goes to `<data>/.graph/usage.log`
+  agent_id, max_turns, turns, tokens, tool_name) goes to `<data>/.graph/usage.log`
   once per agent (marker `<data>/.graph/budget-warn/<agent_id>.block`).
 - 0.8 <= ratio < 1.0: allow with an `additionalContext` warning, once per agent (marker
   `<data>/.graph/budget-warn/<agent_id>`; without a data dir there is no state, so the
@@ -36,12 +36,11 @@ from datetime import datetime
 
 class _FallbackBudgets:
     """Used if tools/budgets.py can't be imported; same numbers as the module."""
-    CLASSES = {"S": (20, 80000), "M": (60, 250000), "L": (150, 600000), "verify": (25, 100000)}
-    ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
+    ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}
 
     @classmethod
     def load_budgets(cls, data_dir):
-        return None
+        return {"roles": dict(cls.ROLES)}
 
     @staticmethod
     def transcript_usage(path):
@@ -75,9 +74,8 @@ class _FallbackBudgets:
         return len(ids) + anonymous, tokens
 
     @classmethod
-    def limits_for_role(cls, _budgets, role):
-        name = cls.ROLES.get(role)
-        return (name, *cls.CLASSES[name]) if name else None
+    def role_turn_cap(cls, budgets, role):
+        return (budgets.get("roles") or {}).get(role)
 
 
 def _budgets_module():
@@ -139,14 +137,14 @@ def _first_time(data_dir, agent_id: str, suffix: str = "") -> bool:
         return True
 
 
-def _log_block(data_dir, payload: dict, agent_type: str, agent_id: str, name: str,
+def _log_block(data_dir, payload: dict, agent_type: str, agent_id: str, max_turns: int,
                turns: int, tokens) -> None:
     try:
         graph_dir = os.path.join(data_dir, ".graph")
         os.makedirs(graph_dir, exist_ok=True)
         event = {"ts": datetime.now().isoformat(timespec="seconds"), "agent": "claude",
                  "session": str(payload.get("session_id") or ""), "event": "budget_block",
-                 "agent_type": agent_type, "agent_id": agent_id, "budget_class": name,
+                 "agent_type": agent_type, "agent_id": agent_id, "max_turns": max_turns,
                  "turns": turns}
         if tokens is not None:
             event["tokens"] = tokens
@@ -167,20 +165,19 @@ def decide(payload: dict) -> dict | None:
         return None
     data_dir = _data_dir()
     mod = _budgets_module()
-    limits = mod.limits_for_role(mod.load_budgets(data_dir), agent_type)
-    if not limits:
+    max_turns = mod.role_turn_cap(mod.load_budgets(data_dir), agent_type)
+    if not max_turns:
         return None
-    name, max_turns, max_tokens = limits
     path = _subagent_transcript(payload, agent_id)
     if not path or not os.path.isfile(path):
         return None
     turns, tokens = mod.transcript_usage(path)
-    ratio = max(turns / max_turns, (tokens or 0) / max_tokens)
-    usage = f"{turns}/{max_turns} turns, {tokens or 0}/{max_tokens} tokens"
+    ratio = turns / max_turns
+    usage = f"turns {turns}"
     if ratio >= 1.0:
         if data_dir and _first_time(data_dir, agent_id, ".block"):
-            _log_block(data_dir, payload, agent_type, agent_id, name, turns, tokens)
-        reason = (f"budget-guard: budget class {name} exceeded ({usage}). Stop working "
+            _log_block(data_dir, payload, agent_type, agent_id, max_turns, turns, tokens)
+        reason = (f"budget-guard: {agent_type} turn cap {max_turns} exceeded ({usage}). Stop working "
                   "now and deliver a short blocked report via SubagentHandback: status "
                   "BLOCKED, what is done, what remains, where the WIP is (branch/commit/"
                   "files). Do not call other tools.")
@@ -190,7 +187,7 @@ def decide(payload: dict) -> dict | None:
     if ratio >= 0.8:
         if not _first_time(data_dir, agent_id):
             return None
-        msg = (f"budget-guard: budget class {name} is at >=80% ({usage}). Wrap up soon: "
+        msg = (f"budget-guard: {agent_type} turn cap {max_turns} is at >=80% ({usage}). Wrap up soon: "
                "commit your WIP and deliver your report via SubagentHandback before the "
                "limit; past 100% tool calls are denied.")
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",

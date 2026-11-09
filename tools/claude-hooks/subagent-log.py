@@ -18,16 +18,16 @@ agent; it is logged with `"internal": true`. When the payload lacks agent_type, 
 subagent meta file (`agent-<id>.meta.json` next to the transcript); no transcript
 content is ever read.
 
-Budget classes (tools/budgets.py; numbers from `budgets` in vault.config.json, with
-fallbacks): for an agent_type that has a class (`budgets.roles`), the transcript is
+Turn caps (tools/budgets.py; numbers from `budgets.roles` in vault.config.json, with
+fallbacks): for an agent_type that has a turn cap, the transcript is
 streamed once (budgets.transcript_usage) for `turns` (distinct `message.id` of assistant
 records; one API reply is several records) and `tokens` (input + cache_creation +
-cache_read of the last assistant usage). The event then also carries `budget_class`,
-`turns`, `tokens` (when the transcript has usage) and `budget_hit` (none | warn >=80% |
-block >=100% of max_turns or max_tokens). On warn and on block it only prints a `systemMessage`; block is
+cache_read of the last assistant usage). The event then also carries
+`turns`, `max_turns`, `tokens` (measurement only, when the transcript has usage) and
+`budget_hit` (none | warn >=80% | block >=100% of the turn cap). On warn and on block it only prints a `systemMessage`; block is
 logged as `budget_hit` but not enforced here (a SubagentStop decision comes after the
 worker already handed back), the mid-run PreToolUse budget-guard hook is the gate.
-`stop_hook_active` is only logged. Unknown agent types get no budget fields.
+`stop_hook_active` is only logged. Roles without a turn cap get no budget fields.
 
 Exits 0 on any problem and fails open (prints nothing); it never blocks.
 """
@@ -147,12 +147,11 @@ def meta_agent_type(payload: dict) -> tuple[str, bool]:
 
 class _FallbackBudgets:
     """Used if tools/budgets.py can't be imported; same numbers as the module."""
-    CLASSES = {"S": (20, 80000), "M": (60, 250000), "L": (150, 600000), "verify": (25, 100000)}
-    ROLES = {"worker-low": "S", "worker-medium": "M", "worker-verify": "verify"}
+    ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}
 
     @classmethod
     def load_budgets(cls, data_dir):
-        return None
+        return {"roles": dict(cls.ROLES)}
 
     @staticmethod
     def transcript_usage(path):
@@ -186,9 +185,8 @@ class _FallbackBudgets:
         return len(ids) + anonymous, tokens
 
     @classmethod
-    def limits_for_role(cls, _budgets, role):
-        name = cls.ROLES.get(role)
-        return (name, *cls.CLASSES[name]) if name else None
+    def role_turn_cap(cls, budgets, role):
+        return (budgets.get("roles") or {}).get(role)
 
 
 def _budgets_module():
@@ -214,20 +212,18 @@ def _data_dir():
 
 
 def budget_check(payload: dict, agent_type: str, data_dir) -> dict | None:
-    """{"budget_class", "turns", "tokens"?, "budget_hit", "max_turns", "max_tokens"} for a
-    role with a budget class, else None. budget_hit: block (>=100%), warn (>=80%), none."""
+    """{"turns", "tokens"?, "budget_hit", "max_turns"} for a
+    role with a turn cap, else None. budget_hit: block (>=100%), warn (>=80%), none."""
     try:
         mod = _budgets_module()
-        limits = mod.limits_for_role(mod.load_budgets(data_dir), agent_type)
-        if not limits:
+        max_turns = mod.role_turn_cap(mod.load_budgets(data_dir), agent_type)
+        if not max_turns:
             return None
-        name, max_turns, max_tokens = limits
         path = payload.get("agent_transcript_path") or payload.get("transcript_path")
         turns, tokens = mod.transcript_usage(path)
-        ratio = max(turns / max_turns, (tokens or 0) / max_tokens)
+        ratio = turns / max_turns
         hit = "block" if ratio >= 1.0 else "warn" if ratio >= 0.8 else "none"
-        info = {"budget_class": name, "turns": turns, "budget_hit": hit,
-                "max_turns": max_turns, "max_tokens": max_tokens}
+        info = {"turns": turns, "budget_hit": hit, "max_turns": max_turns}
         if tokens is not None:
             info["tokens"] = tokens
         return info
@@ -265,7 +261,7 @@ def log_event(payload: dict) -> dict | None:
         (event["last_message_chars"], event["last_message_source"],
          event["last_message_kind"]) = last_message(payload)
         if info:
-            for key in ("budget_class", "turns", "tokens", "budget_hit"):
+            for key in ("turns", "max_turns", "tokens", "budget_hit"):
                 if key in info:
                     event[key] = info[key]
         with open(os.path.join(graph_dir, "usage.log"), "a", encoding="utf-8",
@@ -281,14 +277,12 @@ def _budget_output(payload: dict, agent_type: str, info: dict) -> dict | None:
     hit = info.get("budget_hit")
     if hit not in ("warn", "block"):
         return None
-    usage = (f"{info['turns']}/{info['max_turns']} turns and "
-             f"{info.get('tokens', 0)}/{info['max_tokens']} tokens")
+    usage = f"turns {info['turns']}"
+    cap = info["max_turns"]
     if hit == "warn":
-        return {"systemMessage": f"subagent-log: {agent_type} used {usage} "
-                                 f"(class {info['budget_class']}, >=80%)"}
-    return {"systemMessage": f"subagent-log: budget class {info['budget_class']} exceeded "
-                             f"({info['turns']}/{info['max_turns']} turns, "
-                             f"{info.get('tokens', 0)}/{info['max_tokens']} tokens); "
+        return {"systemMessage": f"subagent-log: {agent_type} turn cap {cap} is at >=80% "
+                                 f"({usage})"}
+    return {"systemMessage": f"subagent-log: {agent_type} turn cap {cap} exceeded ({usage}); "
                              "the mid-run budget-guard hook is the gate, this is only logged"}
 
 

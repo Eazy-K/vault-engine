@@ -260,11 +260,19 @@ class TestMaxTurns(ModelsTestCase):
         self.assertEqual(self._turns("worker-low"), "30")
         self.assertIn("You are a worker subagent.", path.read_text(encoding="utf-8"))
 
-    def test_config_budget_class_overrides_max_turns(self):
+    def test_config_role_turn_cap_overrides_max_turns(self):
         self._write_agent_files()
         (self.data / "vault.config.json").write_text(json.dumps({"schema": 1, "budgets": {
-            "classes": {"M": {"max_turns": 33, "max_tokens": 1000}}}}),
+            "roles": {"worker-medium": 33}}}),
             encoding="utf-8", newline="\n")
+        self._run(apply=True)
+        self.assertEqual(self._turns("worker-medium"), "50")
+
+    def test_old_shape_config_still_sets_max_turns(self):
+        self._write_agent_files()
+        (self.data / "vault.config.json").write_text(json.dumps({"schema": 1, "budgets": {
+            "classes": {"M": {"max_turns": 33, "max_tokens": 1000}},
+            "roles": {"worker-medium": "M"}}}), encoding="utf-8", newline="\n")
         self._run(apply=True)
         self.assertEqual(self._turns("worker-medium"), "50")
 
