@@ -3,10 +3,13 @@
 task looks finished.
 
 `graph.py context` ends with a line `... reinforce --task <id>` (6 hex chars), and
-agents often forget to run it. Stop fires at the end of EVERY assistant turn, so
+agents often forget to run it. Only ids from this session's own `context` calls
+count: the `tool_result` whose `tool_use_id` matches a Bash `tool_use` with `graph.py`
+and `context` in its command. Ids in any other result (Read, Grep, Agent reports,
+other sessions' output) are ignored. Stop fires at the end of EVERY assistant turn, so
 this hook blocks only when the current turn (everything after the last real user
 message) shows a finish signal: a Bash call running `git commit`, `git push` or
-`gh pr create`. It blocks when some task id printed by a `context` call in the
+`gh pr create`. It blocks when some task id printed by such a `context` call in the
 transcript has no `reinforce ... --task <id>` Bash call yet, and only once per
 id and session.
 
@@ -131,6 +134,7 @@ def analyse(entries: list) -> tuple[list, set, bool, set]:
     reinforced: set = set()
     with_outcome: set = set()
     finish = False
+    context_calls: set = set()  # tool_use ids of Bash `graph.py ... context` calls
     for entry in entries:
         kind = entry.get("type")
         blocks = _blocks(entry)
@@ -139,7 +143,7 @@ def analyse(entries: list) -> tuple[list, set, bool, set]:
             if not is_result:
                 finish = False  # a real user message starts a new turn
             for b in blocks:
-                if b.get("type") == "tool_result":
+                if b.get("type") == "tool_result" and b.get("tool_use_id") in context_calls:
                     for tid in TASK_HINT.findall(_text_of(b.get("content"))):
                         if tid not in tasks:
                             tasks.append(tid)
@@ -148,6 +152,8 @@ def analyse(entries: list) -> tuple[list, set, bool, set]:
                 if b.get("type") != "tool_use" or b.get("name") != "Bash":
                     continue
                 cmd = str((b.get("input") or {}).get("command", ""))
+                if "graph.py" in cmd and "context" in cmd and b.get("id"):
+                    context_calls.add(b.get("id"))
                 if "graph.py" in cmd and "reinforce" in cmd:
                     ids = re.findall(r"--task[ =]([0-9a-f]{6})\b", cmd)
                     reinforced.update(ids)
