@@ -30,6 +30,7 @@ DEFAULT_MAX_TURNS = 80
 BUDGET_SUBTYPES = ("error_max_budget_usd", "error_max_turns")
 TAIL_LINES = 15
 ACCEPTANCE_TIMEOUT = 1800
+SCHTASKS_TR_LIMIT = 261  # max characters of schtasks /TR
 
 PROMPT = """\
 Work the vault task in {task_path} (task id {task_id}, project {project}).
@@ -44,11 +45,14 @@ class QueueError(Exception):
     """Refusal or setup problem."""
 
 
-def _run(argv: list[str], cwd: Path | str | None = None, timeout: int | None = None,
+def _run(argv: list[str] | str, cwd: Path | str | None = None, timeout: int | None = None,
          shell: bool = False) -> subprocess.CompletedProcess:
-    """The one place that starts processes (tests replace it)."""
+    """The one place that starts processes (tests replace it). Children get no stdin
+    (`claude -p` otherwise waits 3 s for piped input). With `shell=True`, `argv` is the
+    command string itself."""
     return subprocess.run(argv, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout, shell=shell)
+                          encoding="utf-8", errors="replace", timeout=timeout, shell=shell,
+                          stdin=subprocess.DEVNULL)
 
 
 def _git(repo: Path, *args: str, timeout: int | None = 300) -> subprocess.CompletedProcess:
@@ -224,6 +228,28 @@ def project_repo(paths: g.Paths, project: str) -> Path:
     raise QueueError(f"no git folder for project {project} under the project roots")
 
 
+def _exclude_worktrees(repo: Path) -> None:
+    """Keep `.claude/worktrees/` out of the project's `git status` via the local
+    `info/exclude` (never a tracked file), so the main checkout stays clean."""
+    cp = _git(repo, "rev-parse", "--git-path", "info/exclude")
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return
+    exclude = Path(cp.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = repo / exclude
+    entry = ".claude/worktrees/"
+    try:
+        current = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if entry in current.splitlines():
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not current or current.endswith("\n") else "\n"
+        with exclude.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(prefix + entry + "\n")
+    except OSError:
+        pass  # cosmetic: a read-only info dir must not stop the run
+
+
 def make_worktree(repo: Path, number: str, slug: str) -> tuple[Path, str]:
     branch = f"feat/queue-{slug}"
     wt = repo / ".claude" / "worktrees" / f"queue-{number}"
@@ -231,6 +257,7 @@ def make_worktree(repo: Path, number: str, slug: str) -> tuple[Path, str]:
     if cp.returncode != 0:
         raise QueueError(f"git fetch failed: {cp.stderr.strip()[:300]}")
     wt.parent.mkdir(parents=True, exist_ok=True)
+    _exclude_worktrees(repo)
     cp = _git(repo, "worktree", "add", "-b", branch, str(wt), "origin/main")
     if cp.returncode != 0:
         raise QueueError(f"worktree add failed: {cp.stderr.strip()[:300]}")
@@ -267,6 +294,11 @@ def parse_claude_result(stdout: str) -> dict:
     tokens = sum(int(usage[k]) for k in ("input_tokens", "output_tokens",
                  "cache_creation_input_tokens", "cache_read_input_tokens")
                  if isinstance(usage.get(k), (int, float)))
+    if not tokens and isinstance(data.get("modelUsage"), dict):
+        # a budget-hit run reports zeros in `usage`; the per-model block still has the counts
+        tokens = sum(int(m[k]) for m in data["modelUsage"].values() if isinstance(m, dict)
+                     for k in ("inputTokens", "outputTokens", "cacheCreationInputTokens",
+                               "cacheReadInputTokens") if isinstance(m.get(k), (int, float)))
     out.update(parsed=True, result=str(data.get("result") or ""),
                subtype=str(data.get("subtype") or ""), is_error=bool(data.get("is_error")),
                usd=num("total_cost_usd", float), turns=num("num_turns", int), tokens=tokens,
@@ -285,7 +317,7 @@ def run_claude(argv: list[str], wt: Path, timeout: int):
 def run_acceptance(command: str, wt: Path) -> dict:
     """Run the task's acceptance command (a shell string) in the worktree."""
     try:
-        cp = _run([command], cwd=wt, timeout=ACCEPTANCE_TIMEOUT, shell=True)
+        cp = _run(command, cwd=wt, timeout=ACCEPTANCE_TIMEOUT, shell=True)
         text, code = (cp.stdout or "") + (cp.stderr or ""), cp.returncode
     except subprocess.TimeoutExpired:
         text, code = "acceptance command timed out", 124
@@ -415,8 +447,14 @@ def schedule_text(paths: g.Paths, at: str) -> str:
     hour, minute = int(m.group(1)), int(m.group(2))
     script = (paths.engine / "tools" / "queue_runner.py").as_posix()
     python, data = sys.executable, str(paths.data)
+    # The /TR value as the scheduler stores it; schtasks refuses more than 261 characters.
+    task_run = f'cmd /c set "VAULT_DATA={data}"&& "{python}" -I "{script}" run'
+    if len(task_run) > SCHTASKS_TR_LIMIT:
+        raise QueueError(f"the schtasks /TR command is {len(task_run)} characters, over the "
+                         f"{SCHTASKS_TR_LIMIT} limit; move the engine or data folder to a shorter path")
+    quoted = re.sub(r'(\\*)"', lambda m: m.group(1) * 2 + '\\"', task_run)  # CommandLineToArgvW rules
     win = (f'schtasks /Create /SC DAILY /ST {hour:02d}:{minute:02d} /TN "vault-queue-runner" /F '
-           f'/TR "cmd /c set \\"VAULT_DATA={data}\\"&& \\"{python}\\" -I \\"{script}\\" run"')
+           f'/TR "{quoted}"')
     posix = (f"{minute} {hour} * * * VAULT_DATA={shlex.quote(data)} {shlex.quote(python)} -I "
              f"{shlex.quote(script)} run")
     return ("# Windows (Task Scheduler); prints only, run it yourself:\n" + win +
