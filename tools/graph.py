@@ -213,6 +213,7 @@ SEMANTIC_TEMPERATURE = 0.03
 # Below this best-chunk cosine nothing in the vault is about the query (bge-m3,
 # tuned on small samples: relevant >= 0.50, unrelated ~0.36).
 SEMANTIC_FLOOR = 0.42
+CONTEXT_OUTPUT_CAP = 28000  # UTF-8 bytes of total `context` output; Claude Code's Bash tool spills ~30K to a file
 DEFAULT_BUDGET = 5000  # tokens of note content printed by `context` (entry notes load outside it)
 CHARS_PER_TOKEN = 3  # conservative estimate for Turkish text
 MIN_LEARNED = 0.005
@@ -1645,6 +1646,50 @@ def truncate_body(body: str, room: int) -> str:
     return head + marker(re.findall(r"(?m)^## (.+?)\s*$", body[len(head):]))
 
 
+def apply_output_cap(blocks, pre, mid, load_line, load_shown, post, cap=None):
+    """Drop whole note blocks until the total output fits `cap` UTF-8 bytes.
+
+    Order: task notes, then project entry notes, lowest activation first in each
+    group. Core notes and the fixed lines (`pre`, `mid`, `post`, load hint) are never
+    dropped. Returns (kept, removed, omitted_line, warn_line)."""
+    cap = CONTEXT_OUTPUT_CAP if cap is None else cap
+
+    def size(text: str) -> int:
+        return len(text.encode("utf-8")) + 1  # print adds a newline
+
+    fixed = sum(size(x) for x in pre + mid + post)
+    if load_shown:
+        fixed += size(load_line)
+    total = fixed + sum(size(b["text"]) for b in blocks)
+    if total <= cap:
+        return blocks, [], "", ""
+    order = {"task": 0, "entry": 1}
+    candidates = sorted((b for b in blocks if b["kind"] in order),
+                        key=lambda b: (order[b["kind"]], b["activation"], -blocks.index(b)))
+    removed = []
+    drop_ids = set()
+
+    def cap_line() -> str:
+        return (f"<!-- omitted over output cap ({total_before} bytes > {cap}): "
+                f"{', '.join(b['id'] for b in removed)} -->")
+
+    total_before = total
+    for b in candidates:
+        removed.append(b)
+        drop_ids.add(b["id"])
+        kept = [x for x in blocks if x["id"] not in drop_ids]
+        total = (fixed + sum(size(x["text"]) for x in kept) + size(cap_line())
+                 + (0 if load_shown else size(load_line)))
+        if total <= cap:
+            break
+    kept = [x for x in blocks if x["id"] not in drop_ids]
+    warn = ""
+    if total > cap:
+        warn = (f"<!-- WARN: core notes alone exceed output cap ({total} bytes > {cap}); "
+                f"shorten core notes -->")
+    return kept, removed, (cap_line() if removed else ""), warn
+
+
 def cmd_query(args, content: bool) -> None:
     paths = default_paths()
     graph = Graph(paths)
@@ -1657,13 +1702,14 @@ def cmd_query(args, content: bool) -> None:
     if args.json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
         return
+    pre: list[str] = []
     if content:
-        print(retrieval_header())
+        pre.append(retrieval_header())
         discovery = sys.modules.get("discovery")
         if project:
             skipped = discovery is not None and project in discovery.skip_list(paths)
             if not project_seeds and not skipped:
-                print(f"<!-- project {project} has no notes: run python "
+                pre.append(f"<!-- project {project} has no notes: run python "
                       f"\"{Path(__file__).resolve()}\" projects --ask and ask the user "
                       f"whether to add it (`projects --skip {project}` stops this reminder) -->")
         elif discovery is not None:
@@ -1672,10 +1718,12 @@ def cmd_query(args, content: bool) -> None:
             missing = [p["name"] for p in discovery.cached_only(paths)
                       if p["name"] not in skip and not has_project_notes(paths, p["name"])]
             if missing:
-                print(f"<!-- {len(missing)} discovered projects have no vault notes "
+                pre.append(f"<!-- {len(missing)} discovered projects have no vault notes "
                       f"({', '.join(missing)}): run python \"{Path(__file__).resolve()}\" "
                       f"projects --ask and ask the user which to add -->")
     if not results:
+        for line in pre:
+            print(line)
         print("No notes above threshold.")
         return
     if not content:
@@ -1690,6 +1738,7 @@ def cmd_query(args, content: bool) -> None:
     # the top note fits, it is truncated.
     budget = args.budget * CHARS_PER_TOKEN
     used, omitted, loaded, truncated, core_loaded = 0, [], [], [], []
+    blocks = []  # printed note blocks: {"id", "text", "kind": core|entry|task, "activation"}
     # Compact per-note data for the usage log: {id: [rank, activation, via, learned_share]}
     scores = {r["id"]: [rank, round(r["activation"], 3), r["via"],
                         learned_share(graph, r["id"], r["via"])]
@@ -1716,24 +1765,19 @@ def cmd_query(args, content: bool) -> None:
             core_loaded.append(note.id)
         else:
             loaded.append(note.id)
-        print(header + body + "\n")
-    if omitted:
-        print(f"<!-- omitted over budget: {', '.join(omitted)} -->")
-    if omitted or truncated:
-        print(f"<!-- load a note: python \"{Path(__file__).resolve()}\" show --body <id> -->")
+        blocks.append({"id": note.id, "text": header + body + "\n", "activation": r["activation"],
+                       "kind": "core" if r["core"] else ("entry" if required else "task")})
+    mid = [f"<!-- omitted over budget: {', '.join(omitted)} -->"] if omitted else []
+    load_line = f"<!-- load a note: python \"{Path(__file__).resolve()}\" show --body <id> -->"
+    post: list[str] = []
+    task = ""
     if not args.no_log:
         task = ("probe-" if PROBE["on"] else "") + secrets.token_hex(3)
-        log_usage(paths, {"event": "context", "task": task, "query": args.text,
-                          "notes": loaded, "core": core_loaded, "omitted": omitted,
-                          "retrieval": RETRIEVAL["mode"],
-                          "fallback_reason": (RETRIEVAL["reason"]
-                                              if RETRIEVAL["mode"] != "semantic" else ""),
-                          "scores": scores})
         update = sys.modules.get("update")
         if update is not None:
             hint = update.context_hint(paths)
             if hint:
-                print(hint)
+                post.append(hint)
         # Cheap (no subprocess: just the status() helpers already used by doctor)
         # and never allowed to fail context itself.
         try:
@@ -1767,13 +1811,13 @@ def cmd_query(args, content: bool) -> None:
                        (checks[0], checks[-1])):
                     stale_agents = True
             if stale_agents:
-                print(f"<!-- Claude Code/Codex hooks, model or worker settings are out of "
+                post.append(f"<!-- Claude Code/Codex hooks, model or worker settings are out of "
                       f"date on this computer: ask the user once, then run "
                       f"{update_all_command()} (works on every channel) -->")
             user_config = sys.modules.get("user_config")
             if user_config is not None and user_config.has_drift(paths):
                 graph_py = Path(__file__).resolve()
-                print(f"<!-- User-level Codex/Claude config differs from the vault templates: "
+                post.append(f"<!-- User-level Codex/Claude config differs from the vault templates: "
                       f"ask the user once, then run python \"{graph_py}\" user-config "
                       f"--install -->")
         except Exception:
@@ -1781,10 +1825,37 @@ def cmd_query(args, content: bool) -> None:
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.
         # The command ends the line and runs as shown, so an agent that copies it
         # literally when no note helped still closes the task.
-        print(f"<!-- when done, append the ids of the notes that actually helped (if none "
+        post.append(f"<!-- when done, append the ids of the notes that actually helped (if none "
               f"did, append nothing; optionally add --outcome ok|partial|fail, and --rework "
               f"if the work needed a redo): python \"{Path(__file__).resolve()}\" reinforce "
               f"--task {task} -->")
+    kept, cap_removed, cap_line, warn_line = apply_output_cap(
+        blocks, pre, mid, load_line, bool(omitted or truncated), post)
+    removed_ids = [b["id"] for b in cap_removed]
+    if removed_ids:
+        omitted.extend(removed_ids)
+        loaded = [nid for nid in loaded if nid not in removed_ids]
+    for line in pre:
+        print(line)
+    for b in kept:
+        print(b["text"])
+    for line in mid:
+        print(line)
+    if cap_line:
+        print(cap_line)
+    if omitted or truncated:
+        print(load_line)
+    for line in post:
+        print(line)
+    if warn_line:
+        print(warn_line)
+    if not args.no_log:
+        log_usage(paths, {"event": "context", "task": task, "query": args.text,
+                          "notes": loaded, "core": core_loaded, "omitted": omitted,
+                          "retrieval": RETRIEVAL["mode"],
+                          "fallback_reason": (RETRIEVAL["reason"]
+                                              if RETRIEVAL["mode"] != "semantic" else ""),
+                          "scores": scores})
 
 
 def cmd_index(_args) -> None:
