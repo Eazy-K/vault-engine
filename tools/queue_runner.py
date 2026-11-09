@@ -1,4 +1,4 @@
-"""`queue-runner`: the nightly runner that turns the oldest `ready` inbox task into a PR.
+"""`queue-runner`: the queue runner that turns the oldest `ready` inbox task into a PR.
 
 One task per run, no human prompt. Flow: guard (machine.json `queue` block) -> pick the
 oldest eligible `ready` task -> claim it (status `in-progress`, commit, push) -> worktree
@@ -428,7 +428,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dry-run", action="store_true",
                    help="print the pick, plan and argv; change nothing")
     p.add_argument("--print-schedule", action="store_true",
-                   help="print a schtasks command and a cron line (nightly); installs nothing")
+                   help="print a schtasks command and a cron line (scheduled run); installs nothing")
     p.add_argument("--time", default=DEFAULT_TIME,
                    help=f"HH:MM for --print-schedule (default {DEFAULT_TIME})")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
@@ -449,7 +449,7 @@ def cmd_queue_runner(args) -> None:
 
 
 def register(sub) -> None:
-    p = sub.add_parser("queue-runner", help="nightly runner: oldest ready task -> claude -p -> PR "
+    p = sub.add_parser("queue-runner", help="queue runner: oldest ready task -> claude -p -> PR "
                                             "(one task per run; needs a queue block in machine.json)")
     add_arguments(p)
     p.set_defaults(func=cmd_queue_runner)
