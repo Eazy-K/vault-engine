@@ -973,7 +973,7 @@ class TestDoctorUpgradeLeftovers(DoctorCase):
         # setUp's "root\n" stands for an AGENTS.md from before the template line.
         out = self._run_doctor_on(("dev", "main"))
         self.assertIn("WARN AGENTS.md is behind this engine's template", out)
-        self.assertIn("update --apply-agents replaces the file", out)
+        self.assertIn("update --all (shows the diff and replaces the file)", out)
 
     def test_agents_md_from_the_template(self):
         template = (graph.ENGINE / "templates" / "AGENTS.md").read_text(encoding="utf-8")

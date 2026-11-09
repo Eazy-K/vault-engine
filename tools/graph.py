@@ -2008,10 +2008,8 @@ def cmd_query(args, content: bool) -> None:
                       f"{update_all_command()} (works on every channel) -->")
             user_config = sys.modules.get("user_config")
             if user_config is not None and user_config.has_drift(paths):
-                graph_py = Path(__file__).resolve()
                 post.append(f"<!-- User-level Codex/Claude config differs from the vault templates: "
-                      f"ask the user once, then run python \"{graph_py}\" user-config "
-                      f"--install -->")
+                      f"ask the user once, then run {update_all_command()} -->")
         except Exception:
             pass
         # Absolute and quoted so the hint works when pasted from any cwd, not just this repo's.

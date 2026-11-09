@@ -777,7 +777,7 @@ def statuses(paths: g.Paths) -> list[tuple[str, str]]:
             out.append(("OK", f"{item.name} matches the config template ({item.target})"))
         elif item.status == "drift":
             detail = item.message or "differs from the config template"
-            out.append(("WARN", f"{item.name}: {detail} ({item.target}); run: {INSTALL_HINT}"))
+            out.append(("WARN", f"{item.name}: {detail} ({item.target}); run: {g.update_all_command()}"))
         else:
             out.append(("WARN", f"{item.name}: {item.message}"))
     return out
