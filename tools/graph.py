@@ -26,6 +26,7 @@ import statistics
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -442,8 +443,20 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else [value]
 
 
+def normalize_token(text: str) -> str:
+    """Fold a word to one comparable form: İSTANBUL/istanbul, IŞIK/ışık/isik, şifre/sifre."""
+    text = text.replace("İ", "i").replace("I", "i").replace("ı", "i")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return text.casefold()
+
+
 def tokenize(text: str) -> list[str]:
-    return [t.casefold() for t in TOKEN.findall(text)]
+    return [normalize_token(t) for t in TOKEN.findall(text)]
+
+
+# Query words are normalized before the stopword filter, so the set uses the same form.
+STOPWORDS = {normalize_token(w) for w in STOPWORDS}
 
 
 @dataclass
