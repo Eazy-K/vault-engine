@@ -30,6 +30,7 @@ DEFAULT_MAX_TURNS = 80
 BUDGET_SUBTYPES = ("error_max_budget_usd", "error_max_turns")
 TAIL_LINES = 15
 ACCEPTANCE_TIMEOUT = 1800
+SCHTASKS_TR_LIMIT = 261  # max characters of schtasks /TR
 
 PROMPT = """\
 Work the vault task in {task_path} (task id {task_id}, project {project}).
@@ -227,6 +228,28 @@ def project_repo(paths: g.Paths, project: str) -> Path:
     raise QueueError(f"no git folder for project {project} under the project roots")
 
 
+def _exclude_worktrees(repo: Path) -> None:
+    """Keep `.claude/worktrees/` out of the project's `git status` via the local
+    `info/exclude` (never a tracked file), so the main checkout stays clean."""
+    cp = _git(repo, "rev-parse", "--git-path", "info/exclude")
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return
+    exclude = Path(cp.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = repo / exclude
+    entry = ".claude/worktrees/"
+    try:
+        current = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if entry in current.splitlines():
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        prefix = "" if not current or current.endswith("\n") else "\n"
+        with exclude.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(prefix + entry + "\n")
+    except OSError:
+        pass  # cosmetic: a read-only info dir must not stop the run
+
+
 def make_worktree(repo: Path, number: str, slug: str) -> tuple[Path, str]:
     branch = f"feat/queue-{slug}"
     wt = repo / ".claude" / "worktrees" / f"queue-{number}"
@@ -234,6 +257,7 @@ def make_worktree(repo: Path, number: str, slug: str) -> tuple[Path, str]:
     if cp.returncode != 0:
         raise QueueError(f"git fetch failed: {cp.stderr.strip()[:300]}")
     wt.parent.mkdir(parents=True, exist_ok=True)
+    _exclude_worktrees(repo)
     cp = _git(repo, "worktree", "add", "-b", branch, str(wt), "origin/main")
     if cp.returncode != 0:
         raise QueueError(f"worktree add failed: {cp.stderr.strip()[:300]}")
@@ -423,8 +447,14 @@ def schedule_text(paths: g.Paths, at: str) -> str:
     hour, minute = int(m.group(1)), int(m.group(2))
     script = (paths.engine / "tools" / "queue_runner.py").as_posix()
     python, data = sys.executable, str(paths.data)
+    # The /TR value as the scheduler stores it; schtasks refuses more than 261 characters.
+    task_run = f'cmd /c set "VAULT_DATA={data}"&& "{python}" -I "{script}" run'
+    if len(task_run) > SCHTASKS_TR_LIMIT:
+        raise QueueError(f"the schtasks /TR command is {len(task_run)} characters, over the "
+                         f"{SCHTASKS_TR_LIMIT} limit; move the engine or data folder to a shorter path")
+    quoted = re.sub(r'(\\*)"', lambda m: m.group(1) * 2 + '\\"', task_run)  # CommandLineToArgvW rules
     win = (f'schtasks /Create /SC DAILY /ST {hour:02d}:{minute:02d} /TN "vault-queue-runner" /F '
-           f'/TR "cmd /c set \\"VAULT_DATA={data}\\"&& \\"{python}\\" -I \\"{script}\\" run"')
+           f'/TR "{quoted}"')
     posix = (f"{minute} {hour} * * * VAULT_DATA={shlex.quote(data)} {shlex.quote(python)} -I "
              f"{shlex.quote(script)} run")
     return ("# Windows (Task Scheduler); prints only, run it yourself:\n" + win +
