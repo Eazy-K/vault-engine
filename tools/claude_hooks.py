@@ -439,7 +439,7 @@ def budget_guard_status(settings_path: Path | None = None) -> tuple[str, str]:
         return "OK", f"budget-guard hook installed ({settings_path})"
     return "WARN", (f"budget-guard hook not installed in {settings_path}: run "
                      f"`{g.update_all_command()}` (or `graph.py claude-hooks --install`) to stop "
-                     "worker subagents at their budget class limit")
+                     "worker subagents at their turn cap")
 
 
 def git_guard_status(settings_path: Path | None = None) -> tuple[str, str]:

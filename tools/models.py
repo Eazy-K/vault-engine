@@ -135,10 +135,10 @@ _FRONTMATTER_KEY = re.compile(r"^(model|effort|maxTurns):\s*(.*)$")
 
 def _wanted_max_turns(role: str, data_dir) -> str | None:
     """The role's agent-file maxTurns as a string: budgets.agent_max_turns (1.5x margin)
-    of its class max_turns (budgets.classes via vault.config.json, fallbacks without
-    it), or None if the role has no class."""
-    limits = budgets.limits_for_role(budgets.load_budgets(data_dir), role)
-    return str(budgets.agent_max_turns(limits[1])) if limits else None
+    of its turn cap (budgets.roles via vault.config.json, fallbacks without
+    it), or None if the role has no turn cap."""
+    cap = budgets.role_turn_cap(budgets.load_budgets(data_dir), role)
+    return str(budgets.agent_max_turns(cap)) if cap else None
 
 
 def _frontmatter_bounds(text: str) -> tuple[int, int] | None:
@@ -187,7 +187,7 @@ def worker_md_matches(effective: dict, role: str, agents_dir: Path,
 def _apply_worker_md(effective: dict, role: str, agents_dir: Path,
                      data_dir: Path | None = None) -> bool:
     """Set model:/effort:/maxTurns: in <agents_dir>/<role>.md's frontmatter to this
-    role's configured values (maxTurns from its budget class), adding any key if
+    role's configured values (maxTurns from its turn cap), adding any key if
     missing, touching nothing else in the file. Returns True if it wrote anything;
     False (not an error) if the file doesn't exist or has no frontmatter block."""
     path = agents_dir / f"{role}.md"
@@ -226,7 +226,7 @@ def _apply_worker_md(effective: dict, role: str, agents_dir: Path,
 def apply_config(effective: dict, settings_path: Path, agents_dir: Path,
                  data_dir: Path | None = None) -> list[str]:
     """Write `effective` into settings.json and the worker-*.md frontmatter
-    files (maxTurns from the budget classes in `data_dir`). Returns the list of
+    files (maxTurns from the role turn caps in `data_dir`). Returns the list of
     paths actually changed."""
     changed = []
     if _apply_settings(effective, settings_path):

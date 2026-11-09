@@ -88,7 +88,8 @@ class TestBudgetGuard(unittest.TestCase):
         h = out["hookSpecificOutput"]
         self.assertEqual(h["hookEventName"], "PreToolUse")
         self.assertNotIn("permissionDecision", h)
-        self.assertIn("16/20", h["additionalContext"])
+        self.assertIn("turn cap 20", h["additionalContext"])
+        self.assertIn("turns 16", h["additionalContext"])
         self.assertTrue((self.data / ".graph" / "budget-warn" / "a1").exists())
         self.assertIsNone(self._run(self._payload()))
 
@@ -112,19 +113,24 @@ class TestBudgetGuard(unittest.TestCase):
             self.assertEqual(h["permissionDecision"], "deny")
             self.assertIn("SubagentHandback", h["permissionDecisionReason"])
             self.assertIn("BLOCKED", h["permissionDecisionReason"])
-            self.assertIn("20/20", h["permissionDecisionReason"])
+            self.assertIn("worker-low turn cap 20 exceeded (turns 20)",
+                          h["permissionDecisionReason"])
         events = self._events()
         self.assertEqual(len(events), 1)
         e = events[0]
         self.assertEqual(e["event"], "budget_block")
-        self.assertEqual((e["agent"], e["agent_type"], e["agent_id"], e["budget_class"],
+        self.assertEqual((e["agent"], e["agent_type"], e["agent_id"], e["max_turns"],
                           e["turns"], e["tool_name"], e["session"]),
-                         ("claude", "worker-low", "a1", "S", 20, "Bash", "s1"))
+                         ("claude", "worker-low", "a1", 20, 20, "Bash", "s1"))
 
-    def test_token_overrun_denies(self):
-        self._write(3, tokens=80000)
-        out = self._run(self._payload())
-        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+    def test_token_overrun_alone_is_silent(self):
+        self._write(3, tokens=5_000_000)
+        self.assertIsNone(self._run(self._payload()))
+        self.assertEqual(self._events(), [])
+
+    def test_tokens_still_logged_on_block(self):
+        self._write(20, tokens=80000)
+        self._run(self._payload())
         self.assertEqual(self._events()[0]["tokens"], 80000)
 
     def test_multi_record_message_counts_one_turn(self):
@@ -152,13 +158,22 @@ class TestBudgetGuard(unittest.TestCase):
         self.assertIsNone(self._run(None, raw="[1,2]"))
         self.assertIsNone(self._run(None, raw=""))
 
-    def test_config_override_classes(self):
-        cfg = {"budgets": {"classes": {"S": {"max_turns": 5, "max_tokens": 1000}}}}
+    def test_config_override_roles(self):
+        cfg = {"budgets": {"roles": {"worker-low": 5}}}
         (self.data / "vault.config.json").write_text(json.dumps(cfg), encoding="utf-8")
         self._write(5)
         out = self._run(self._payload())
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("5/5", out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIn("turn cap 5 exceeded (turns 5)",
+                      out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_config_old_shape_still_read(self):
+        cfg = {"budgets": {"classes": {"S": {"max_turns": 5, "max_tokens": 1000}},
+                           "roles": {"worker-low": "S"}}}
+        (self.data / "vault.config.json").write_text(json.dumps(cfg), encoding="utf-8")
+        self._write(5)
+        out = self._run(self._payload())
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ Discovery and implementation run in separate agents. When it is not yet known wh
 - Stop a subagent with `TaskStop`. An agent that returns at `maxTurns` ("partial") may keep running background work.
 - Resume only if the completion notice's `subagent_tokens` (approximate last context size) is 50K or less; otherwise start a new agent with short instructions (PR number, failing test, file/line).
 - The `agent-guard` hook denies disallowed `Agent` calls (enforced); `delegation-warn` and `context-warn` hooks remind the orchestrator. Adapter note: the Claude `delegation-warn` nudges after 3 inline tool calls (Claude-specific tuning). A subagent's permission requests are decided by the `permission-request` hook's policy (allow list in a worktree, else deny and log), not by a prompt, so a denied call is a blocker to report, not to retry.
-- Worker budget classes `S`, `M`, `L` and `verify` (turn and token caps) come from `budgets.classes` in `vault.config.json`; the `subagent-log` SubagentStop hook warns at 80% and blocks at 100% with a request for a short `blocked` report.
+- Each worker role has one turn cap (`budgets.roles` in `vault.config.json`: `worker-low` 20, `worker-medium` 60, `worker-verify` 25 by default); the `subagent-log` SubagentStop hook warns at 80% and blocks at 100% of it with a request for a short `blocked` report. Tokens are measured, not capped.
 - Definitions live in `$VAULT_ENGINE/tools/claude-agents/` and are copied to `~/.claude/agents/`. Subagents do not load `CLAUDE.md` at startup (`omitClaudeMd: true`), but reading vault files adds `CLAUDE.md`/`AGENTS.md` as nested memory, so the definitions say not to follow it.
 
 ## In Codex

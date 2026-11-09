@@ -862,6 +862,18 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
         self.assertNotIn("FAIL", buf.getvalue())
 
+    def test_doctor_warns_on_old_budgets_shape(self):
+        cfg = self.data / "vault.config.json"
+        old = {"budgets": {"classes": {"M": {"max_turns": 33, "max_tokens": 1000}},
+                           "roles": {"worker-medium": "M"}}}
+        cfg.write_text(json.dumps(old), encoding="utf-8")
+        out = self._doctor_with_agents()
+        self.assertIn("WARN vault.config.json uses the old budgets shape", out)
+        self.assertIn('{"budgets": {"roles": {"worker-low": 20, "worker-medium": 33, '
+                      '"worker-verify": 25}}}', out)
+        cfg.write_text(json.dumps({"budgets": {"roles": {"worker-low": 20}}}), encoding="utf-8")
+        self.assertNotIn("old budgets shape", self._doctor_with_agents())
+
     def test_doctor_reports_codex_setup(self):
         codex_home = self.home / ".codex"
         codex_home.mkdir()

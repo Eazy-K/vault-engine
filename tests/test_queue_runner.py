@@ -87,7 +87,7 @@ class QueueBase(unittest.TestCase):
     def write_machine(self, queue="default"):
         if queue == "default":
             queue = {"enabled": True, "projects": ["vault-engine"],
-                     "budgets_usd": {"S": 2, "M": 5, "L": 10}}
+                     "budgets_usd": 5}
         raw = {"project_roots": [str(self.projects)]}
         if queue is not None:
             raw["queue"] = queue
@@ -152,24 +152,40 @@ class GuardTests(QueueBase):
         self.assertEqual(self.events()[-1]["outcome"], "refused")
 
     def test_refuses_when_disabled_or_missing(self):
-        for queue in (None, {"enabled": False, "projects": ["vault-engine"], "budgets_usd": {"S": 1}}):
+        for queue in (None, {"enabled": False, "projects": ["vault-engine"], "budgets_usd": 1}):
             self.write_machine(queue)
             with self.assertRaises(qr.QueueError):
                 qr.load_queue_config(self.paths)
 
     def test_rejects_bad_budget_values(self):
-        for bad in ({"M": 0}, {"M": -1}, {"X": 3}, {"M": "5"}, {"M": True}):
+        for bad in (0, -1, "5", True, [5], {}):
             self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": bad})
             with self.assertRaises(qr.QueueError, msg=str(bad)):
                 qr.load_queue_config(self.paths)
 
+    def test_rejects_old_dict_shapes_with_fix(self):
+        self.write_machine({"enabled": True, "projects": ["vault-engine"],
+                            "budgets_usd": {"S": 2, "M": 5, "L": 10}})
+        with self.assertRaises(qr.QueueError) as cm:
+            qr.load_queue_config(self.paths)
+        self.assertIn('"budgets_usd": 5', str(cm.exception))
+        self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": 5,
+                            "max_turns": {"S": 40, "M": 80}})
+        with self.assertRaises(qr.QueueError) as cm:
+            qr.load_queue_config(self.paths)
+        self.assertIn('"max_turns": 80', str(cm.exception))
+
     def test_max_turns_defaults_and_override(self):
         cfg = qr.load_queue_config(self.paths)
-        self.assertEqual(cfg["max_turns"], {"S": 40, "M": 80, "L": 150})
-        self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": {"S": 1},
-                            "max_turns": {"S": 7, "M": "x"}})
-        self.assertEqual(qr.load_queue_config(self.paths)["max_turns"]["S"], 7)
-        self.assertEqual(qr.load_queue_config(self.paths)["max_turns"]["M"], 80)
+        self.assertEqual(cfg["max_turns"], 80)
+        self.assertEqual(cfg["budgets_usd"], 5.0)
+        self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": 1,
+                            "max_turns": 7})
+        self.assertEqual(qr.load_queue_config(self.paths)["max_turns"], 7)
+        self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": 1,
+                            "max_turns": "x"})
+        with self.assertRaises(qr.QueueError):
+            qr.load_queue_config(self.paths)
 
     def test_cli_refusal_exit_code(self):
         self.write_machine(None)
@@ -202,10 +218,9 @@ class PickTests(QueueBase):
         self.task("0008-a")
         self.assertTrue(qr.pick_task(self.paths, qr.load_queue_config(self.paths))["id"].endswith("0008-a"))
 
-    def test_budget_class_without_ceiling_is_skipped(self):
-        self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": {"S": 1}})
-        self.task("0001-m", budget="M")
-        self.assertIsNone(qr.pick_task(self.paths, qr.load_queue_config(self.paths)))
+    def test_task_budget_field_is_not_a_filter(self):
+        self.task("0001-m", budget="XL")
+        self.assertIsNotNone(qr.pick_task(self.paths, qr.load_queue_config(self.paths)))
 
     def test_dry_run_changes_nothing(self):
         path = self.task("0001-a")
@@ -239,13 +254,13 @@ class RunTests(QueueBase):
         self.assertIn("duration_s", ev)
 
     def test_argv_contents(self):
-        self.task("0001-a", budget="L")
+        self.task("0001-a")
         _, calls = self.run_queue()
         argv = calls["argv"]
         self.assertEqual(argv[0], "claude-bin")
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "auto")
-        self.assertEqual(argv[argv.index("--max-turns") + 1], "150")
-        self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "10")
+        self.assertEqual(argv[argv.index("--max-turns") + 1], "80")
+        self.assertEqual(argv[argv.index("--max-budget-usd") + 1], "5")
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         self.assertIn("-p", argv)
         prompt = argv[argv.index("-p") + 1]

@@ -1254,6 +1254,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                           f"`{_graph_cmd('onboard --questions')}`, ask the user, then "
                           f"`{_graph_cmd('onboard --answers <file>')}` (or `onboard` in a terminal)")
 
+    if data is not None:
+        try:
+            import budgets as _budgets
+            if _budgets.old_shape_in_config(data):
+                new = json.dumps({"budgets": {"roles": _budgets.load_budgets(data)["roles"]}})
+                check("WARN", "vault.config.json uses the old budgets shape (classes S/M/L/verify "
+                              "with max_tokens); it still works for now. manual: rewrite `budgets.roles` as "
+                              f"one turn cap per role (keep `budgets.context`): {new}")
+        except Exception:  # must not hide the other checks
+            pass
+
     claude_hooks = sys.modules.get("claude_hooks")
     models = sys.modules.get("models")
     for claude_dir, source in claude_dirs.sources(data):

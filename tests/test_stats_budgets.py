@@ -22,14 +22,18 @@ sys.modules["graph"] = graph
 _spec.loader.exec_module(graph)
 
 
-def stop(cls, turns, tokens, hit="none"):
-    return {"event": "subagent_stop", "budget_class": cls, "turns": turns,
-            "tokens": tokens, "budget_hit": hit}
+def stop(role, turns, tokens, hit="none"):
+    return {"event": "subagent_stop", "agent_type": role, "turns": turns,
+            "max_turns": 60, "tokens": tokens, "budget_hit": hit}
 
 
 EVENTS = [
-    stop("M", 10, 100000), stop("M", 20, 200000, "warn"), stop("M", 61, 260000, "block"),
-    stop("S", 5, 20000),
+    stop("worker-medium", 10, 100000), stop("worker-medium", 20, 200000, "warn"),
+    stop("worker-medium", 61, 260000, "block"),
+    stop("worker-low", 5, 20000),
+    # older event: budget_class still counts under its agent_type
+    {"event": "subagent_stop", "agent_type": "worker-low", "budget_class": "S", "turns": 7,
+     "tokens": 30000, "budget_hit": "none"},
     {"event": "subagent_stop", "agent_type": "Explore"},  # no budget fields: ignored
     {"event": "context", "task": "t1", "notes": []},
 ]
@@ -47,20 +51,20 @@ class TestStatsBudgets(unittest.TestCase):
     def test_text_section(self):
         out = self._stats()
         self.assertIn("subagent budgets:", out)
-        self.assertIn("  M: n=3, turns p50/p90 20/52.8, tokens p50/p90 200000/248000, "
+        self.assertIn("  worker-medium: n=3, turns p50/p90 20/52.8, tokens p50/p90 200000/248000, "
                       "warn 1, hit 1", out)
-        self.assertIn("  S: n=1, turns p50/p90 5/5, tokens p50/p90 20000/20000, "
+        self.assertIn("  worker-low: n=2, turns p50/p90 6/6.8, tokens p50/p90 25000/29000, "
                       "warn 0, hit 0", out)
 
     def test_json_key(self):
         data = json.loads(self._stats(json=True))
         budgets = data["subagent_budgets"]
-        self.assertEqual(sorted(budgets), ["M", "S"])
-        self.assertEqual(budgets["M"]["n"], 3)
-        self.assertEqual(budgets["M"]["turns_p50"], 20)
-        self.assertEqual(budgets["M"]["hit"], 1)
-        self.assertEqual(budgets["M"]["warn"], 1)
-        self.assertEqual(budgets["S"]["tokens_p90"], 20000)
+        self.assertEqual(sorted(budgets), ["worker-low", "worker-medium"])
+        self.assertEqual(budgets["worker-medium"]["n"], 3)
+        self.assertEqual(budgets["worker-medium"]["turns_p50"], 20)
+        self.assertEqual(budgets["worker-medium"]["hit"], 1)
+        self.assertEqual(budgets["worker-medium"]["warn"], 1)
+        self.assertEqual(budgets["worker-low"]["tokens_p90"], 29000)
 
     def test_no_events_no_section(self):
         with mock.patch.object(graph, "read_usage", return_value=[]), \
@@ -70,13 +74,14 @@ class TestStatsBudgets(unittest.TestCase):
         self.assertNotIn("subagent budgets", out.getvalue())
 
     def test_resumed_worker_counts_once(self):
-        w = {"agent_id": "a1", "session": "s", "agent_type": "worker"}
-        events = [dict(stop("M", 50, 1, "warn"), **w), dict(stop("M", 61, 2, "block"), **w),
-                  dict(stop("M", 62, 3, "block"), stop_hook_active="1", **w),
-                  dict(stop("M", 10, 4, "block"), session="s", agent_type="x"),
-                  dict(stop("M", 11, 5, "block"), session="s", agent_type="x"),
-                  dict(stop("M", 50, 6, "warn"), agent_id="a2")]
-        r = graph.subagent_budget_stats(events)["M"]
+        w = {"agent_id": "a1", "session": "s"}
+        m = "worker-medium"
+        events = [dict(stop(m, 50, 1, "warn"), **w), dict(stop(m, 61, 2, "block"), **w),
+                  dict(stop(m, 62, 3, "block"), stop_hook_active="1", **w),
+                  dict(stop(m, 10, 4, "block"), session="t"),
+                  dict(stop(m, 11, 5, "block"), session="t"),
+                  dict(stop(m, 50, 6, "warn"), agent_id="a2")]
+        r = graph.subagent_budget_stats(events)[m]
         self.assertEqual((r["n"], r["hit"], r["warn"]), (6, 2, 1))
 
 

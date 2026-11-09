@@ -2,7 +2,6 @@
 type: task
 project: <project>
 status: open
-budget: M
 created: YYYY-MM-DD
 keywords: [keywords]
 links:
@@ -36,9 +35,6 @@ python -I -m unittest discover -s tests -q
 
 ## Human gate
 Spec approval at the start and PR review at the end. List anything else that needs the human here (default: nothing).
-
-## Budget
-Class in frontmatter `budget:` (S / M / L); the engine maps the class to turn and token caps.
 
 ## Delivery
 Branch + PR with the acceptance output, verifier report and a decisions line; or note path for non-code work.

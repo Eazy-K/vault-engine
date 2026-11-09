@@ -539,21 +539,22 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   `.graph/usage.log`. Worker subagents return their report through a `SubagentHandback`
   tool call, so the hook counts that report's length (`last_message_kind: "handback"`;
   `last_message_source` stays payload | transcript | none). In Claude it also logs the
-  worker budget classes (`tools/budgets.py`): for a role listed under `budgets.roles` in
+  worker turn caps (`tools/budgets.py`): for a role with a cap in `budgets.roles` of
   `vault.config.json` it counts `turns` (distinct `message.id` among the assistant records;
   one API reply is written as several records sharing an id, a record without id counts
   as one turn) and `tokens` (input + cache creation + cache read of the last assistant
-  usage) from the transcript, logs `budget_class`, `turns`, `tokens` and `budget_hit`
+  usage) from the transcript, logs `turns`, `max_turns`, `tokens` and `budget_hit`
   (`none` | `warn` | `block`), and prints only a `systemMessage` at 80% and at 100% of
-  `max_turns` or `max_tokens`. Block is logged but not enforced at SubagentStop (the worker
+  the turn cap. Tokens are measured only, never capped. Block is logged but not enforced at SubagentStop (the worker
   has already handed back); the mid-run gate is the PreToolUse hook `budget-guard.py`. Config shape:
-  `budgets.classes` (`S`, `M`, `L`, `verify`: `max_turns`, `max_tokens`), `budgets.roles`
-  (role to class) and `budgets.context` (`warn_delta`, `handoff_delta`); missing or
-  invalid values fall back to built-in numbers (S 20 turns / 80k tokens,
-  M 60 / 250k, L 150 / 600k, verify 25 / 100k). No role maps to L by default. The
-  per-computer `queue` block in `.graph/machine.json` (API machines only) holds the dollar
-  ceilings `budgets_usd` per task class that `queue-runner` reads (see `docs/commands.md`). Unknown agent types get no budget fields. `stats` summarizes the
-  per-class p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
+  `"budgets": {"roles": {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}, "context": {"warn_delta": 50000, "handoff_delta": 80000}}`;
+  missing or invalid values fall back per role to those numbers. The old shape
+  (`budgets.classes` with `max_turns`/`max_tokens`, and `budgets.roles` mapping a role to a
+  class name) is still read (role to class to `max_turns`, `max_tokens` ignored) and
+  `doctor` warns with the new JSON to write instead. The
+  per-computer `queue` block in `.graph/machine.json` (API machines only) holds the single dollar
+  ceiling `budgets_usd` that `queue-runner` reads (see `docs/commands.md`). Roles without a cap get no budget fields. `stats` summarizes the
+  per-role p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
   It never blocks and fails open.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies
   `git push` with a force flag anywhere in the command (`-f`, `--force`,
@@ -603,18 +604,18 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
 - a `PreToolUse` hook (`budget-guard.py`, matcher `*`; Claude only, Codex workers are
   capped by the `codex-worker` wrapper) that gates worker subagents mid-run. It acts only
   when the stdin payload has an `agent_id` (a tool call inside a subagent; the main session
-  is never touched) and its `agent_type` has a budget class (`budgets.roles`). It never
+  is never touched) and its `agent_type` has a turn cap (`budgets.roles`). It never
   denies `SubagentHandback`. The subagent transcript is `agent_transcript_path` if present,
   else `transcript_path` when it already lies under `subagents/`, else
   `<transcript_path without extension>/subagents/agent-<agent_id>.jsonl`; turns and tokens
-  use the same `budgets.transcript_usage` rule as `subagent-log.py`. At >=80% of the class
-  `max_turns` or `max_tokens` it allows the call once per agent with an `additionalContext`
+  use the same `budgets.transcript_usage` rule as `subagent-log.py`. At >=80% of the role's
+  turn cap it allows the call once per agent with an `additionalContext`
   warning (marker file `<data>/.graph/budget-warn/<agent_id>`, ignored by git via the
   template `.gitignore`; without a data dir it warns on every call). At >=100% it denies
   the call (`permissionDecision: deny`) on every call, with a reason telling the worker to
   deliver a short `blocked` report through `SubagentHandback` (BLOCKED, what is done, what
   remains, where the WIP is), and appends one `budget_block` event per agent (`agent_type`,
-  `agent_id`, `budget_class`, `turns`, `tokens`, `tool_name`; marker
+  `agent_id`, `max_turns`, `turns`, `tokens`, `tool_name`; marker
   `<agent_id>.block`) to `.graph/usage.log`. Fails open: bad stdin, a missing transcript or a
   failed import print nothing and exit 0.
 - a `Stop` hook (`reinforce-check.py`) that, when the turn just ended ran `git commit`,
@@ -654,7 +655,7 @@ workers are enforced by `git-guard.py` instead.
 ### worker-verify (Claude Code)
 
 `tools/claude-agents/worker-verify.md` is a Sonnet (medium effort) verifier with a clean
-context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 38 (class `verify` 25 turns x 1.5); it never edits files,
+context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 38 (turn cap 25 x 1.5); it never edits files,
 commits or runs git write commands. The orchestrator starts it with the `Agent` tool
 (`subagent_type: worker-verify`) after a writing worker reports, and gives it the task
 file path, a diff file (or the branch) and the acceptance-command output file. It answers
@@ -696,8 +697,8 @@ not four: `python tools/graph.py models` shows it (plus whether `settings.json` 
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
-worker files' `model:`/`effort:`/`maxTurns:` frontmatter (`maxTurns` is 1.5 x the `max_turns` of the
-role's budget class from `budgets.classes`/`budgets.roles`, rounded up, so the budget hooks run before Claude Code stops the subagent silently at `maxTurns`; see the `subagent-log` hook), so the agent-guard hook above, the
+worker files' `model:`/`effort:`/`maxTurns:` frontmatter (`maxTurns` is 1.5 x the
+role's turn cap from `budgets.roles`, rounded up, so the budget hooks run before Claude Code stops the subagent silently at `maxTurns`; see the `subagent-log` hook), so the agent-guard hook above, the
 worker agents, and Claude Code's own model picker all agree. Each worker uses its
 configured model, and a model override on a spawn must match it. `doctor` warns if `settings.json` or the worker files drift from this
 config (skipped silently if `settings.json` doesn't exist yet).
