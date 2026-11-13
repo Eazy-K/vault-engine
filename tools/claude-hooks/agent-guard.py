@@ -2,8 +2,8 @@
 """PreToolUse hook for the `Agent` tool (Claude Code's subagent launcher, the tool
 formerly named `Task`; existing `Task(...)` references still resolve to it): denies
 spawning a subagent unless it is policy-allowed. Allowed (roles come from
-tools/model_config.py): the worker roles (`worker-low`, `worker-medium`, `worker-verify`; a `model`
-override must equal the configured model) and the read-only built-in agents
+tools/model_config.py): the worker roles (`worker-low`, `worker-medium`, `worker-verify`,
+`worker-design`, `worker-design-verify`; a `model` override must equal the configured model) and the read-only built-in agents
 `Explore`, `Plan`, `claude-code-guide` (matched case-insensitively). A read-only
 agent with a configured model (Explore -> haiku by default) gets that model
 injected via `updatedInput` when the call has none; a different `model` is denied.
@@ -38,8 +38,10 @@ import os
 import sys
 from pathlib import Path
 
-WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
-FALLBACK_MODELS = {"worker-low": "sonnet", "worker-medium": "sonnet", "worker-verify": "sonnet"}
+WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify",
+                "worker-design", "worker-design-verify")
+FALLBACK_MODELS = {"worker-low": "sonnet", "worker-medium": "sonnet", "worker-verify": "sonnet",
+                   "worker-design": "opus", "worker-design-verify": "opus"}
 
 
 def _load_model_config():
