@@ -495,8 +495,9 @@ python "<projects folder>/vault-engine/tools/graph.py" claude-hooks --install
 ```
 This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in:
 - a `PreToolUse` hook for the `Agent` tool, policy-based on the shared `models` config
-  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` (a model override
-  must equal the configured one, `sonnet` by default) and the read-only built-in
+  (`tools/model_config.py`). Allowed: `worker-low` / `worker-medium` / `worker-verify` / `worker-design` /
+  `worker-design-verify` (a model override must equal the configured one: `sonnet` by
+  default, `opus` for the two design roles) and the read-only built-in
   agents `Explore`, `Plan` and `claude-code-guide` (matched case-insensitively; they
   cannot edit files). `Explore` runs on `haiku`: when the call names no model the hook
   injects it (`updatedInput`); a different model is denied. `Plan` and
@@ -549,7 +550,7 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   (`none` | `warn` | `block`), and prints only a `systemMessage` at 80% and at 100% of
   the turn cap. Tokens are measured only, never capped. Block is logged but not enforced at SubagentStop (the worker
   has already handed back); the mid-run gate is the PreToolUse hook `budget-guard.py`. Config shape:
-  `"budgets": {"roles": {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}, "context": {"warn_delta": 50000, "handoff_delta": 80000}}`;
+  `"budgets": {"roles": {"worker-low": 20, "worker-medium": 60, "worker-verify": 25, "worker-design": 60, "worker-design-verify": 25}, "context": {"warn_delta": 50000, "handoff_delta": 80000}}`;
   missing or invalid values fall back per role to those numbers. The old shape
   (`budgets.classes` with `max_turns`/`max_tokens`, and `budgets.roles` mapping a role to a
   class name) is still read (role to class to `max_turns`, `max_tokens` ignored) and
@@ -669,6 +670,27 @@ the worker's evidence is real). For the mechanical part it can run
 the task is `blocked`. Its model is configured like the other workers (`models
 --worker-verify <model>` / `--worker-verify-effort <level>`).
 
+### worker-design and worker-design-verify (Claude Code)
+
+Two Opus roles for UI / visual design work (layout, styling, page or component
+appearance). Software design (architecture, specs, ADRs) stays with `worker-medium`.
+The orchestrator routes to them automatically when the task is UI/visual and states
+the choice in its report.
+
+- `tools/claude-agents/worker-design.md` writes: Opus, high effort, the `worker-medium`
+  tools and rules plus design rules; `maxTurns` 90 (turn cap 60 x 1.5). It runs the task's
+  `## Screenshots` command before reporting and lists the PNG paths.
+- `tools/claude-agents/worker-design-verify.md` verifies: Opus, medium effort, the
+  `worker-verify` tools (read-only plus the acceptance command); `maxTurns` 38 (turn cap
+  25 x 1.5). Input: task file, diff, acceptance output and the screenshot folder. It
+  answers in the `worker-verify` format and reads every PNG; a missing screenshot
+  command or PNG is `FAIL` (missing input).
+
+Their models are set with `models --worker-design <model>` / `--worker-design-effort <level>`
+and `--worker-design-verify <model>` / `--worker-design-verify-effort <level>`. Both roles
+are Claude-only: Codex has no counterpart yet (a `worker-design` Codex profile waits on the
+visual-output experiment), so the Codex guard still allows only `worker-low` and `worker-medium`.
+
 ### codex-worker skill (Claude Code)
 
 `tools/claude-skills/codex-worker/SKILL.md` is a Claude Code skill (loaded on `/codex-worker <task>` or "have Codex do it")
@@ -690,12 +712,13 @@ the profile, and the profile's `developer_instructions` are passed with `-c deve
 appends one `codex_exec` event (token totals, turns, exit code, `profile`, `agent_type: codex-worker`) to `usage.log`, so Codex usage
 survives the handback. The verifier stays `worker-verify`.
 
-Which model each role (orchestrator, worker-low, worker-medium, worker-verify) uses is one config,
-not four: `python tools/graph.py models` shows it (plus whether `settings.json` and
+Which model each role (orchestrator, worker-low, worker-medium, worker-verify, worker-design,
+worker-design-verify) uses is one config, not six: `python tools/graph.py models` shows it (plus whether `settings.json` and
 `~/.claude/agents/worker-*.md` already match it); `--orchestrator <model> --effort
 <level>`, `--worker-low <model>` / `--worker-low-effort <level>`, `--worker-medium
 <model>` / `--worker-medium-effort <level>`, `--worker-verify <model>` /
-`--worker-verify-effort <level>` change it, shared across every computer
+`--worker-verify-effort <level>`, `--worker-design <model>` / `--worker-design-effort
+<level>`, `--worker-design-verify <model>` / `--worker-design-verify-effort <level>` change it, shared across every computer
 using the vault by default (`<data repo>/vault.config.json`) or `--this-computer` for
 just this one (`<data repo>/.graph/machine.json`); `--apply` (backing up each file
 first) writes the result into `settings.json`'s `model`/`effortLevel` fields and the
