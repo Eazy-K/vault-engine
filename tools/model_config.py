@@ -18,11 +18,14 @@ MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
 ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify",
          "worker-design", "worker-design-verify")
-# Claude Code worker roles. worker-design / worker-design-verify are Claude-only
-# (UI / visual design on Opus); the Codex agent-guard only accepts a role that
-# also has a tools/codex-agents/<role>.toml profile, so they never reach Codex.
-WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify",
-                "worker-design", "worker-design-verify")
+# Worker roles shared by Claude Code and Codex. The Codex agent-guard
+# (tools/codex-hooks/agent-guard.py) reads this tuple, so it must not grow
+# Claude-only roles.
+WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
+# Claude-only UI / visual design roles on Opus (no Codex counterpart yet).
+DESIGN_WORKER_ROLES = ("worker-design", "worker-design-verify")
+# Every worker role the Claude Code agent-guard accepts.
+CLAUDE_WORKER_ROLES = WORKER_ROLES + DESIGN_WORKER_ROLES
 
 # Read-only built-in Claude Code agents the guard lets through, role -> the
 # agent name Claude Code uses (matched case-insensitively). They have no

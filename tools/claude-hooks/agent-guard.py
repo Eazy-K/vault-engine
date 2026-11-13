@@ -81,7 +81,7 @@ def _policy():
     if model_config is None:
         effective = {r: {"model": m} for r, m in FALLBACK_MODELS.items()}
         return WORKER_ROLES, {}, effective
-    workers = tuple(getattr(model_config, "WORKER_ROLES", WORKER_ROLES))
+    workers = tuple(getattr(model_config, "CLAUDE_WORKER_ROLES", WORKER_ROLES))
     names = getattr(model_config, "READONLY_AGENT_NAMES", {})
     readonly = {name.lower(): role for role, name in names.items()}
     try:

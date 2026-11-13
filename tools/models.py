@@ -33,8 +33,7 @@ def default_agents_dir() -> Path:
     return g.claude_config_dir() / "agents"
 
 
-WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify",
-                "worker-design", "worker-design-verify")
+WORKER_ROLES = mc.CLAUDE_WORKER_ROLES
 FLAG_TO_ROLE = {"orchestrator": "orchestrator", "worker_low": "worker-low",
                  "worker_medium": "worker-medium", "worker_verify": "worker-verify",
                  "worker_design": "worker-design",

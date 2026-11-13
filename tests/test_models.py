@@ -45,12 +45,16 @@ import models  # noqa: E402
 WORKER_LOW_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-low.md").read_text(encoding="utf-8")
 WORKER_MEDIUM_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-medium.md").read_text(encoding="utf-8")
 WORKER_VERIFY_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-verify.md").read_text(encoding="utf-8")
+WORKER_DESIGN_TEMPLATE = (TOOLS_DIR / "claude-agents" / "worker-design.md").read_text(encoding="utf-8")
+WORKER_DESIGN_VERIFY_TEMPLATE = (TOOLS_DIR / "claude-agents"
+                                 / "worker-design-verify.md").read_text(encoding="utf-8")
 
 
 def _ns(**kwargs) -> Namespace:
     base = dict(orchestrator=None, effort=None, worker_low=None, worker_low_effort=None,
                 worker_medium=None, worker_medium_effort=None, worker_verify=None,
-                worker_verify_effort=None,
+                worker_verify_effort=None, worker_design=None, worker_design_effort=None,
+                worker_design_verify=None, worker_design_verify_effort=None,
                 this_computer=False,
                 apply=False, data=None, settings=None, agents_dir=None)
     base.update(kwargs)
@@ -79,6 +83,10 @@ class ModelsTestCase(unittest.TestCase):
         (self.agents / "worker-low.md").write_text(WORKER_LOW_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-medium.md").write_text(WORKER_MEDIUM_TEMPLATE, encoding="utf-8")
         (self.agents / "worker-verify.md").write_text(WORKER_VERIFY_TEMPLATE, encoding="utf-8", newline="\n")
+        (self.agents / "worker-design.md").write_text(WORKER_DESIGN_TEMPLATE, encoding="utf-8",
+                                                      newline="\n")
+        (self.agents / "worker-design-verify.md").write_text(
+            WORKER_DESIGN_VERIFY_TEMPLATE, encoding="utf-8", newline="\n")
 
 
 class TestShowDefaults(ModelsTestCase):
@@ -88,6 +96,8 @@ class TestShowDefaults(ModelsTestCase):
         self.assertIn("worker-low: model=sonnet (default)", out)
         self.assertIn("worker-medium: model=sonnet (default)", out)
         self.assertIn("worker-verify: model=sonnet (default)", out)
+        self.assertIn("worker-design: model=opus (default)  effort=high (default)", out)
+        self.assertIn("worker-design-verify: model=opus (default)  effort=medium (default)", out)
 
     def test_show_lists_readonly_agents_read_only(self):
         out = self._run()
@@ -97,7 +107,8 @@ class TestShowDefaults(ModelsTestCase):
         self._write_agent_files()
         self._run(apply=True)
         self.assertEqual(sorted(p.name for p in self.agents.iterdir() if p.suffix == ".md"),
-                         ["worker-low.md", "worker-medium.md", "worker-verify.md"])
+                         ["worker-design-verify.md", "worker-design.md", "worker-low.md",
+                          "worker-medium.md", "worker-verify.md"])
 
     def test_show_does_not_write_anything(self):
         self._run()
@@ -188,7 +199,8 @@ class TestApply(ModelsTestCase):
 
     def test_worker_templates_have_no_disallowed_tools_specifier(self):
         # Docs: a disallowedTools entry with a specifier like Bash(git push *) removes the whole tool.
-        for template in (WORKER_LOW_TEMPLATE, WORKER_MEDIUM_TEMPLATE, WORKER_VERIFY_TEMPLATE):
+        for template in (WORKER_LOW_TEMPLATE, WORKER_MEDIUM_TEMPLATE, WORKER_VERIFY_TEMPLATE,
+                         WORKER_DESIGN_TEMPLATE, WORKER_DESIGN_VERIFY_TEMPLATE):
             frontmatter = template.split("---")[1]
             self.assertNotIn("disallowedTools", frontmatter)
             tools = [l for l in frontmatter.splitlines() if l.startswith("tools:")]
@@ -202,6 +214,50 @@ class TestApply(ModelsTestCase):
         self.assertIn("model: haiku", text)
         self.assertIn("effort: low", text)
         self.assertIn("name: worker-verify", text)
+
+    def test_design_flags_write_config(self):
+        self._run(worker_design="sonnet", worker_design_effort="medium",
+                  worker_design_verify="sonnet", worker_design_verify_effort="low")
+        config = json.loads((self.data / "vault.config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["models"]["worker-design"], {"model": "sonnet", "effort": "medium"})
+        self.assertEqual(config["models"]["worker-design-verify"],
+                         {"model": "sonnet", "effort": "low"})
+
+    def test_design_flags_registered_in_parser(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        models.register(parser.add_subparsers())
+        ns = parser.parse_args(["models", "--worker-design", "opus", "--worker-design-effort", "max",
+                                "--worker-design-verify", "opus",
+                                "--worker-design-verify-effort", "high"])
+        self.assertEqual((ns.worker_design, ns.worker_design_effort), ("opus", "max"))
+        self.assertEqual((ns.worker_design_verify, ns.worker_design_verify_effort),
+                         ("opus", "high"))
+        self.assertEqual(models.FLAG_TO_ROLE["worker_design"], "worker-design")
+        self.assertEqual(models.FLAG_TO_ROLE["worker_design_verify"], "worker-design-verify")
+
+    def test_apply_writes_worker_design_frontmatter(self):
+        self._write_agent_files()
+        self._run(worker_design="sonnet", worker_design_effort="low",
+                  worker_design_verify="haiku", worker_design_verify_effort="high", apply=True)
+        design = (self.agents / "worker-design.md").read_text(encoding="utf-8")
+        self.assertIn("model: sonnet", design)
+        self.assertIn("effort: low", design)
+        self.assertIn("name: worker-design", design)
+        verify = (self.agents / "worker-design-verify.md").read_text(encoding="utf-8")
+        self.assertIn("model: haiku", verify)
+        self.assertIn("effort: high", verify)
+
+    def test_shipped_design_templates_match_defaults(self):
+        self._write_agent_files()
+        out = self._run()
+        self.assertIn(f"{self.agents / 'worker-design.md'}: matches", out)
+        self.assertIn(f"{self.agents / 'worker-design-verify.md'}: matches", out)
+
+    def test_missing_design_agent_file_reported(self):
+        self._write_agent_files()
+        (self.agents / "worker-design.md").unlink()
+        self.assertIn(f"{self.agents / 'worker-design.md'}: not found", self._run())
 
     def test_apply_backs_up_agent_file_before_changing(self):
         self._write_agent_files()
@@ -248,6 +304,8 @@ class TestMaxTurns(ModelsTestCase):
         self.assertEqual(self._turns("worker-low"), "30")
         self.assertEqual(self._turns("worker-medium"), "90")
         self.assertEqual(self._turns("worker-verify"), "38")
+        self.assertEqual(self._turns("worker-design"), "90")
+        self.assertEqual(self._turns("worker-design-verify"), "38")
 
     def test_apply_adds_missing_max_turns(self):
         self._write_agent_files()
