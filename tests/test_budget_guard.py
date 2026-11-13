@@ -167,6 +167,21 @@ class TestBudgetGuard(unittest.TestCase):
         self.assertIn("turn cap 5 exceeded (turns 5)",
                       out["hookSpecificOutput"]["permissionDecisionReason"])
 
+    def test_design_roles_have_their_caps(self):
+        for role, cap in (("worker-design", 60), ("worker-design-verify", 25)):
+            with self.subTest(role=role):
+                marker = self.data / ".graph" / "budget-warn" / "a1"
+                if marker.exists():
+                    marker.unlink()
+                self._write(cap - 1)
+                self.assertIsNotNone(self._run(self._payload(agent_type=role)))  # >=80%: warn
+                self._write(cap)
+                out = self._run(self._payload(agent_type=role))
+                h = out["hookSpecificOutput"]
+                self.assertEqual(h["permissionDecision"], "deny")
+                self.assertIn(f"{role} turn cap {cap} exceeded (turns {cap})",
+                              h["permissionDecisionReason"])
+
     def test_config_old_shape_still_read(self):
         cfg = {"budgets": {"classes": {"S": {"max_turns": 5, "max_tokens": 1000}},
                            "roles": {"worker-low": "S"}}}
@@ -174,6 +189,21 @@ class TestBudgetGuard(unittest.TestCase):
         self._write(5)
         out = self._run(self._payload())
         self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class TestFallbackTableParity(unittest.TestCase):
+    """The hook's _FallbackBudgets table must match budgets.FALLBACK_ROLES."""
+
+    def test_fallback_roles_match_budgets_module(self):
+        import importlib.util
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import budgets
+        spec = importlib.util.spec_from_file_location("hook_under_test_budget_guard", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod._FallbackBudgets.ROLES, budgets.FALLBACK_ROLES)
+        self.assertEqual(mod._FallbackBudgets.ROLES["worker-design"], 60)
+        self.assertEqual(mod._FallbackBudgets.ROLES["worker-design-verify"], 25)
 
 
 if __name__ == "__main__":

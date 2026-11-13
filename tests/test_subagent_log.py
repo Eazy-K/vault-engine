@@ -339,11 +339,38 @@ class TestSubagentBudget(unittest.TestCase):
             USAGE_ASSISTANT(10, msg_id="m2"), USAGE_ASSISTANT(10), USAGE_ASSISTANT(10)])
         self.assertEqual(event["turns"], 4)
 
+    def test_design_roles_have_their_caps(self):
+        for role, cap in (("worker-design", 60), ("worker-design-verify", 25)):
+            with self.subTest(role=role):
+                out, event = self._run(agent_type=role, turns=3)
+                self.assertEqual(out, "")
+                self.assertEqual(event["max_turns"], cap)
+                self.assertEqual(event["agent_type"], role)
+                out, event = self._run(agent_type=role, turns=cap + 1)
+                self.assertIn(f"{role} turn cap {cap} exceeded (turns {cap + 1})",
+                              json.loads(out)["systemMessage"])
+                self.assertEqual(event["budget_hit"], "block")
+
     def test_unknown_agent_type_has_no_budget_fields(self):
         out, event = self._run(agent_type="Explore", turns=500)
         self.assertEqual(out, "")
         for key in ("max_turns", "turns", "tokens", "budget_hit"):
             self.assertNotIn(key, event)
+
+
+class TestFallbackTableParity(unittest.TestCase):
+    """The hook's _FallbackBudgets table must match budgets.FALLBACK_ROLES."""
+
+    def test_fallback_roles_match_budgets_module(self):
+        import importlib.util
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import budgets
+        spec = importlib.util.spec_from_file_location("hook_under_test_subagent_log", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod._FallbackBudgets.ROLES, budgets.FALLBACK_ROLES)
+        self.assertEqual(mod._FallbackBudgets.ROLES["worker-design"], 60)
+        self.assertEqual(mod._FallbackBudgets.ROLES["worker-design-verify"], 25)
 
 
 if __name__ == "__main__":
