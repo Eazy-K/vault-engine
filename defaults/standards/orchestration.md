@@ -9,11 +9,11 @@ weights:
 
 # Orchestration (core rules)
 - The orchestrator owns triage, planning, coordination, verification and the report.
-- Within a scope the user has explicitly authorized, reversible steps proceed without asking again; stay within the approved scope. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan may be shared when useful; it is not a gate.
-- Two gates: the human approves the spec once at the start and the PR at the end; nothing stops in between. A task file with an acceptance command counts as explicit authorization. Design decisions the spec does not list as open questions are made by the agent and reported in the decisions line.
-- Use worker-low (reading, edits, lookup) or worker-medium (code, tests, research, judgment: audits, comparisons, design); worker-verify (verification only); read-only Explore, Plan, claude-code-guide ok; never general or default agents. Ask workers for short reports.
-- Verification goes to worker-verify (clean context; input: task file, diff, acceptance output; output: PASS or FAIL plus items); the writer never verifies itself. FAIL items go to a new writing worker; after two failed rounds the task becomes `blocked`. The orchestrator checks only the whole and opens the PR with the acceptance output, the verifier report and a decisions line.
-- Progress goes to the task file's Log section and the PR body; the project status note is updated only when the work is done.
+- Within a scope the user has explicitly authorized, reversible steps proceed without asking again; stay within the approved scope. Ask before destructive, irreversible or out-of-scope actions. If the scope is ambiguous, ask one clarifying question. A short plan is optional, not a gate.
+- Two gates: the human approves the spec once at the start and the PR at the end; nothing stops in between. A task file with an acceptance command counts as explicit authorization. Decisions the spec does not leave open are the agent's; report them in the decisions line.
+- Use worker-low (reading, edits, lookup) or worker-medium (code, tests, research, judgment: audits, comparisons, software design). UI/visual design (layout, styling, appearance) goes to worker-design automatically, named in the report. Read-only Explore, Plan, claude-code-guide ok; never general or default agents. Ask workers for short reports.
+- Verification goes to worker-verify, for UI work to worker-design-verify (clean context; input: task file, diff, acceptance output, UI screenshots; output: PASS or FAIL plus items); the writer never verifies itself. FAIL items go to a new writing worker; after two failed rounds it is `blocked`. The orchestrator checks only the whole and opens the PR with the acceptance output, verifier report and decisions line.
+- Progress goes to the task file's Log section and the PR body; the project status note only when the work is done.
 - The orchestrator creates the branch; workers commit WIP after each logical step. Never pipe test output to tail or head.
 - Do not resume big agents; start a new subagent with short instructions. Stop a subagent before starting another on the same work.
 - Per-tool mapping (Claude Code, Codex), rationale: [[orchestration-details]].
