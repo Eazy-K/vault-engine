@@ -1031,6 +1031,14 @@ class TestUpdateAgents(unittest.TestCase):
         calls, _ = self._run(yes=True, agents=True)
         self.assertEqual(len(calls), 1)
 
+    def test_new_design_agent_files_are_offered(self):
+        calls, out = self._run(stale=("worker-design-verify.md", "worker-design.md"), yes=True)
+        self.assertEqual(calls, [])
+        self.assertIn("worker-design.md", out)
+        self.assertIn("worker-design-verify.md", out)
+        calls, _ = self._run(stale=("worker-design.md",), yes=True, agents=True)
+        self.assertEqual(len(calls), 1)
+
     def test_quiet_when_already_current(self):
         calls, out = self._run(stale=(), agents=True)
         self.assertEqual(calls, [])
