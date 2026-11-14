@@ -683,6 +683,22 @@ class TestSetup(unittest.TestCase):
         self.assertIn("unchanged", buf.getvalue())
         self.assertNotIn("copied", buf.getvalue())
 
+    def test_design_agents_installed_and_tracked_as_stale(self):
+        dest_dir = self.home / ".claude" / "agents"
+        names = ("worker-design.md", "worker-design-verify.md")
+        dest_dir.mkdir(parents=True)
+        stale = onboarding.stale_claude_agents(dest_dir)
+        for name in names:
+            self.assertIn(name, stale)
+        with mock.patch("pathlib.Path.home", return_value=self.home), redirect_stdout(StringIO()):
+            onboarding.cmd_setup(self._args(no_agents=False))
+        for name in names:
+            self.assertEqual((dest_dir / name).read_text(encoding="utf-8"),
+                             self._engine_agent(name))
+        self.assertEqual(onboarding.stale_claude_agents(dest_dir), [])
+        (dest_dir / "worker-design.md").unlink()
+        self.assertEqual(onboarding.stale_claude_agents(dest_dir), ["worker-design.md"])
+
     def test_routing_written_outside_git_repo(self):
         root = self.tmp / "projects"
         root.mkdir()
@@ -870,7 +886,8 @@ class TestDoctor(unittest.TestCase):
         out = self._doctor_with_agents()
         self.assertIn("WARN vault.config.json uses the old budgets shape", out)
         self.assertIn('{"budgets": {"roles": {"worker-low": 20, "worker-medium": 33, '
-                      '"worker-verify": 25}}}', out)
+                      '"worker-verify": 25, "worker-design": 60, '
+                      '"worker-design-verify": 25}}}', out)
         cfg.write_text(json.dumps({"budgets": {"roles": {"worker-low": 20}}}), encoding="utf-8")
         self.assertNotIn("old budgets shape", self._doctor_with_agents())
 

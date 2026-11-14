@@ -38,12 +38,31 @@ class TestRanking(unittest.TestCase):
         eff = {"worker-low": {"model": "haiku", "effort": "low"}}
         self.assertEqual(mc.configured_model("worker-low", eff), "haiku")
 
-    def test_four_worker_roles_with_defaults(self):
+    def test_worker_roles_with_defaults(self):
         self.assertEqual(mc.WORKER_ROLES, ("worker-low", "worker-medium", "worker-verify"))
-        for role in mc.WORKER_ROLES:
+        self.assertEqual(mc.DESIGN_WORKER_ROLES, ("worker-design", "worker-design-verify"))
+        self.assertEqual(mc.CLAUDE_WORKER_ROLES, mc.WORKER_ROLES + mc.DESIGN_WORKER_ROLES)
+        for role in mc.CLAUDE_WORKER_ROLES:
             self.assertIn(role, mc.ROLES)
             self.assertIn(role, mc.DEFAULT_MODELS)
         self.assertEqual(mc.DEFAULT_MODELS["worker-verify"], {"model": "sonnet", "effort": "medium"})
+
+    def test_design_roles_default_to_opus(self):
+        self.assertEqual(mc.DEFAULT_MODELS["worker-design"], {"model": "opus", "effort": "high"})
+        self.assertEqual(mc.DEFAULT_MODELS["worker-design-verify"],
+                         {"model": "opus", "effort": "medium"})
+        self.assertEqual(mc.configured_model("worker-design"), "opus")
+
+    def test_design_roles_layered_from_config(self):
+        import shutil
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        (tmp / "shared.json").write_text(json.dumps(
+            {"models": {"worker-design": {"effort": "max"}}}), encoding="utf-8")
+        effective, sources = mc.load_layered(tmp / "shared.json", tmp / "machine.json")
+        self.assertEqual(effective["worker-design"], {"model": "opus", "effort": "max"})
+        self.assertEqual(sources["worker-design"]["effort"], "vault.config.json")
+        self.assertEqual(sources["worker-design-verify"]["model"], "default")
 
     def test_readonly_roles_defaults_tolerate_none(self):
         self.assertEqual(mc.READONLY_AGENT_ROLES, ("explore", "plan", "claude-code-guide"))

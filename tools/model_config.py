@@ -16,8 +16,16 @@ from pathlib import Path
 # here is unknown to `rank`.
 MODEL_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
-ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify")
+ROLES = ("orchestrator", "worker-low", "worker-medium", "worker-verify",
+         "worker-design", "worker-design-verify")
+# Worker roles shared by Claude Code and Codex. The Codex agent-guard
+# (tools/codex-hooks/agent-guard.py) reads this tuple, so it must not grow
+# Claude-only roles.
 WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
+# Claude-only UI / visual design roles on Opus (no Codex counterpart yet).
+DESIGN_WORKER_ROLES = ("worker-design", "worker-design-verify")
+# Every worker role the Claude Code agent-guard accepts.
+CLAUDE_WORKER_ROLES = WORKER_ROLES + DESIGN_WORKER_ROLES
 
 # Read-only built-in Claude Code agents the guard lets through, role -> the
 # agent name Claude Code uses (matched case-insensitively). They have no
@@ -33,6 +41,8 @@ DEFAULT_MODELS = {
     "worker-low": {"model": "sonnet", "effort": "low"},
     "worker-medium": {"model": "sonnet", "effort": "medium"},
     "worker-verify": {"model": "sonnet", "effort": "medium"},
+    "worker-design": {"model": "opus", "effort": "high"},
+    "worker-design-verify": {"model": "opus", "effort": "medium"},
     # model None = inherit from the caller. Effort is not injected for read-only built-in agents;
     # Explore runs at the effort Claude Code gives it (medium, live-checked 2026-11-08).
     "explore": {"model": "haiku", "effort": None},

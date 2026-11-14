@@ -65,6 +65,17 @@ class OrchestrationRules(unittest.TestCase):
         self.assertLessEqual(len([l for l in body.splitlines() if l.strip()]), 18)
         self.assertLessEqual(len(body.split()), 420)
 
+    def test_ui_design_routes_to_design_workers(self):
+        core = CORE.read_text(encoding="utf-8").lower()
+        self.assertIn("ui/visual design", core)
+        self.assertIn("goes to worker-design automatically", core)
+        self.assertIn("worker-design-verify", core)
+        details = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()
+        for phrase in ("`worker-design`", "`worker-design-verify`", "claude-only", "`--worker-design-verify-effort`"):
+            self.assertIn(phrase, details)
+        codex = CODEX.read_text(encoding="utf-8").lower()
+        self.assertNotIn("worker-design", codex)
+
     def test_details_do_not_exempt_single_agent_from_approval(self):
         text = (DEFAULTS / "standards" / "orchestration-details.md").read_text(encoding="utf-8").lower()
         for phrase in ("may launch after stating scope", "without approval", "wait for explicit user approval"):

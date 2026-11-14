@@ -1,5 +1,6 @@
 """`graph.py models`: one source of truth for which Claude Code model each role
-(orchestrator, worker-low, worker-medium, worker-verify) uses, instead of settings.json,
+(orchestrator, worker-low, worker-medium, worker-verify, worker-design,
+worker-design-verify) uses, instead of settings.json,
 tools/claude-agents/worker-*.md and agent-guard.py each hard-coding their own
 (see tools/model_config.py for the ranking and the config layering rules).
 
@@ -32,9 +33,11 @@ def default_agents_dir() -> Path:
     return g.claude_config_dir() / "agents"
 
 
-WORKER_ROLES = ("worker-low", "worker-medium", "worker-verify")
+WORKER_ROLES = mc.CLAUDE_WORKER_ROLES
 FLAG_TO_ROLE = {"orchestrator": "orchestrator", "worker_low": "worker-low",
-                 "worker_medium": "worker-medium", "worker_verify": "worker-verify"}
+                 "worker_medium": "worker-medium", "worker_verify": "worker-verify",
+                 "worker_design": "worker-design",
+                 "worker_design_verify": "worker-design-verify"}
 
 
 # --- config read/write --------------------------------------------------------
@@ -283,6 +286,10 @@ def cmd_models(args: argparse.Namespace) -> None:
     set_value("worker-medium", "effort", args.worker_medium_effort)
     set_value("worker-verify", "model", args.worker_verify)
     set_value("worker-verify", "effort", args.worker_verify_effort)
+    set_value("worker-design", "model", args.worker_design)
+    set_value("worker-design", "effort", args.worker_design_effort)
+    set_value("worker-design-verify", "model", args.worker_design_verify)
+    set_value("worker-design-verify", "effort", args.worker_design_verify_effort)
 
     if role_updates:
         target = machine_path if args.this_computer else shared_path
@@ -341,7 +348,8 @@ def _report_and_apply(args: argparse.Namespace, effective: dict, settings_path: 
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("models", help="show or set which Claude Code model each role "
-                                       "(orchestrator, worker-low, worker-medium, worker-verify) uses")
+                                       "(orchestrator, worker-low, worker-medium, worker-verify, "
+                                       "worker-design, worker-design-verify) uses")
     p.add_argument("--orchestrator", help="set the orchestrator model (e.g. opus, sonnet)")
     p.add_argument("--effort", help="set the orchestrator's effort (e.g. low, medium, high)")
     p.add_argument("--worker-low", help="set the worker-low model")
@@ -350,6 +358,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--worker-medium-effort", help="set the worker-medium effort")
     p.add_argument("--worker-verify", help="set the worker-verify model")
     p.add_argument("--worker-verify-effort", help="set the worker-verify effort")
+    p.add_argument("--worker-design", help="set the worker-design model (UI / visual design)")
+    p.add_argument("--worker-design-effort", help="set the worker-design effort")
+    p.add_argument("--worker-design-verify", help="set the worker-design-verify model")
+    p.add_argument("--worker-design-verify-effort", help="set the worker-design-verify effort")
     p.add_argument("--this-computer", action="store_true",
                     help="write to this computer's .graph/machine.json instead of the "
                          "shared vault.config.json")

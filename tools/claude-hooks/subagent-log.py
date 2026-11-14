@@ -147,7 +147,8 @@ def meta_agent_type(payload: dict) -> tuple[str, bool]:
 
 class _FallbackBudgets:
     """Used if tools/budgets.py can't be imported; same numbers as the module."""
-    ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}
+    ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25,
+             "worker-design": 60, "worker-design-verify": 25}
 
     @classmethod
     def load_budgets(cls, data_dir):

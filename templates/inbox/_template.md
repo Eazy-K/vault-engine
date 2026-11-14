@@ -33,6 +33,12 @@ The one-line command below decides pass or fail (several commands: join with `&&
 python -I -m unittest discover -s tests -q
 ```
 
+## Screenshots
+Optional: only for UI/visual design tasks; delete it otherwise. One command line that writes PNG files to a folder (the project's own tool). `worker-design` runs it before reporting and `worker-design-verify` reads the PNGs; without it the verifier answers FAIL (missing input).
+```bash
+<command that writes PNG files> --out <folder>
+```
+
 ## Human gate
 Spec approval at the start and PR review at the end. List anything else that needs the human here (default: nothing).
 

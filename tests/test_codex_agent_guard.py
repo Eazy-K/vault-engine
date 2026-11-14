@@ -120,6 +120,36 @@ class TestProfilesRestricted(unittest.TestCase):
                     {"tool_name": "spawn_agent", "tool_input": {"agent_type": role}}, profiles))
 
 
+class TestClaudeOnlyDesignRoles(unittest.TestCase):
+    """worker-design / worker-design-verify are Claude Code only (task 0066)."""
+
+    def test_design_roles_denied(self):
+        for role in ("worker-design", "worker-design-verify"):
+            for args in ({"agent_type": role}, {"agent_type": role, "model": "gpt-6.1-sol"}):
+                with self.subTest(args=args):
+                    out = spawn("spawn_agent", args)
+                    self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_design_profile_file_is_still_not_an_allowed_agent_type(self):
+        # Even a worker-design.toml dropped into codex-agents/ must not be accepted:
+        # the Codex guard's roles come from model_config.WORKER_ROLES, which stays
+        # free of the Claude-only design roles.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("codex_agent_guard_design", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertNotIn("worker-design", mod._worker_roles())
+        self.assertNotIn("worker-design-verify", mod._worker_roles())
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp)
+            for role in ("worker-low", "worker-medium", "worker-design", "worker-design-verify"):
+                (agents / f"{role}.toml").write_text(
+                    "\n".join([f'name = "{role}"', 'model = "gpt-6.1-sol"',
+                                'model_reasoning_effort = "medium"']), encoding="utf-8")
+            mod.AGENTS_DIR = agents
+            self.assertEqual(set(mod._profiles()), {"worker-low", "worker-medium"})
+
+
 class TestAgentGuardLog(unittest.TestCase):
     def run_guard(self, payload, data, **extra):
         env = {**os.environ, "VAULT_DATA": str(data)}

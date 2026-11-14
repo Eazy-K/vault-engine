@@ -29,7 +29,8 @@ class TestBudgets(unittest.TestCase):
         for data_dir in (None, self.data):
             b = budgets.load_budgets(data_dir)
             self.assertEqual(b, {"roles": {"worker-low": 20, "worker-medium": 60,
-                                           "worker-verify": 25}})
+                                           "worker-verify": 25, "worker-design": 60,
+                                           "worker-design-verify": 25}})
             self.assertEqual(b["roles"], budgets.FALLBACK_ROLES)
 
     def test_config_overrides_per_role(self):
@@ -41,6 +42,17 @@ class TestBudgets(unittest.TestCase):
         self.assertEqual(budgets.role_turn_cap(b, "worker-verify"), 25)
         self.assertEqual(budgets.role_turn_cap(b, "custom"), 7)
         self.assertIsNone(budgets.role_turn_cap(b, "Explore"))
+
+    def test_design_role_caps_and_agent_max_turns(self):
+        b = budgets.load_budgets(None)
+        self.assertEqual(budgets.role_turn_cap(b, "worker-design"), 60)
+        self.assertEqual(budgets.role_turn_cap(b, "worker-design-verify"), 25)
+        self.assertEqual(budgets.agent_max_turns(60), 90)
+        self.assertEqual(budgets.agent_max_turns(25), 38)
+        self._config({"budgets": {"roles": {"worker-design": 40}}})
+        b = budgets.load_budgets(self.data)
+        self.assertEqual(budgets.role_turn_cap(b, "worker-design"), 40)
+        self.assertEqual(budgets.role_turn_cap(b, "worker-design-verify"), 25)
 
     def test_task_total_tokens_ignored(self):
         self._config({"budgets": {"task_total_tokens": 5000}})

@@ -23,7 +23,8 @@ import math
 import os
 from pathlib import Path
 
-FALLBACK_ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25}
+FALLBACK_ROLES = {"worker-low": 20, "worker-medium": 60, "worker-verify": 25,
+                  "worker-design": 60, "worker-design-verify": 25}
 MAX_TURNS_MARGIN = 1.5
 
 

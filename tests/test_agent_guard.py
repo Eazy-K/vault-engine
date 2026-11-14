@@ -67,6 +67,43 @@ class TestAgentGuard(unittest.TestCase):
     def test_denies_worker_verify_with_non_configured_model(self):
         self.assertDenied(_run(_agent_call("worker-verify", "haiku")))
 
+    def test_design_roles_allowed_without_model_and_with_opus(self):
+        for role in ("worker-design", "worker-design-verify"):
+            for model in (None, "opus", "Opus"):
+                out = _run(_agent_call(role, model))
+                self.assertEqual(out.returncode, 0)
+                self.assertEqual(out.stdout.strip(), "", (role, model))
+
+    def test_design_roles_denied_with_sonnet(self):
+        for role in ("worker-design", "worker-design-verify"):
+            self.assertDenied(_run(_agent_call(role, "sonnet")))
+            self.assertDenied(_run(_agent_call(role, "haiku")))
+
+    def test_worker_medium_with_opus_still_denied(self):
+        self.assertDenied(_run(_agent_call("worker-medium", "opus")))
+
+    def test_fallback_tables_know_design_roles(self):
+        # Without tools/model_config.py next to it the guard uses its own tables.
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        hooks = tmp / "claude-hooks"
+        hooks.mkdir()
+        shutil.copy(SCRIPT, hooks / "agent-guard.py")
+        env = dict(os.environ)
+        for key in ("VAULT_AGENT_GUARD", "VAULT_DATA", "VAULT_HOME"):
+            env.pop(key, None)
+
+        def run(role, model):
+            return subprocess.run([sys.executable, str(hooks / "agent-guard.py")],
+                                  input=json.dumps(_agent_call(role, model)),
+                                  capture_output=True, text=True, env=env)
+        self.assertEqual(run("worker-design", "opus").stdout.strip(), "")
+        self.assertEqual(run("worker-design-verify", None).stdout.strip(), "")
+        self.assertDenied(run("worker-design", "sonnet"))
+        self.assertDenied(run("worker-medium", "opus"))
+
     def test_denies_worker_medium_with_non_configured_model(self):
         out = _run(_agent_call("worker-medium", "haiku"))
         self.assertDenied(out)
