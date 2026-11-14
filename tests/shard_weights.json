@@ -40,6 +40,7 @@
  "test_token_stats_codex": 0.1,
  "test_token_stats_session": 0.1,
  "test_update": 22.9,
+ "test_update_all_complete": 20.5,
  "test_update_channels": 10.5,
  "test_usage_log": 13.4,
  "test_user_claude_dirs": 1.0,
