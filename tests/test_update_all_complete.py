@@ -48,10 +48,10 @@ sys.path.insert(0, str(TOOLS_DIR))
 import update  # noqa: E402
 import user_config as uc  # noqa: E402
 
-# Other test modules re-execute graph.py; patch whichever graph objects the
-# modules under test actually hold.
-graph = update.g
-GRAPHS = {id(m): m for m in (update.g, uc.g)}.values()
+# Other test modules re-execute graph.py, so update.g / uc.g can be stale copies.
+# setUp binds both to this module's graph for the duration of each test.
+graph = sys.modules["graph"]
+GRAPHS = [graph]
 
 OK = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -158,7 +158,9 @@ class UpdateAllCase(unittest.TestCase):
         env = {"HOME": str(self.home), "USERPROFILE": str(self.home),
                "CODEX_HOME": str(self.codex), "CLAUDE_CONFIG_DIR": str(self.claude)}
         patchers = [mock.patch.dict(os.environ, env),
-                    mock.patch.dict(sys.modules, {"user_config": uc})]
+                    mock.patch.dict(sys.modules, {"user_config": uc}),
+                    mock.patch.object(update, "g", graph),
+                    mock.patch.object(uc, "g", graph)]
         for g in GRAPHS:
             patchers += [mock.patch.object(g, "ENGINE", self.engine),
                          mock.patch.object(g, "default_paths", return_value=self.paths),
