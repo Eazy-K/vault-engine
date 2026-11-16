@@ -47,6 +47,7 @@ _spec.loader.exec_module(graph)
 
 sys.path.insert(0, str(TOOLS_DIR))
 import update  # noqa: E402  (path must be set up first)
+import user_config  # noqa: E402
 
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -184,6 +185,12 @@ class UpdateTestCase(unittest.TestCase):
         self.data = self.tmp / "data"
         self.data.mkdir()
         self.paths = graph.Paths(self.engine, self.data)
+
+        # Other test modules re-execute graph.py; point update at this module's graph.
+        for mod in (update, user_config):
+            patch = mock.patch.object(mod, "g", graph)
+            patch.start()
+            self.addCleanup(patch.stop)
 
         self._engine_patch = mock.patch.object(graph, "ENGINE", self.engine)
         self._engine_patch.start()
