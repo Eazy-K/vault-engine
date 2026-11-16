@@ -89,6 +89,12 @@ class ModelsTestCase(unittest.TestCase):
             WORKER_DESIGN_VERIFY_TEMPLATE, encoding="utf-8", newline="\n")
 
 
+class TestWorkerVerifyDiffInstruction(unittest.TestCase):
+    def test_template_pins_diffstat_input_and_no_git_reread_rule(self):
+        self.assertIn("a diffstat (inline), the path of a diff file", WORKER_VERIFY_TEMPLATE)
+        self.assertIn("do not run `git diff`, `git log` or `git show`", WORKER_VERIFY_TEMPLATE)
+
+
 class TestShowDefaults(ModelsTestCase):
     def test_show_prints_builtin_defaults_when_unconfigured(self):
         out = self._run()
