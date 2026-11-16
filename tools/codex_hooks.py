@@ -377,6 +377,19 @@ def effort_status(config_path: Path | None = None) -> tuple[str, str] | None:
                     f"worker profile (worker-medium: {wanted}); workers use the profile's value")
 
 
+def shim_status(executable: str) -> tuple[str, str] | None:
+    """On Windows, codex-worker bypasses an npm `.cmd` shim; OK when its node and JS entry
+    resolve, WARN otherwise. None for any other executable."""
+    import codex_worker
+    if not codex_worker.is_cmd_shim(executable):
+        return None
+    try:
+        node, entry = codex_worker.resolve_shim(executable)
+    except codex_worker.WorkerError as exc:
+        return "WARN", f"Codex shim {executable} cannot be bypassed by codex-worker: {exc}"
+    return "OK", f"Codex shim {executable}: codex-worker runs {Path(node).name} {Path(entry).name} directly"
+
+
 def cli_statuses(executable: str | None, config_path: Path | None = None,
                  home: Path | None = None) -> list[tuple[str, str]]:
     """Codex CLI lines for `doctor`: one INFO and nothing else when `codex` is not installed."""
@@ -385,6 +398,9 @@ def cli_statuses(executable: str | None, config_path: Path | None = None,
     version = codex_version(executable)
     out = [("OK", f"Codex CLI: {version}") if version
            else ("WARN", f"Codex CLI found at {executable} but `--version` failed; manual: reinstall Codex")]
+    shim = shim_status(executable)
+    if shim:
+        out.append(shim)
     out.append(login_status(executable, home))
     out.append(sandbox_status(config_path))
     effort = effort_status(config_path)

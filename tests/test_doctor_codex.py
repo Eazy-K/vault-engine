@@ -83,6 +83,24 @@ class TestDoctorCodex(unittest.TestCase):
         (self.home / "agents" / "worker-medium.toml").write_text("name = 'x'\n", encoding="utf-8")
         self.assertIn("worker-medium.toml differs", codex_hooks.workers_status(self.home / "agents")[1])
 
+    def test_unresolvable_cmd_shim_warns(self):
+        shim = self.tmp / "codex.cmd"
+        shim.write_text('@ECHO off\r\n"%dp0%\\node_modules\\x\\missing.js" %*\r\n', encoding="utf-8")
+        status, msg = codex_hooks.shim_status(str(shim))
+        self.assertEqual(status, "WARN")
+        self.assertIn("--codex", msg)
+        self.assertIn("VAULT_CODEX_BIN", msg)
+        self.assertIsNone(codex_hooks.shim_status(str(self.tmp / "codex.exe")))
+
+    def test_resolvable_cmd_shim_is_ok(self):
+        entry = self.tmp / "node_modules" / "x" / "codex.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text("", encoding="utf-8")
+        shim = self.tmp / "codex.cmd"
+        shim.write_text('@ECHO off\r\n"%dp0%\\node_modules\\x\\codex.js" %*\r\n', encoding="utf-8")
+        with mock.patch("codex_worker.shutil.which", return_value="node"):
+            self.assertEqual(codex_hooks.shim_status(str(shim))[0], "OK", codex_hooks.shim_status(str(shim)))
+
     def test_missing_skill_is_flagged(self):
         self._install_all()
         (self.claude / "skills" / "codex-worker" / "SKILL.md").unlink()

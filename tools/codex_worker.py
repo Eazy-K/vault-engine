@@ -163,9 +163,47 @@ def trim_flags(trim: str) -> list[str]:
     return ["--ignore-user-config"] if trim == "ignore-user-config" else []
 
 
+SHIM_HINT = "pass a direct executable with --codex or VAULT_CODEX_BIN"
+_SHIM_JS_RE = re.compile(r'"%dp0%[\\/]+([^"%\r\n]+?\.m?c?js)"', re.I)
+
+
+def is_cmd_shim(path: str) -> bool:
+    return path.lower().endswith((".cmd", ".bat"))
+
+
+def resolve_shim(shim: str, which=None) -> list[str]:
+    """[node, <entry .js>] that an npm `.cmd` shim runs. Raises WorkerError when it cannot be
+    resolved. Pure apart from reading the shim text and checking files next to it."""
+    path = Path(shim)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise WorkerError(f"cannot read the Codex shim {shim}: {exc}; {SHIM_HINT}")
+    base = path.parent
+    entry = None
+    m = _SHIM_JS_RE.search(text)
+    if m:
+        entry = base / m.group(1).replace("\\", "/")
+    if entry is None or not entry.is_file():
+        fallback = base / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        entry = fallback if fallback.is_file() else None
+    if entry is None:
+        raise WorkerError(f"cannot find the JavaScript entry of the Codex shim {shim}; {SHIM_HINT}")
+    local_node = base / "node.exe"
+    node = str(local_node) if local_node.is_file() else (which or shutil.which)("node")
+    if not node:
+        raise WorkerError(f"cannot find node for the Codex shim {shim}; {SHIM_HINT}")
+    return [node, str(entry)]
+
+
 def codex_argv(codex: str, worktree: str, last: str, trim: str, model: str, effort: str,
                instructions: str = "") -> list[str]:
-    exe = [sys.executable, codex] if codex.lower().endswith(".py") else [shutil.which(codex) or codex]
+    if codex.lower().endswith(".py"):
+        exe = [sys.executable, codex]
+    else:
+        found = shutil.which(codex) or codex
+        # cmd.exe would run a .cmd shim and treat > & | % in the arguments as shell syntax
+        exe = resolve_shim(found) if os.name == "nt" and is_cmd_shim(found) else [found]
     return [*exe, "exec", "-C", worktree, "-s", "workspace-write", "--json", "-o", last,
             *trim_flags(trim), "-c", "developer_instructions=" + json.dumps(instructions),
             "-m", model, "-c", f'model_reasoning_effort="{effort}"', "-"]
