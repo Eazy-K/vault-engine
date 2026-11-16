@@ -416,6 +416,20 @@ class CodexWorkerTests(unittest.TestCase):
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(r.returncode, 3, r.stderr)
 
+    @unittest.skipUnless(os.name == "nt", "the .cmd shim is bypassed on Windows only")
+    def test_unresolvable_cmd_shim_exits_2_and_never_starts(self):
+        shim = Path(self._tmp.name) / "codex.cmd"
+        shim.write_text('@ECHO off\r\n"%dp0%\\node_modules\\x\\missing.js" %*\r\n', encoding="utf-8")
+        cmd = [sys.executable, str(GRAPH_PATH), "codex-worker", "--task", str(self.task),
+               "--worktree", str(self.wt), "--out", str(self.out), "--base", "main",
+               "--codex", str(shim)]
+        env = {**os.environ, **ENV_GIT, "VAULT_DATA": str(self.data)}
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--codex", r.stderr)
+        self.assertIn("VAULT_CODEX_BIN", r.stderr)
+        self.assertFalse((self.out / "events.jsonl").exists())
+
     def test_parse_status_sections_inline(self):
         status, sec = codex_worker.parse_status("x\nSTATUS: failed\nBlockers: broke\n")
         self.assertEqual(status, "FAILED")
