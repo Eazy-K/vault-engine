@@ -661,7 +661,9 @@ workers are enforced by `git-guard.py` instead.
 context. Tools: `Read`, `Grep`, `Glob`, `Bash`; `maxTurns` 38 (turn cap 25 x 1.5); it never edits files,
 commits or runs git write commands. The orchestrator starts it with the `Agent` tool
 (`subagent_type: worker-verify`) after a writing worker reports, and gives it the task
-file path, a diff file (or the branch) and the acceptance-command output file. It answers
+file path, the `git diff --stat` output, the path of a diff file (the branch only when no diff
+file exists) and the acceptance-command output file. With a diff file it does not run
+`git diff`, `git log` or `git show`. It answers
 `PASS` or `FAIL` on the first line, then one `- ok:` / `- fail:` bullet per checklist item
 (acceptance green, no excluded file touched, scope complete, tests cover the change,
 the worker's evidence is real). For the mechanical part it can run
