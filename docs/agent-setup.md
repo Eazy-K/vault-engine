@@ -555,8 +555,8 @@ This backs up any existing `settings.json` first (`.bak-YYYYMMDD`) and merges in
   (`budgets.classes` with `max_turns`/`max_tokens`, and `budgets.roles` mapping a role to a
   class name) is still read (role to class to `max_turns`, `max_tokens` ignored) and
   `doctor` warns with the new JSON to write instead. The
-  per-computer `queue` block in `.graph/machine.json` (API machines only) holds the single dollar
-  ceiling `budgets_usd` that `queue-runner` reads (see `docs/commands.md`). Roles without a cap get no budget fields. `stats` summarizes the
+  per-computer `queue` block in `.graph/machine.json` (API machines only) holds the optional single dollar
+  ceiling `budgets_usd` that `queue-runner` reads (absent: no dollar flag; the turn cap and the account spending limit are the brake) (see `docs/commands.md`). Roles without a cap get no budget fields. `stats` summarizes the
   per-role p50/p90 turns and tokens and the warn/hit counts under "subagent budgets".
   It never blocks and fails open.
 - a `PreToolUse` hook (`git-guard.py`, matcher `Bash`; Codex: shell tools) that denies

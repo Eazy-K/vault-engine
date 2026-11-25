@@ -671,6 +671,17 @@ class EndToEndTests(TempBase):
         self.assertNotIn("feat/queue-fix-thing", heads)
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
+    def test_no_budgets_usd_runs_without_the_dollar_flag(self):
+        (self.data / ".graph" / "machine.json").write_text(json.dumps(
+            {"project_roots": [str(self.projects)],
+             "queue": {"enabled": True, "projects": ["vault-engine"], "max_turns": 7}}),
+            encoding="utf-8")
+        self.run_scenario(pycmd("pass"))
+        argv = json.loads(self.claude_out.read_text(encoding="utf-8"))["argv"]
+        self.assertEqual(argv[2:], ["--permission-mode", "auto", "--max-turns", "7",
+                                    "--output-format", "json"])
+        self.assertEqual(self.status(), "review")
+
     def test_budget_fixture_blocks_even_with_green_acceptance(self):
         event = self.run_scenario(pycmd("pass"), fixture="error_max_budget_usd", claude_exit=1)
         self.assertEqual((event["outcome"], event["reason"]),
