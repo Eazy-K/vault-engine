@@ -32,7 +32,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Worker agents: `disallowedTools` specifiers that removed Bash from workers are dropped; `git-guard` blocks push and merge for subagents instead. (#147)
 - `explore` effort is no longer written to the model config, where it was never applied. (#159)
 
-### Changed
+### Changed
+
 - `delegation-warn` and `read-guard` no longer count coordination shell commands (git/gh status, task and vault commands) as inline work. (#164)
 - `worker-verify` trial: the orchestrator hands the verifier a diffstat and the path of a diff file, and the verifier reads that file once instead of running `git diff` / `git log` / `git show` (it diffs the branch only when the diff file is missing). Orchestration defaults and `docs/agent-setup.md` say the same.
 - `update --all` now does everything in one command: besides the engine, hooks, agents and models it applies the user config (`user-config --install`: same code and `.bak-` backups, only for a `~/.codex` / `~/.claude` that exists, never creates one) and replaces a stale or missing vault `AGENTS.md` with the template (diff shown, committed in the data repo); an edited (`customized`) or newer `AGENTS.md` is kept and the reason printed, `--apply-agents` still forces. Plain `update` asks y/N for the user-config step (non-interactive: prints the `update --all` command); `--yes` alone writes nothing. A failing user-config step prints `manual:`, the rest and `doctor` still run, and `update` exits 1. `context` (new version and user-config drift hints) and the `doctor` AGENTS.md and user-config WARN lines name `update --all`; `user-config --install` stays as the settings-only command.
@@ -45,12 +46,14 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Codex orchestrator parity (`tools/codex-hooks/`, `tools/codex-agents/`, `tools/codex_hooks.py`, the parity list) is frozen: kept and installable, no further maintenance. Codex runs as a worker. (#146)
 - `context-warn` hook warns at the session's first-call size plus a delta (`budgets.context` `warn_delta` 50000, `handoff_delta` 80000; `VAULT_CONTEXT_WARN` is an absolute threshold) and no longer reminds on each prompt. (#148)
 - The orchestration standards separate discovery from implementation (Explore first, discovery rule in `orchestration-details`). (#158)
+- After switching versions, `update` runs the remaining steps (AGENTS.md, agents, hooks, models, user config) with the newly checked-out engine, so steps added in a new release apply in the same run. It falls back to the old behaviour when the target engine predates this. Effective from upgrades starting at 0.20.0.
 
 ### Upgrade notes
 - Minor release, no vault data schema change (still schema 1). Run `python "$VAULT_ENGINE/tools/graph.py" update --all`: it refreshes hooks, agents and the `codex-worker` skill, and now also applies the user config and replaces a stale vault `AGENTS.md` (a customized one is kept). Vault copies of `standards/orchestration*.md` are user-owned and are not updated automatically.
 - Budget classes are gone. `budgets.roles` in `vault.config.json` is now role -> turn cap (a number); the old shape (`classes`, class names) is still read and `doctor` prints the new JSON. The `budget:` field in task notes is ignored by `lint`.
 - `queue.budgets_usd` in `.graph/machine.json` must be one positive number (or absent) and `queue.max_turns` one integer; the old per-class objects make `queue-runner` stop with an error.
 - The `worker-codex` agent is removed; use the `codex-worker` skill (`/codex-worker <task>`). `update --all` (or `--agents`) installs the skill and deletes the old agent file after consent.
+- Upgrading from 0.19.0 (or older): run `update --all` twice. The first run finishes with the old code and skips the user-config step (`~/.codex/config.toml`, `~/.codex/rules/default.rules`); `doctor` warns until the second run. From 0.20.0 on, one run is enough.
 - `lint` now reports an error for a `ready` task with a multi-line acceptance block, and keyword retrieval matching changed (Turkish-aware stemming): results of `context` can differ from 0.19.0.
 
 ## [0.19.0] - 2026-10-21

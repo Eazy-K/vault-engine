@@ -295,3 +295,102 @@ class TestEngineDeveloperMarker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPostOnlyReexec(DevChannelCase):
+    """After the engine moves, the rest of `update` runs in the NEW engine."""
+
+    def _run(self, exec_rc=0, **kw):
+        with mock.patch("update.run_post_update_exec", return_value=exec_rc) as ex, \
+                mock.patch("update._post_update", return_value=True) as post, \
+                redirect_stdout(StringIO()) as buf:
+            try:
+                update.cmd_update(Args(**kw))
+                exc = None
+            except SystemExit as e:
+                exc = e
+        return ex, post, buf.getvalue(), exc
+
+    def test_dev_moved_reexecs_with_forwarded_flags(self):
+        with mock.patch("update._engine_supports_post_only", return_value=True):
+            ex, post, out, exc = self._run(all=True, yes=True, models=True)
+        self.assertIsNone(exc)
+        post.assert_not_called()
+        cmd = ex.call_args.args[2]
+        for flag in ("--post-only", "--all", "--yes", "--models", "--data"):
+            self.assertIn(flag, cmd)
+        self.assertNotIn("--post-no-migrate", cmd)
+        self.assertIn("--post-rollback", cmd)
+        self.assertIn("update --post-only", out)
+
+    def test_dev_moved_falls_back_when_engine_lacks_the_flag(self):
+        with mock.patch("update._engine_supports_post_only", return_value=False):
+            ex, post, out, exc = self._run()
+        self.assertIsNone(exc)
+        ex.assert_not_called()
+        self.assertTrue(post.call_args.kwargs["moved"])
+        self.assertIn("predates --post-only", out)
+
+    def test_nonzero_child_exit_is_exit_1(self):
+        with mock.patch("update._engine_supports_post_only", return_value=True):
+            ex, post, out, exc = self._run(exec_rc=3)
+        self.assertEqual(exc.code, 1)
+
+    def test_not_moved_stays_in_process(self):
+        _run(["git", "merge", "-q", "--ff-only", "origin/main"], self.engine)
+        ex, post, out, exc = self._run()
+        self.assertIsNone(exc)
+        ex.assert_not_called()
+        self.assertFalse(post.call_args.kwargs["moved"])
+
+    def test_post_only_runs_only_post_update(self):
+        before = self.head()
+        with mock.patch("update.run_post_update_exec") as ex, \
+                mock.patch("update._post_update", return_value=True) as post, \
+                mock.patch("update._git") as git, redirect_stdout(StringIO()):
+            update.cmd_update(Args(post_only=True, post_no_migrate=True,
+                                   post_rollback="hint", yes=True))
+        git.assert_not_called()
+        ex.assert_not_called()
+        kw = post.call_args.kwargs
+        self.assertEqual((kw["moved"], kw["migrate"], kw["rollback"]), (True, False, "hint"))
+        self.assertEqual(self.head(), before)
+
+    def test_post_only_failure_exits_1(self):
+        with mock.patch("update._post_update", return_value=False), \
+                redirect_stdout(StringIO()), self.assertRaises(SystemExit) as cm:
+            update.cmd_update(Args(post_only=True))
+        self.assertEqual(cm.exception.code, 1)
+
+
+class TestPostOnlyStable(UpdateTestCase):
+    def _upgrade(self, supports, rc=0):
+        with mock.patch("update._engine_supports_post_only", return_value=supports), \
+                mock.patch("update.run_post_update_exec", return_value=rc) as ex, \
+                mock.patch("update._post_update", return_value=True) as post, \
+                redirect_stdout(StringIO()):
+            try:
+                update.cmd_update(Args(yes=True, apply_agents=True))
+                exc = None
+            except SystemExit as e:
+                exc = e
+        return ex, post, exc
+
+    def test_upgrade_reexecs_with_migrate_and_rollback(self):
+        ex, post, exc = self._upgrade(True)
+        self.assertIsNone(exc)
+        post.assert_not_called()
+        cmd = ex.call_args.args[2]
+        self.assertIn("--apply-agents", cmd)
+        self.assertNotIn("--post-no-migrate", cmd)
+        self.assertIn("--to v0.1.0", " ".join(cmd[cmd.index("--post-rollback") + 1:]))
+        self.assertEqual(self.head_tag(), "v0.10.0")
+
+    def test_upgrade_falls_back_in_process(self):
+        ex, post, exc = self._upgrade(False)
+        ex.assert_not_called()
+        self.assertTrue(post.call_args.kwargs["migrate"])
+
+    def test_child_failure_exits_1(self):
+        ex, post, exc = self._upgrade(True, rc=2)
+        self.assertEqual(exc.code, 1)
