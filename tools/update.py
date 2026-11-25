@@ -22,6 +22,7 @@ Standard library only, matching the engine's own constraint.
 """
 from __future__ import annotations
 
+import argparse
 import difflib
 import json
 import os
@@ -332,6 +333,51 @@ def run_step(engine: Path, data: Path, cmd_args: list[str]) -> subprocess.Comple
     env["VAULT_DATA"] = str(data)
     return subprocess.run([sys.executable, str(engine / "tools" / "graph.py"), *cmd_args],
                           cwd=engine, env=env, capture_output=True, text=True, encoding="utf-8")
+
+
+def _engine_supports_post_only(engine: Path) -> bool:
+    """True when the checked-out engine's update.py knows --post-only (read from
+    disk, no trial run). Older engines get the in-process fallback."""
+    try:
+        text = (engine / "tools" / "update.py").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "--post-only" in text
+
+
+def run_post_update_exec(engine: Path, data: Path, cmd_args: list[str]) -> int:
+    """Runs `graph.py update --post-only ...` of the NEW engine with stdio
+    attached (live output, prompts work). Returns the exit code. Factored out
+    so tests can mock it without spawning a real engine."""
+    env = dict(os.environ)
+    env["VAULT_DATA"] = str(data)
+    return subprocess.run([sys.executable, str(engine / "tools" / "graph.py"), *cmd_args],
+                          cwd=engine, env=env).returncode
+
+
+def _post_update_args(args, data: Path, *, migrate: bool, rollback: str) -> list[str]:
+    out = ["update", "--post-only", "--data", str(data)]
+    for flag in ("yes", "apply_agents", "claude_hooks", "codex_hooks", "all", "models", "agents"):
+        if getattr(args, flag, False):
+            out.append("--" + flag.replace("_", "-"))
+    if not migrate:
+        out.append("--post-no-migrate")
+    if rollback:
+        out += ["--post-rollback", rollback]
+    return out
+
+
+def _finish_moved(engine: Path, data: Path, args, *, migrate: bool, rollback: str) -> bool:
+    """After the engine moved: run the rest of `update` with the NEW engine so
+    steps added in the new release apply in this run; in-process fallback when
+    the target engine predates --post-only."""
+    if _engine_supports_post_only(engine):
+        print("continuing with the new engine (update --post-only)", flush=True)
+        code = run_post_update_exec(engine, data,
+                                    _post_update_args(args, data, migrate=migrate, rollback=rollback))
+        return code == 0
+    print("the target engine predates --post-only; finishing with the current engine")
+    return _post_update(engine, data, args, moved=True, migrate=migrate, rollback=rollback)
 
 
 def _print_step_output(result: subprocess.CompletedProcess) -> None:
@@ -869,6 +915,13 @@ def cmd_update(args) -> None:
     engine = g.ENGINE
     if getattr(args, "all", False):
         args.yes = True
+    if getattr(args, "post_only", False):
+        data = _data_paths(args).data
+        if not _post_update(engine, data, args, moved=True,
+                            migrate=not getattr(args, "post_no_migrate", False),
+                            rollback=getattr(args, "post_rollback", "") or ""):
+            sys.exit(1)
+        return
     current_v = parse_version(g.__version__)
     status, ref = channel(engine)
 
@@ -974,8 +1027,8 @@ def cmd_update(args) -> None:
     print(f"checked out {target}")
     _rewrite_ci_pin(paths.data, target)
 
-    ok = _post_update(engine, paths.data, args, moved=True, migrate=is_upgrade,
-                      rollback=_rollback_hint(ref, branch=status == "dev"))
+    ok = _finish_moved(engine, paths.data, args, migrate=is_upgrade,
+                       rollback=_rollback_hint(ref, branch=status == "dev"))
     if not ok:
         sys.exit(1)
 
@@ -1034,8 +1087,12 @@ def _update_dev(engine: Path, branch: str, args) -> None:
         pin_v = parse_version(pin) if pin else None
         if pin_v is not None and pin_v < parse_version(tag):
             _rewrite_ci_pin(paths.data, tag)
-    if not _post_update(engine, paths.data, args, moved=moved,
-                        rollback=f"go back with: {q} reset --hard {before}" if moved else ""):
+    rollback = f"go back with: {q} reset --hard {before}" if moved else ""
+    if moved:
+        ok = _finish_moved(engine, paths.data, args, migrate=True, rollback=rollback)
+    else:
+        ok = _post_update(engine, paths.data, args, moved=False, rollback=rollback)
+    if not ok:
         sys.exit(1)
 
 
@@ -1069,4 +1126,8 @@ def register(sub) -> None:
                         "files are already installed, <CODEX_HOME>/agents/worker-*.toml from the "
                         "engine's shipped versions (edited files are kept) without asking if they are out of date; --yes alone only prints "
                         "the command")
+    # Internal: the old engine re-runs the tail of `update` with the new one.
+    p.add_argument("--post-only", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--post-no-migrate", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--post-rollback", default="", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_update)
