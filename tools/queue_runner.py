@@ -65,7 +65,8 @@ def load_queue_config(paths: g.Paths) -> dict:
     """The validated `queue` block of .graph/machine.json; QueueError when the queue may not run.
 
     Shape: {"queue": {"enabled": true, "projects": ["a", "b"], "budgets_usd": 5,
-    "max_turns": 80}}. `max_turns` is optional (built-in default); the dollar ceiling is not."""
+    "max_turns": 80}}. `max_turns` is optional (built-in default); `budgets_usd` is optional (absent = no
+    --max-budget-usd; the turn cap and the account spending limit are the brake)."""
     raw = g.load_state_json(paths.data / ".graph" / "machine.json")
     block = raw.get("queue") if isinstance(raw, dict) else None
     if not isinstance(block, dict) or block.get("enabled") is not True:
@@ -78,13 +79,11 @@ def load_queue_config(paths: g.Paths) -> dict:
     shape = ('{"queue": {"enabled": true, "projects": [...], "budgets_usd": 5, '
              '"max_turns": 80}}')
     budget = block.get("budgets_usd")
-    if budget is None:
-        raise QueueError("queue.budgets_usd (one dollar ceiling per task) is missing; "
-                         f"the queue never runs without one. Shape: {shape}")
     if isinstance(budget, dict):
         raise QueueError("queue.budgets_usd is a per-class object (old shape); budget classes "
                          f"are gone. Use one number, e.g. {shape}")
-    if isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget <= 0:
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float))
+                               or budget <= 0):
         raise QueueError(f"queue.budgets_usd must be a positive number, e.g. {shape}")
     turns = block.get("max_turns", DEFAULT_MAX_TURNS)
     if isinstance(turns, dict):
@@ -92,7 +91,8 @@ def load_queue_config(paths: g.Paths) -> dict:
                          f"are gone. Use one number, e.g. {shape}")
     if isinstance(turns, bool) or not isinstance(turns, int) or turns <= 0:
         raise QueueError(f"queue.max_turns must be a positive integer, e.g. {shape}")
-    return {"projects": list(projects), "budgets_usd": float(budget), "max_turns": turns}
+    return {"projects": list(projects), "budgets_usd": None if budget is None else float(budget),
+            "max_turns": turns}
 
 
 # --- pick --------------------------------------------------------------------
@@ -266,10 +266,13 @@ def make_worktree(repo: Path, number: str, slug: str) -> tuple[Path, str]:
 
 # --- claude ------------------------------------------------------------------
 
-def claude_argv(claude: str, prompt: str, max_turns: int, budget_usd: float) -> list[str]:
+def claude_argv(claude: str, prompt: str, max_turns: int,
+                budget_usd: float | None = None) -> list[str]:
     exe = [sys.executable, claude] if claude.lower().endswith(".py") else [claude]
-    return [*exe, "-p", prompt, "--permission-mode", "auto", "--max-turns", str(max_turns),
-            "--max-budget-usd", f"{budget_usd:g}", "--output-format", "json"]
+    argv = [*exe, "-p", prompt, "--permission-mode", "auto", "--max-turns", str(max_turns)]
+    if budget_usd is not None:
+        argv += ["--max-budget-usd", f"{budget_usd:g}"]
+    return [*argv, "--output-format", "json"]
 
 
 def parse_claude_result(stdout: str) -> dict:

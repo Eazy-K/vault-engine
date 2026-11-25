@@ -143,13 +143,29 @@ class QueueBase(unittest.TestCase):
 
 
 class GuardTests(QueueBase):
-    def test_refuses_without_budgets(self):
+    def test_budgets_usd_is_optional(self):
+        for block in ({"enabled": True, "projects": ["vault-engine"]},
+                      {"enabled": True, "projects": ["vault-engine"], "budgets_usd": None}):
+            self.write_machine(block)
+            cfg = qr.load_queue_config(self.paths)
+            self.assertIsNone(cfg["budgets_usd"])
+            self.assertEqual(cfg["max_turns"], 80)
+
+    def test_no_budget_flag_without_budgets_usd(self):
         self.write_machine({"enabled": True, "projects": ["vault-engine"]})
-        self.task("0001-a", status="ready")
-        with self.assertRaises(qr.QueueError) as cm:
-            qr.execute(args(), self.paths)
-        self.assertIn("budgets_usd", str(cm.exception))
-        self.assertEqual(self.events()[-1]["outcome"], "refused")
+        self.task("0001-a")
+        _, calls = self.run_queue()
+        self.assertNotIn("--max-budget-usd", calls["argv"])
+        self.assertEqual(calls["argv"][calls["argv"].index("--max-turns") + 1], "80")
+        self.assertEqual(calls["argv"][-2:], ["--output-format", "json"])
+
+    def test_dry_run_without_budgets_usd_has_no_budget_flag(self):
+        self.write_machine({"enabled": True, "projects": ["vault-engine"]})
+        self.task("0001-a")
+        _, calls = self.run_queue(dry_run=True)
+        self.assertNotIn("--max-budget-usd", calls["stdout"])
+        self.assertNotIn("None", calls["stdout"])
+        self.assertIn("--max-turns 80", calls["stdout"])
 
     def test_refuses_when_disabled_or_missing(self):
         for queue in (None, {"enabled": False, "projects": ["vault-engine"], "budgets_usd": 1}):
@@ -158,7 +174,7 @@ class GuardTests(QueueBase):
                 qr.load_queue_config(self.paths)
 
     def test_rejects_bad_budget_values(self):
-        for bad in (0, -1, "5", True, [5], {}):
+        for bad in (0, -1, "5", True, [5], {}, {"S": 2}):
             self.write_machine({"enabled": True, "projects": ["vault-engine"], "budgets_usd": bad})
             with self.assertRaises(qr.QueueError, msg=str(bad)):
                 qr.load_queue_config(self.paths)
