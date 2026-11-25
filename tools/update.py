@@ -372,7 +372,7 @@ def _finish_moved(engine: Path, data: Path, args, *, migrate: bool, rollback: st
     steps added in the new release apply in this run; in-process fallback when
     the target engine predates --post-only."""
     if _engine_supports_post_only(engine):
-        print("continuing with the new engine (update --post-only)")
+        print("continuing with the new engine (update --post-only)", flush=True)
         code = run_post_update_exec(engine, data,
                                     _post_update_args(args, data, migrate=migrate, rollback=rollback))
         return code == 0
