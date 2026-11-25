@@ -2,6 +2,11 @@
 
 All notable changes to vault-engine. Versions follow [SemVer](https://semver.org/); while the version is 0.x, minor releases may include breaking changes, listed under **Upgrade notes**. A release that raises the vault data schema says so there (`schema N`) and asks to bring every computer that shares the vault to 0.3.0 or later first: 0.1.0 and 0.2.0 have no schema check.
 
+## [Unreleased]
+
+### Changed
+- `lint` now warns instead of failing on a learned edge to a missing note, so vault CI no longer breaks after `git rm` of a note or when edges point at notes that are not pushed yet. The warning names the learned file that holds the edge. `reinforce`, `decay` and auto-decay prune this computer's own learned file of such edges and print `pruned N learned edges to missing notes`; other computers' files are never written and are pruned by their own next `reinforce`.
+
 ## [0.20.0] - 2026-11-25
 
 ### Added

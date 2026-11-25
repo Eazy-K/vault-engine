@@ -144,6 +144,37 @@ class TestStateIntegrity(unittest.TestCase):
         self.assertIn("proj/a|proj/b", json.loads(saved.read_text(encoding="utf-8")))
         self.assertEqual(list(self.paths.learned_dir.glob("*.tmp")), [])
 
+    def _write_learned(self, name, data):
+        d = self.paths.learned_dir
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(json.dumps(data), encoding="utf-8")
+
+    def test_lint_warns_on_learned_edge_to_missing_note(self):
+        self._write_learned("other.json", {"proj/a|proj/gone": 0.3})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            graph.cmd_lint(None, self.paths)
+        self.assertEqual(cm.exception.code, 0)
+        text = out.getvalue()
+        self.assertIn("WARN   learned edge proj/a|proj/gone: proj/gone missing", text)
+        self.assertIn("other.json", text)
+        self.assertNotIn("ERROR", text)
+
+    def test_save_learned_prunes_own_missing_edges_only(self):
+        self._write_learned("mine.json", {"proj/a|proj/b": 0.3, "proj/a|proj/gone": 0.2})
+        other = {"proj/a|proj/gone": 0.5}
+        self._write_learned("other.json", other)
+        g, _ = self._graph()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            g.save_learned()
+        self.assertIn("pruned 1 learned edges", out.getvalue())
+        saved = json.loads((self.paths.learned_dir / "mine.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"proj/a|proj/b": 0.3})
+        self.assertNotIn(("proj/a", "proj/gone"), g.own_learned)
+        untouched = json.loads((self.paths.learned_dir / "other.json").read_text(encoding="utf-8"))
+        self.assertEqual(untouched, other)
+
     def test_doctor_helper_reports_bad_files(self):
         sys.path.insert(0, str(REPO_ROOT / "tools"))
         spec = importlib.util.spec_from_file_location("onboarding", REPO_ROOT / "tools" / "onboarding.py")

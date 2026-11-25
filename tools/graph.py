@@ -564,6 +564,7 @@ class Graph:
 
         self.machine = machine_name(self.paths)
         self.own_learned: dict[tuple[str, str], float] = {}  # this machine's file only
+        self.learned_files: dict[tuple[str, str], list[str]] = {}  # edge -> files holding it
         learned_dir = self.paths.learned_dir
         for path in sorted(learned_dir.glob("*.json")) if learned_dir.exists() else []:
             problem = state_json_problem(path)
@@ -581,6 +582,7 @@ class Graph:
                 continue  # skip only this machine's file
             for key, v in entries.items():
                 self.learned[key] = self.learned.get(key, 0.0) + v
+                self.learned_files.setdefault(key, []).append(path.name)
                 if path.stem == self.machine:
                     self.own_learned[key] = v
 
@@ -611,8 +613,19 @@ class Graph:
         self.own_learned[key] = self.own_learned.get(key, 0.0) + delta
         self.learned[key] = self.learned.get(key, 0.0) + delta
 
+    def prune_learned(self) -> int:
+        """Drop this machine's learned edges to notes that no longer exist."""
+        gone = [k for k in self.own_learned if k[0] not in self.notes or k[1] not in self.notes]
+        for key in gone:
+            del self.own_learned[key]
+            self.learned.pop(key, None)
+        return len(gone)
+
     def save_learned(self) -> None:
         _require_writable(self.paths)
+        pruned = self.prune_learned()
+        if pruned:
+            print(f"pruned {pruned} learned edges to missing notes")
         learned_dir = self.paths.learned_dir
         learned_dir.mkdir(parents=True, exist_ok=True)
         data = {f"{a}|{b}": round(v, 4) for (a, b), v in sorted(self.own_learned.items())}
@@ -2799,11 +2812,14 @@ def sentence_lengths(body: str) -> list[int]:
 def cmd_lint(_args, paths: Paths | None = None) -> None:
     graph = Graph(paths)
     errors = list(graph.problems)
+    warnings_early: list[str] = []
     for a, b in graph.learned:
         for nid in (a, b):
             if nid not in graph.notes:
-                errors.append(f"learned edge {a}|{b}: {nid} missing")
-    warnings = [f"{nid}: orphan (no edges)" for nid, adj in graph.adjacency.items()
+                files = ", ".join(graph.learned_files.get((a, b), []))
+                warnings_early.append(f"learned edge {a}|{b}: {nid} missing (ignored; in {files}, "
+                                      "pruned by that computer's next reinforce)")
+    warnings = warnings_early + [f"{nid}: orphan (no edges)" for nid, adj in graph.adjacency.items()
                 if not adj and not graph.notes[nid].core]
     warnings += [f"{nid}: no frontmatter" for nid, n in graph.notes.items() if not n.meta]
     for nid, note in graph.notes.items():
