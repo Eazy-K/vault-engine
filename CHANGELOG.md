@@ -19,7 +19,7 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - `doctor` checks the Codex CLI: version, login, sandbox and effort settings. (#165)
 - `queue-runner` (`tools/queue_runner.py`): nightly runner that turns the oldest `ready` inbox task into a PR with no human prompt: guard (`queue` block in `.graph/machine.json`), claim (status `in-progress`, commit, push), worktree from origin/main, `claude -p`, the runner runs the acceptance command itself; green opens a PR and sets `review`, anything else sets `blocked` with the reason in the task Log. Merge stays with the user. `--print-schedule` prints the scheduler line; `stats` gets a queue section. (#154)
 - `verify` command (`tools/verify_task.py`) and the `worker-verify` agent (read-only): mechanical check of a diff and the acceptance output against the task spec (acceptance green, no file from the `Files not to touch` / `Exclude:` lists touched). (#150)
-- Task statuses `ready` and `review`, an acceptance lint (`lint` refuses multi-line acceptance blocks, which `queue-runner` and `verify` would otherwise cut to the first line) and a ready-to-run spec template with `## Files`. (#149, #162, #172)
+- Task statuses `ready` and `review`, an acceptance lint (`lint` reports an error for a `ready` task with a multi-line acceptance block, which `queue-runner` and `verify` would otherwise cut to the first line) and a ready-to-run spec template with `## Files`. (#149, #162, #172)
 - `budget-guard` PreToolUse hook: worker subagents get a warning at 80% of their turn cap and a deny with a hand-back instruction at 100%; `budget_block` events go to `usage.log`. (#156)
 - `permission-request` hook: inside a git worktree a subagent's call that matches an allow rule (settings plus optional `permissions.worktree_allow` in `vault.config.json`) is allowed; other subagent requests are denied with a logged reason; the main session still prompts the human. (#151)
 - `read-guard` PreToolUse hook: after 3 file-browsing calls per user message (`VAULT_READ_BUDGET`, `VAULT_READ_GUARD=off`) the orchestrator is told to hand the rest to a `worker-low` or `Explore` subagent; the Bash classifier moved to `tools/shell_classify.py`, shared with `delegation-warn`. (#143)
@@ -32,7 +32,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Worker agents: `disallowedTools` specifiers that removed Bash from workers are dropped; `git-guard` blocks push and merge for subagents instead. (#147)
 - `explore` effort is no longer written to the model config, where it was never applied. (#159)
 
-### Changed
+### Changed
+- `delegation-warn` and `read-guard` no longer count coordination shell commands (git/gh status, task and vault commands) as inline work. (#164)
 - `worker-verify` trial: the orchestrator hands the verifier a diffstat and the path of a diff file, and the verifier reads that file once instead of running `git diff` / `git log` / `git show` (it diffs the branch only when the diff file is missing). Orchestration defaults and `docs/agent-setup.md` say the same.
 - `update --all` now does everything in one command: besides the engine, hooks, agents and models it applies the user config (`user-config --install`: same code and `.bak-` backups, only for a `~/.codex` / `~/.claude` that exists, never creates one) and replaces a stale or missing vault `AGENTS.md` with the template (diff shown, committed in the data repo); an edited (`customized`) or newer `AGENTS.md` is kept and the reason printed, `--apply-agents` still forces. Plain `update` asks y/N for the user-config step (non-interactive: prints the `update --all` command); `--yes` alone writes nothing. A failing user-config step prints `manual:`, the rest and `doctor` still run, and `update` exits 1. `context` (new version and user-config drift hints) and the `doctor` AGENTS.md and user-config WARN lines name `update --all`; `user-config --install` stays as the settings-only command.
 - `reinforce-check` counts a task id only when it comes from this session's own `context` call (the `tool_result` linked by `tool_use_id` to a Bash call containing `graph.py` and `context`). Ids in Read, Grep, Agent or other results no longer trigger the hook. Blocking rules and once-per-id state are unchanged.
@@ -49,8 +50,8 @@ All notable changes to vault-engine. Versions follow [SemVer](https://semver.org
 - Minor release, no vault data schema change (still schema 1). Run `python "$VAULT_ENGINE/tools/graph.py" update --all`: it refreshes hooks, agents and the `codex-worker` skill, and now also applies the user config and replaces a stale vault `AGENTS.md` (a customized one is kept). Vault copies of `standards/orchestration*.md` are user-owned and are not updated automatically.
 - Budget classes are gone. `budgets.roles` in `vault.config.json` is now role -> turn cap (a number); the old shape (`classes`, class names) is still read and `doctor` prints the new JSON. The `budget:` field in task notes is ignored by `lint`.
 - `queue.budgets_usd` in `.graph/machine.json` must be one positive number (or absent) and `queue.max_turns` one integer; the old per-class objects make `queue-runner` stop with an error.
-- The `worker-codex` agent is removed; use the `codex-worker` skill (`/codex-worker <task>`).
-- `lint` now reports a multi-line acceptance block, and keyword retrieval matching changed (Turkish-aware stemming): results of `context` can differ from 0.19.0.
+- The `worker-codex` agent is removed; use the `codex-worker` skill (`/codex-worker <task>`). `update --all` (or `--agents`) installs the skill and deletes the old agent file after consent.
+- `lint` now reports an error for a `ready` task with a multi-line acceptance block, and keyword retrieval matching changed (Turkish-aware stemming): results of `context` can differ from 0.19.0.
 
 ## [0.19.0] - 2026-10-21
 
